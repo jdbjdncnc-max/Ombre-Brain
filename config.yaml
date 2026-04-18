@@ -9,7 +9,7 @@
 # streamable-http: remote use (HTTP, tunnel/CDN/proxy friendly)
 # stdio: 本地使用（Claude Desktop，直接管道通信）
 # streamable-http: 远程使用（标准 HTTP，对隧道/CDN/代理友好）
-transport: "stdio"
+transport: streamable-http
 
 # --- Log level / 日志级别 ---
 log_level: "INFO"
@@ -19,7 +19,7 @@ log_level: "INFO"
 # 指向你的 Obsidian 仓库子目录，或任意本地文件夹
 # Leave as-is to use the built-in ./buckets/ directory
 # 保持默认则使用内置的 ./buckets/ 目录
-# buckets_dir: "/path/to/your/Obsidian Vault/Ombre Brain"
+# buckets_dir: ./buckets/
 
 # --- Merge threshold / 桶合并阈值 ---
 # When storing a new memory, if similarity with an existing bucket exceeds
