@@ -150,6 +150,14 @@ def generate_bucket_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+def strip_wikilinks(text: str) -> str:
+    """
+    Remove Obsidian wikilink brackets: [[word]] → word
+    去除 Obsidian 双链括号
+    """
+    return re.sub(r"\[\[([^\]]+)\]\]", r"\1", text) if text else text
+
+
 def sanitize_name(name: str) -> str:
     """
     Sanitize bucket name, keeping only safe characters.

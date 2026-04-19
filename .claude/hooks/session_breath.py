@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # ============================================================
-# SessionStart Hook: auto-breath on session start
-# 对话开始钩子：自动浮现最高权重的未解决记忆
+# SessionStart Hook: auto-breath + dreaming on session start
+# 对话开始钩子：自动浮现记忆 + 触发 dreaming
 #
 # On SessionStart, this script calls the Ombre Brain MCP server's
-# breath tool (empty query = surfacing mode) via HTTP and prints
-# the result to stdout so Claude sees it as session context.
+# breath-hook and dream-hook endpoints, printing results to stdout
+# so Claude sees them as session context.
 #
-# This works for OMBRE_TRANSPORT=streamable-http deployments.
-# For local stdio deployments, the script falls back gracefully.
+# Sequence: breath → dream → feel
+# 顺序：呼吸浮现 → 做梦消化 → 读取 feel
 #
 # Config:
 #   OMBRE_HOOK_URL  — override the server URL (default: http://localhost:8000)
@@ -27,12 +27,19 @@ def main():
 
     base_url = os.environ.get("OMBRE_HOOK_URL", "http://localhost:8000").rstrip("/")
 
+    # --- Step 1: Breath — surface unresolved memories ---
+    _call_endpoint(base_url, "/breath-hook")
+
+    # --- Step 2: Dream — digest recent memories ---
+    _call_endpoint(base_url, "/dream-hook")
+
+
+def _call_endpoint(base_url, path):
     req = urllib.request.Request(
-        f"{base_url}/breath-hook",
+        f"{base_url}{path}",
         headers={"Accept": "text/plain"},
         method="GET",
     )
-
     try:
         with urllib.request.urlopen(req, timeout=8) as response:
             raw = response.read().decode("utf-8")
@@ -40,13 +47,10 @@ def main():
             if output:
                 print(output)
     except (urllib.error.URLError, OSError):
-        # Server not available (local stdio mode or not running) — silent fail
         pass
     except Exception:
-        # Any other error — silent fail, never block session start
         pass
 
-    sys.exit(0)
 
 if __name__ == "__main__":
     main()

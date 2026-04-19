@@ -58,6 +58,15 @@ decay:
     base: 1.0                     # Base weight / 基础权重
     arousal_boost: 0.8            # Arousal boost coefficient / 唤醒度加成系数
 
+# --- Embedding / 向量化配置 ---
+# Uses embedding API for semantic similarity search
+# 通过 embedding API 实现语义相似度搜索
+# Reuses the same API key (OMBRE_API_KEY) and base_url from dehydration config
+# 复用脱水配置的 API key 和 base_url
+embedding:
+  enabled: true                   # Enable embedding / 启用向量化
+  model: "gemini-embedding-001"   # Embedding model / 向量化模型
+
 # --- Scoring weights / 检索权重参数 ---
 # total = topic(×4) + emotion(×2) + time(×1.5) + importance(×1)
 scoring_weights:
@@ -77,6 +86,6 @@ wikilink:
   use_tags: false
   use_domain: true
   use_auto_keywords: true
-  auto_top_k: 8
-  min_keyword_len: 2
+  auto_top_k: 4
+  min_keyword_len: 3
   exclude_keywords: []

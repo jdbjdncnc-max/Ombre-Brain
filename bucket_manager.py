@@ -60,6 +60,7 @@ class BucketManager:
         self.permanent_dir = os.path.join(self.base_dir, "permanent")
         self.dynamic_dir = os.path.join(self.base_dir, "dynamic")
         self.archive_dir = os.path.join(self.base_dir, "archive")
+        self.feel_dir = os.path.join(self.base_dir, "feel")
         self.fuzzy_threshold = config.get("matching", {}).get("fuzzy_threshold", 50)
         self.max_results = config.get("matching", {}).get("max_results", 5)
 
@@ -122,7 +123,7 @@ class BucketManager:
         bucket_name = sanitize_name(name) if name else bucket_id
         domain = domain or ["未分类"]
         tags = tags or []
-        linked_content = self._apply_wikilinks(content, tags, domain, bucket_name)
+        linked_content = content  # wikilink injection disabled; LLM adds [[]] via prompt
 
         # --- Pinned/protected buckets: lock importance to 10 ---
         # --- 钉选/保护桶：importance 强制锁定为 10 ---
@@ -154,8 +155,18 @@ class BucketManager:
 
         # --- Choose directory by type + primary domain ---
         # --- 按类型 + 主题域选择存储目录 ---
-        type_dir = self.permanent_dir if bucket_type == "permanent" else self.dynamic_dir
-        primary_domain = sanitize_name(domain[0]) if domain else "未分类"
+        if bucket_type == "permanent" or pinned:
+            type_dir = self.permanent_dir
+            if pinned and bucket_type != "permanent":
+                metadata["type"] = "permanent"
+        elif bucket_type == "feel":
+            type_dir = self.feel_dir
+        else:
+            type_dir = self.dynamic_dir
+        if bucket_type == "feel":
+            primary_domain = "沉淀物"  # feel subfolder name
+        else:
+            primary_domain = sanitize_name(domain[0]) if domain else "未分类"
         target_dir = os.path.join(type_dir, primary_domain)
         os.makedirs(target_dir, exist_ok=True)
 
@@ -198,6 +209,25 @@ class BucketManager:
         return self._load_bucket(file_path)
 
     # ---------------------------------------------------------
+    # Move bucket between directories
+    # 在目录间移动桶文件
+    # ---------------------------------------------------------
+    def _move_bucket(self, file_path: str, target_type_dir: str, domain: list[str] = None) -> str:
+        """
+        Move a bucket file to a new type directory, preserving domain subfolder.
+        Returns new file path.
+        """
+        primary_domain = sanitize_name(domain[0]) if domain else "未分类"
+        target_dir = os.path.join(target_type_dir, primary_domain)
+        os.makedirs(target_dir, exist_ok=True)
+        filename = os.path.basename(file_path)
+        new_path = safe_path(target_dir, filename)
+        if os.path.normpath(file_path) != os.path.normpath(new_path):
+            os.rename(file_path, new_path)
+            logger.info(f"Moved bucket / 移动记忆桶: {filename} → {target_dir}/")
+        return new_path
+
+    # ---------------------------------------------------------
     # Update bucket
     # 更新桶
     # Supports: content, tags, importance, valence, arousal, name, resolved
@@ -225,15 +255,7 @@ class BucketManager:
 
         # --- Update only fields that were passed in / 只改传入的字段 ---
         if "content" in kwargs:
-            next_tags = kwargs.get("tags", post.get("tags", []))
-            next_domain = kwargs.get("domain", post.get("domain", []))
-            next_name = kwargs.get("name", post.get("name", ""))
-            post.content = self._apply_wikilinks(
-                kwargs["content"],
-                next_tags,
-                next_domain,
-                next_name,
-            )
+            post.content = kwargs["content"]  # wikilink injection disabled; LLM adds [[]] via prompt
         if "tags" in kwargs:
             post["tags"] = kwargs["tags"]
         if "importance" in kwargs:
@@ -252,6 +274,10 @@ class BucketManager:
             post["pinned"] = bool(kwargs["pinned"])
             if kwargs["pinned"]:
                 post["importance"] = 10  # pinned → lock importance to 10
+        if "digested" in kwargs:
+            post["digested"] = bool(kwargs["digested"])
+        if "model_valence" in kwargs:
+            post["model_valence"] = max(0.0, min(1.0, float(kwargs["model_valence"])))
 
         # --- Auto-refresh activation time / 自动刷新激活时间 ---
         post["last_active"] = now_iso()
@@ -263,136 +289,33 @@ class BucketManager:
             logger.error(f"Failed to write bucket update / 写入桶更新失败: {file_path}: {e}")
             return False
 
+        # --- Auto-move: pinned → permanent/, resolved → archive/ ---
+        # --- 自动移动：钉选 → permanent/，已解决 → archive/ ---
+        domain = post.get("domain", ["未分类"])
+        if kwargs.get("pinned") and post.get("type") != "permanent":
+            post["type"] = "permanent"
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(frontmatter.dumps(post))
+            self._move_bucket(file_path, self.permanent_dir, domain)
+        elif kwargs.get("resolved") and post.get("type") not in ("permanent", "feel"):
+            post["type"] = "archived"
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(frontmatter.dumps(post))
+            self._move_bucket(file_path, self.archive_dir, domain)
+
         logger.info(f"Updated bucket / 更新记忆桶: {bucket_id}")
         return True
 
     # ---------------------------------------------------------
-    # Wikilink injection
-    # 自动添加 Obsidian 双链
+    # Wikilink injection — DISABLED
+    # 自动添加 Obsidian 双链 — 已禁用
+    # Now handled by LLM prompts (Gemini adds [[]] for proper nouns)
+    # 现在由 LLM prompt 处理（Gemini 对人名/地名/专有名词加 [[]]）
     # ---------------------------------------------------------
-    def _apply_wikilinks(
-        self,
-        content: str,
-        tags: list[str],
-        domain: list[str],
-        name: str,
-    ) -> str:
-        """
-        Auto-inject Obsidian wikilinks, avoiding double-wrapping existing [[...]].
-        自动添加 Obsidian 双链，避免重复包裹已有 [[...]]。
-        """
-        if not self.wikilink_enabled or not content:
-            return content
-
-        keywords = self._collect_wikilink_keywords(content, tags, domain, name)
-        if not keywords:
-            return content
-
-        # Split on existing wikilinks to avoid wrapping them again
-        # 按已有双链切分，避免重复包裹
-        segments = re.split(r"(\[\[[^\]]+\]\])", content)
-        pattern = re.compile("|".join(re.escape(kw) for kw in keywords))
-        for i, segment in enumerate(segments):
-            if segment.startswith("[[") and segment.endswith("]]"):
-                continue
-            updated = pattern.sub(lambda m: f"[[{m.group(0)}]]", segment)
-            segments[i] = updated
-        return "".join(segments)
-
-    def _collect_wikilink_keywords(
-        self,
-        content: str,
-        tags: list[str],
-        domain: list[str],
-        name: str,
-    ) -> list[str]:
-        """
-        Collect candidate keywords from tags/domain/auto-extraction.
-        汇总候选关键词：可选 tags/domain + 自动提词。
-        """
-        candidates = []
-
-        if self.wikilink_use_tags:
-            candidates.extend(tags or [])
-        if self.wikilink_use_domain:
-            candidates.extend(domain or [])
-        if name:
-            candidates.append(name)
-        if self.wikilink_use_auto_keywords:
-            candidates.extend(self._extract_auto_keywords(content))
-
-        return self._normalize_keywords(candidates)
-
-    def _normalize_keywords(self, keywords: list[str]) -> list[str]:
-        """
-        Deduplicate and sort by length (longer first to avoid short words
-        breaking long ones during replacement).
-        去重并按长度排序，优先替换长词。
-        """
-        if not keywords:
-            return []
-
-        seen = set()
-        cleaned = []
-        for keyword in keywords:
-            if not isinstance(keyword, str):
-                continue
-            kw = keyword.strip()
-            if len(kw) < self.wikilink_min_len:
-                continue
-            if kw in self.wikilink_exclude_keywords:
-                continue
-            if kw.lower() in self.wikilink_stopwords:
-                continue
-            if kw in seen:
-                continue
-            seen.add(kw)
-            cleaned.append(kw)
-
-        return sorted(cleaned, key=len, reverse=True)
-
-    def _extract_auto_keywords(self, content: str) -> list[str]:
-        """
-        Auto-extract keywords from body text, prioritizing high-frequency words.
-        从正文自动提词，优先高频词。
-        """
-        if not content:
-            return []
-
-        try:
-            zh_words = [w.strip() for w in jieba.lcut(content) if w.strip()]
-        except Exception:
-            zh_words = []
-        en_words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,20}", content)
-
-        # Chinese bigrams / 中文双词组合
-        zh_bigrams = []
-        for i in range(len(zh_words) - 1):
-            left = zh_words[i]
-            right = zh_words[i + 1]
-            if len(left) < self.wikilink_min_len or len(right) < self.wikilink_min_len:
-                continue
-            if not re.fullmatch(r"[\u4e00-\u9fff]+", left + right):
-                continue
-            if len(left + right) > 8:
-                continue
-            zh_bigrams.append(left + right)
-
-        merged = []
-        for word in zh_words + zh_bigrams + en_words:
-            if len(word) < self.wikilink_min_len:
-                continue
-            if re.fullmatch(r"\d+", word):
-                continue
-            if word.lower() in self.wikilink_stopwords:
-                continue
-            merged.append(word)
-
-        if not merged:
-            return []
-
-        counter = Counter(merged)
-        return [w for w, _ in counter.most_common(self.wikilink_auto_top_k)]
+    # def _apply_wikilinks(self, content, tags, domain, name): ...
+    # def _collect_wikilink_keywords(self, content, tags, domain, name): ...
+    # def _normalize_keywords(self, keywords): ...
+    # def _extract_auto_keywords(self, content): ...
 
     # ---------------------------------------------------------
     # Delete bucket
@@ -425,7 +348,9 @@ class BucketManager:
     async def touch(self, bucket_id: str) -> None:
         """
         Update a bucket's last activation time and count.
+        Also triggers time ripple: nearby memories get a slight activation boost.
         更新桶的最后激活时间和激活次数。
+        同时触发时间涟漪：时间上相邻的记忆轻微唤醒。
         """
         file_path = self._find_bucket_file(bucket_id)
         if not file_path:
@@ -438,8 +363,59 @@ class BucketManager:
 
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(frontmatter.dumps(post))
+
+            # --- Time ripple: boost nearby memories within ±48h ---
+            # --- 时间涟漪：±48小时内的记忆轻微唤醒 ---
+            current_time = datetime.fromisoformat(str(post.get("created", post.get("last_active", ""))))
+            await self._time_ripple(bucket_id, current_time)
         except Exception as e:
             logger.warning(f"Failed to touch bucket / 触碰桶失败: {bucket_id}: {e}")
+
+    async def _time_ripple(self, source_id: str, reference_time: datetime, hours: float = 48.0) -> None:
+        """
+        Slightly boost activation_count of buckets created/activated near the reference time.
+        轻微提升时间相邻桶的激活次数（+0.3），不改 last_active 避免递归唤醒。
+        Max 5 buckets rippled per touch to bound I/O.
+        """
+        try:
+            all_buckets = await self.list_all(include_archive=False)
+        except Exception:
+            return
+
+        rippled = 0
+        max_ripple = 5
+        for bucket in all_buckets:
+            if rippled >= max_ripple:
+                break
+            if bucket["id"] == source_id:
+                continue
+            meta = bucket.get("metadata", {})
+            # Skip pinned/permanent/feel
+            if meta.get("pinned") or meta.get("protected") or meta.get("type") in ("permanent", "feel"):
+                continue
+
+            created_str = meta.get("created", meta.get("last_active", ""))
+            try:
+                created = datetime.fromisoformat(str(created_str))
+                delta_hours = abs((reference_time - created).total_seconds()) / 3600
+            except (ValueError, TypeError):
+                continue
+
+            if delta_hours <= hours:
+                # Boost activation_count by 0.3 (fractional), don't change last_active
+                file_path = self._find_bucket_file(bucket["id"])
+                if not file_path:
+                    continue
+                try:
+                    post = frontmatter.load(file_path)
+                    current_count = post.get("activation_count", 1)
+                    # Store as float for fractional increments; calculate_score handles it
+                    post["activation_count"] = round(current_count + 0.3, 1)
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write(frontmatter.dumps(post))
+                    rippled += 1
+                except Exception:
+                    continue
 
     # ---------------------------------------------------------
     # Multi-dimensional search (core feature)
@@ -576,7 +552,7 @@ class BucketManager:
         )
         content_score = fuzz.partial_ratio(query, bucket.get("content", "")[:1000]) * self.content_weight
 
-        return (name_score + domain_score + tag_score + content_score) / (100 * 10.5)
+        return (name_score + domain_score + tag_score + content_score) / (100 * (3 + 2.5 + 2 + self.content_weight))
 
     # ---------------------------------------------------------
     # Emotion resonance sub-score:
@@ -633,7 +609,7 @@ class BucketManager:
         """
         buckets = []
 
-        dirs = [self.permanent_dir, self.dynamic_dir]
+        dirs = [self.permanent_dir, self.dynamic_dir, self.feel_dir]
         if include_archive:
             dirs.append(self.archive_dir)
 
@@ -664,6 +640,7 @@ class BucketManager:
             "permanent_count": 0,
             "dynamic_count": 0,
             "archive_count": 0,
+            "feel_count": 0,
             "total_size_kb": 0.0,
             "domains": {},
         }
@@ -672,6 +649,7 @@ class BucketManager:
             (self.permanent_dir, "permanent_count"),
             (self.dynamic_dir, "dynamic_count"),
             (self.archive_dir, "archive_count"),
+            (self.feel_dir, "feel_count"),
         ]:
             if not os.path.exists(subdir):
                 continue
@@ -745,7 +723,7 @@ class BucketManager:
         """
         if not bucket_id:
             return None
-        for dir_path in [self.permanent_dir, self.dynamic_dir, self.archive_dir]:
+        for dir_path in [self.permanent_dir, self.dynamic_dir, self.archive_dir, self.feel_dir]:
             if not os.path.exists(dir_path):
                 continue
             for root, _, files in os.walk(dir_path):
@@ -754,7 +732,8 @@ class BucketManager:
                         continue
                     # Match by exact ID segment in filename
                     # 通过文件名中的 ID 片段精确匹配
-                    if bucket_id in fname:
+                    name_part = fname[:-3]  # remove .md
+                    if name_part == bucket_id or name_part.endswith(f"_{bucket_id}"):
                         return os.path.join(root, fname)
         return None
 

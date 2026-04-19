@@ -7,7 +7,11 @@ __pycache__/
 .claude/hooks/__pycache__/
 .vscode/
 config.yaml
-buckets/dynamic/
-buckets/archive/
-buckets/permanent/
+buckets/
+*.log
+server.log
+plan.md
 scarp_paper
+backup_*/
+*.db
+import_state.json
