@@ -20,7 +20,6 @@ log_level: "INFO"
 # Leave as-is to use the built-in ./buckets/ directory
 # 保持默认则使用内置的 ./buckets/ 目录
 # buckets_dir: ./buckets/
-  buckets_dir: /mnt/ombre_buckets
 
 # --- Merge threshold / 桶合并阈值 ---
 # When storing a new memory, if similarity with an existing bucket exceeds
