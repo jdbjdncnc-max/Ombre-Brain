@@ -20,6 +20,7 @@ log_level: "INFO"
 # Leave as-is to use the built-in ./buckets/ directory
 # 保持默认则使用内置的 ./buckets/ 目录
 # buckets_dir: ./buckets/
+  buckets_dir: /mnt/ombre_buckets
 
 # --- Merge threshold / 桶合并阈值 ---
 # When storing a new memory, if similarity with an existing bucket exceeds
@@ -34,8 +35,8 @@ merge_threshold: 75
 dehydration:
   # Supports any OpenAI-compatible API: DeepSeek / Ollama / LM Studio / vLLM / Gemini etc.
   # 支持所有 OpenAI 兼容 API：DeepSeek / Ollama / LM Studio / vLLM / Gemini 等
-  model: "deepseek-chat"
-  base_url: "https://api.deepseek.com/v1"
+  model: "google/gemini-2.5-flash-lite"
+  base_url: "https://openrouter.ai/api/v1"
   # Common base_url examples / 常见 base_url 示例：
   #   DeepSeek:    https://api.deepseek.com/v1
   #   SiliconFlow: https://api.siliconflow.cn/v1
