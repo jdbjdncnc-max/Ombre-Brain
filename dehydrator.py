@@ -152,10 +152,13 @@ class Dehydrator:
     """
     Data dehydrator + content analyzer.
     Three capabilities: dehydration / merge / auto-tagging (domain + emotion).
-    Prefers API (better quality); auto-degrades to local (guaranteed availability).
+    API-only: every public method requires a working LLM API.
+    If the API is unavailable, methods raise RuntimeError so callers can
+    surface the failure to the user instead of silently producing low-quality results.
     数据脱水器 + 内容分析器。
     三大能力：脱水压缩 / 新旧合并 / 自动打标。
-    优先走 API，API 挂了自动降级到本地。
+    仅走 API：API 不可用时直接抛出 RuntimeError，调用方明确感知。
+    （根据 BEHAVIOR_SPEC.md 三、降级行为表决策：无本地降级）
     """
 
     def __init__(self, config: dict):
