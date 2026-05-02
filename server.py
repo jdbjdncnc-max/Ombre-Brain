@@ -1346,6 +1346,37 @@ async def api_search(request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@mcp.custom_route("/api/export", methods=["GET"])
+async def api_export_memories(request):
+    """Export memories as JSON payload (full set or selected IDs)."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    include_archive = request.query_params.get("include_archive", "1").lower() in ("1", "true", "yes")
+    ids_param = request.query_params.get("ids", "").strip()
+    selected_ids = {x.strip() for x in ids_param.split(",") if x.strip()} if ids_param else set()
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=include_archive)
+        if selected_ids:
+            all_buckets = [b for b in all_buckets if b.get("id", "") in selected_ids]
+        export_payload = {
+            "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "include_archive": include_archive,
+            "selected_ids_count": len(selected_ids),
+            "total": len(all_buckets),
+            "buckets": [],
+        }
+        for b in all_buckets:
+            export_payload["buckets"].append({
+                "id": b.get("id", ""),
+                "metadata": b.get("metadata", {}),
+                "content": b.get("content", ""),
+            })
+        return JSONResponse(export_payload)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @mcp.custom_route("/api/network", methods=["GET"])
 async def api_network(request):
     """Get embedding similarity network for visualization."""
