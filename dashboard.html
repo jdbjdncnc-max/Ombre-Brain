@@ -607,6 +607,7 @@
   <div class="search-bar">
     <input type="text" id="search-input" placeholder="搜索记忆…" />
   </div>
+   <button onclick="exportMemories()" title="导出全部记忆为 JSON 文件" style="margin-left:12px;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:20px;padding:6px 14px;font-size:12px;cursor:pointer;">导出</button>
   <button onclick="doLogout()" title="退出登录" style="margin-left:12px;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:20px;padding:6px 14px;font-size:12px;cursor:pointer;">退出</button>
 </div>
 
@@ -924,6 +925,42 @@ async function doLogout() {
   document.getElementById('auth-subtitle').textContent = '请输入访问密码';
   document.getElementById('auth-error').style.display = 'none';
   document.getElementById('auth-overlay').style.display = 'flex';
+}
+
+async function exportMemories() {
+  try {
+    const exportCurrentFilter = confirm('是否仅导出“当前筛选结果”？\n确定=仅当前筛选，取消=导出全部。');
+    const includeArchive = confirm('是否包含归档记忆？\n确定=包含归档，取消=不包含归档。');
+    const selected = exportCurrentFilter ? filterBuckets(allBuckets).map(function(b) { return b.id; }) : [];
+    if (exportCurrentFilter && selected.length === 0) {
+      alert('当前筛选结果为空，无可导出记忆。');
+      return;
+    }
+    const params = new URLSearchParams();
+    params.set('include_archive', includeArchive ? '1' : '0');
+    if (selected.length > 0) params.set('ids', selected.join(','));
+    const resp = await authFetch('/api/export?' + params.toString());
+    if (!resp) return;
+    if (!resp.ok) {
+      const d = await resp.json().catch(() => ({}));
+      alert('导出失败: ' + (d.error || resp.statusText));
+      return;
+    }
+    const data = await resp.json();
+    const datePart = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `ombre-memories-${selected.length > 0 ? 'filtered' : 'all'}-${datePart}.json`;
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('导出失败: ' + e);
+  }
 }
 
 async function changePassword() {
