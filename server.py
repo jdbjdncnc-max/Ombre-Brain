@@ -1154,8 +1154,52 @@ async def pulse(include_archive: bool = False) -> str:
 
 
 # =============================================================
-# Tool 6: dream — Dreaming, digest recent memories
-# 工具 6：dream — 做梦，消化最近的记忆
+# Tool 6: memory_logs — Query memory operation logs for model
+# 工具 6：memory_logs — 查询修改日志（模型可直接读取）
+# =============================================================
+@mcp.tool()
+async def memory_logs(
+    since: str = "",
+    memory_id: str = "",
+    bucket_id: str = "",
+    action: str = "",
+    limit: int = 20,
+    offset: int = 0,
+) -> str:
+    """查询记忆修改日志。支持 since(ISO时间), memory_id, bucket_id, action(update/delete), limit(默认20,最大100), offset。返回可直接供模型阅读的日志文本。"""
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    action = action.strip().lower()
+    if action and action not in ("update", "delete"):
+        return "action 仅支持 update 或 delete。"
+    rows = memory_log_store.query(
+        since=since.strip() or None,
+        memory_id=memory_id.strip() or None,
+        bucket_id=bucket_id.strip() or None,
+        action=action or None,
+        limit=limit,
+        offset=offset,
+    )
+    if not rows:
+        return "没有匹配的日志记录。"
+
+    lines = [f"=== Memory Logs ===\ncount={len(rows)} limit={limit} offset={offset}"]
+    for i, row in enumerate(rows, 1):
+        old_content = strip_wikilinks(str(row.get("old_content", "")))
+        new_content = strip_wikilinks(str(row.get("new_content", "")))
+        lines.append(
+            f"[{i}] {row.get('timestamp', '')} | action={row.get('action', '')} | "
+            f"title={row.get('memory_title', '')} | memory_id={row.get('memory_id', '')} | "
+            f"log_id={row.get('log_id', '')}\n"
+            f"old_content:\n{old_content}\n"
+            f"new_content:\n{new_content if row.get('action') == 'update' else ''}"
+        )
+    return "\n---\n".join(lines)
+
+
+# =============================================================
+# Tool 7: dream — Dreaming, digest recent memories
+# 工具 7：dream — 做梦，消化最近的记忆
 #
 # Reads recent surface-level buckets (≤10), returns them for
 # Claude to introspect under prompt guidance.
