@@ -1318,6 +1318,55 @@ async def api_bucket_detail(request):
     })
 
 
+@mcp.custom_route("/api/bucket/{bucket_id}", methods=["POST"])
+async def api_bucket_update(request):
+    """Update bucket fields for dashboard editing."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err:
+        return err
+    bucket_id = request.path_params["bucket_id"]
+    bucket = await bucket_mgr.get(bucket_id)
+    if not bucket:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    allowed = {"name", "content", "domain", "tags", "importance", "resolved", "pinned", "valence", "arousal"}
+    updates = {k: v for k, v in body.items() if k in allowed}
+    if "domain" in updates and isinstance(updates["domain"], str):
+        updates["domain"] = [x.strip() for x in updates["domain"].split(",") if x.strip()]
+    if "tags" in updates and isinstance(updates["tags"], str):
+        updates["tags"] = [x.strip() for x in updates["tags"].split(",") if x.strip()]
+    if not updates:
+        return JSONResponse({"error": "no valid fields"}, status_code=400)
+    ok = await bucket_mgr.update(bucket_id, **updates)
+    if not ok:
+        return JSONResponse({"error": "update failed"}, status_code=500)
+    if "content" in updates:
+        try:
+            await embedding_engine.generate_and_store(bucket_id, updates["content"])
+        except Exception:
+            pass
+    return JSONResponse({"ok": True})
+
+
+@mcp.custom_route("/api/bucket/{bucket_id}", methods=["DELETE"])
+async def api_bucket_delete(request):
+    """Delete bucket by ID."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err:
+        return err
+    bucket_id = request.path_params["bucket_id"]
+    ok = await bucket_mgr.delete(bucket_id)
+    if not ok:
+        return JSONResponse({"error": "not found or delete failed"}, status_code=404)
+    return JSONResponse({"ok": True})
+
+
 @mcp.custom_route("/api/search", methods=["GET"])
 async def api_search(request):
     """Search buckets by query."""
