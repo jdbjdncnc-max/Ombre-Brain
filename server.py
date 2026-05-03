@@ -56,6 +56,7 @@ from dehydrator import Dehydrator
 from decay_engine import DecayEngine
 from embedding_engine import EmbeddingEngine
 from import_memory import ImportEngine
+from memory_logs import MemoryLogStore
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
@@ -102,6 +103,7 @@ bucket_mgr = BucketManager(config, embedding_engine=embedding_engine)  # Bucket 
 dehydrator = Dehydrator(config)                      # Dehydrator / 脱水器
 decay_engine = DecayEngine(config, bucket_mgr)       # Decay engine / 衰减引擎
 import_engine = ImportEngine(config, bucket_mgr, dehydrator, embedding_engine)  # Import engine / 导入引擎
+memory_log_store = MemoryLogStore(config["buckets_dir"])
 
 # --- Create MCP server instance / 创建 MCP 服务器实例 ---
 # host="0.0.0.0" so Docker container's SSE is externally reachable
@@ -201,6 +203,23 @@ def _require_auth(request):
             status_code=401,
         )
     return None
+
+
+def _log_memory_change(action: str, bucket_before: dict, new_content: str | None = None) -> None:
+    """Append memory update/delete log."""
+    try:
+        meta = bucket_before.get("metadata", {}) if bucket_before else {}
+        memory_id = bucket_before.get("id", "")
+        memory_log_store.append(
+            action=action,
+            memory_id=memory_id,
+            memory_title=meta.get("name", memory_id),
+            bucket_id=memory_id,
+            old_content=strip_wikilinks(bucket_before.get("content", "")),
+            new_content=strip_wikilinks(new_content or "") if action == "update" else "",
+        )
+    except Exception as e:
+        logger.warning(f"Failed to write memory log ({action}): {e}")
 
 
 # --- Auth endpoints ---
@@ -997,9 +1016,12 @@ async def trace(
 
     # --- Delete mode / 删除模式 ---
     if delete:
+        bucket_before = await bucket_mgr.get(bucket_id)
         success = await bucket_mgr.delete(bucket_id)
         if success:
             embedding_engine.delete_embedding(bucket_id)
+            if bucket_before:
+                _log_memory_change("delete", bucket_before)
         return f"已遗忘记忆桶: {bucket_id}" if success else f"未找到记忆桶: {bucket_id}"
 
     bucket = await bucket_mgr.get(bucket_id)
@@ -1040,6 +1062,8 @@ async def trace(
 
     # Re-generate embedding if content changed
     if "content" in updates:
+        if str(bucket.get("content", "")) != str(updates["content"]):
+            _log_memory_change("update", bucket, updates["content"])
         try:
             await embedding_engine.generate_and_store(bucket_id, updates["content"])
         except Exception:
@@ -1346,6 +1370,8 @@ async def api_bucket_update(request):
     if not ok:
         return JSONResponse({"error": "update failed"}, status_code=500)
     if "content" in updates:
+        if str(bucket.get("content", "")) != str(updates["content"]):
+            _log_memory_change("update", bucket, updates["content"])
         try:
             await embedding_engine.generate_and_store(bucket_id, updates["content"])
         except Exception:
@@ -1361,9 +1387,12 @@ async def api_bucket_delete(request):
     if err:
         return err
     bucket_id = request.path_params["bucket_id"]
+    bucket_before = await bucket_mgr.get(bucket_id)
     ok = await bucket_mgr.delete(bucket_id)
     if not ok:
         return JSONResponse({"error": "not found or delete failed"}, status_code=404)
+        if bucket_before:
+        _log_memory_change("delete", bucket_before)
     return JSONResponse({"ok": True})
 
 
@@ -1393,6 +1422,35 @@ async def api_search(request):
         return JSONResponse(result)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/memory-logs", methods=["GET"])
+@mcp.custom_route("/api/memory-logs", methods=["GET"])
+async def api_memory_logs(request):
+    """Query memory operation logs."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err:
+        return err
+    q = request.query_params
+    since = q.get("since")
+    memory_id = q.get("memory_id")
+    bucket_id = q.get("bucket_id")
+    action = q.get("action")
+    try:
+        limit = int(q.get("limit", "100"))
+        offset = int(q.get("offset", "0"))
+    except ValueError:
+        return JSONResponse({"error": "invalid limit/offset"}, status_code=400)
+    rows = memory_log_store.query(
+        since=since,
+        memory_id=memory_id,
+        bucket_id=bucket_id,
+        action=action,
+        limit=limit,
+        offset=offset,
+    )
+    return JSONResponse({"items": rows, "count": len(rows), "limit": limit, "offset": offset})
 
 
 @mcp.custom_route("/api/export", methods=["GET"])
