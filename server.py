@@ -1391,7 +1391,7 @@ async def api_bucket_delete(request):
     ok = await bucket_mgr.delete(bucket_id)
     if not ok:
         return JSONResponse({"error": "not found or delete failed"}, status_code=404)
-        if bucket_before:
+    if bucket_before:
         _log_memory_change("delete", bucket_before)
     return JSONResponse({"ok": True})
 
