@@ -1073,6 +1073,7 @@ async function authFetch(url, options) {
 const BASE = location.origin;
 let allBuckets = [];
 let currentFilter = 'all';
+let currentDetailId = null;
 
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -1208,6 +1209,7 @@ async function showDetail(id) {
   var content = document.getElementById('detail-content');
   content.innerHTML = '<div class="loading">加载中…</div>';
   panel.classList.add('open');
+  currentDetailId = id;
 
   try {
     var res = await fetch(BASE + '/api/bucket/' + id);
@@ -1232,7 +1234,15 @@ async function showDetail(id) {
         '<div class="field"><label>创建</label>' + (meta.created || '—') + '</div>' +
         '<div class="field"><label>最后活跃</label>' + (meta.last_active || '—') + '</div>' +
       '</div>' +
-      '<div class="detail-content">' + esc(b.content) + '</div>';
+      '<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">' +
+        '<button class="btn-primary" onclick="enableEditMemory()">编辑记忆</button>' +
+        '<button class="btn-secondary" onclick="saveMemoryEdit()" id="save-memory-btn" style="display:none;">保存记忆</button>' +
+        '<button onclick="deleteMemory()" style="padding:10px 16px;border:none;border-radius:16px;cursor:pointer;background:linear-gradient(145deg,#F5DADA,#E9C2C2);color:var(--negative);">删除记忆</button>' +
+      '</div>' +
+      '<textarea id="detail-content-editor" class="detail-content" style="width:100%;display:none;" rows="12"></textarea>' +
+      '<div class="detail-content" id="detail-content-view">' + esc(b.content) + '</div>';
+    var editor = document.getElementById('detail-content-editor');
+    editor.value = b.content || '';
   } catch (e) {
     content.innerHTML = '<div class="loading">加载失败: ' + e.message + '</div>';
   }
@@ -1240,6 +1250,53 @@ async function showDetail(id) {
 
 function closeDetail() {
   document.getElementById('detail-panel').classList.remove('open');
+  currentDetailId = null;
+}
+
+function enableEditMemory() {
+  var editor = document.getElementById('detail-content-editor');
+  var viewer = document.getElementById('detail-content-view');
+  var saveBtn = document.getElementById('save-memory-btn');
+  if (!editor || !viewer || !saveBtn) return;
+  viewer.style.display = 'none';
+  editor.style.display = 'block';
+  saveBtn.style.display = 'inline-block';
+}
+
+async function saveMemoryEdit() {
+  if (!currentDetailId) return;
+  var editor = document.getElementById('detail-content-editor');
+  if (!editor) return;
+  const payload = { content: editor.value };
+  const res = await authFetch(BASE + '/api/bucket/' + currentDetailId, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+  });
+  if (!res) return;
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    alert('保存失败: ' + (d.error || res.statusText));
+    return;
+  }
+  alert('保存成功');
+  await loadBuckets();
+  await showDetail(currentDetailId);
+}
+
+async function deleteMemory() {
+  if (!currentDetailId) return;
+  if (!confirm('确定删除这条记忆吗？此操作不可恢复。')) return;
+  const res = await authFetch(BASE + '/api/bucket/' + currentDetailId, { method: 'DELETE' });
+  if (!res) return;
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    alert('删除失败: ' + (d.error || res.statusText));
+    return;
+  }
+  alert('删除成功');
+  closeDetail();
+  await loadBuckets();
 }
 
 var networkData = null;
