@@ -617,6 +617,7 @@
   <div class="tab" data-tab="network">记忆网络</div>
   <div class="tab" data-tab="config">配置</div>
   <div class="tab" data-tab="import">导入</div>
+  <div class="tab" data-tab="logs">操作日志</div>
   <div class="tab" data-tab="settings">设置</div>
 </div>
 
@@ -774,6 +775,21 @@
       <div id="config-readonly" style="font-size:13px;color:var(--text-dim);line-height:1.8;">加载中…</div>
     </div>
   </div>
+</div>
+
+  <div class="content" id="logs-view" style="display:none">
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">
+    <input id="logs-bucket-id" placeholder="bucket_id（可选）" style="padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--surface-solid);" />
+    <select id="logs-range" style="padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--surface-solid);">
+      <option value="24h">最近24h</option><option value="7d" selected>最近7天</option><option value="all">全部</option>
+    </select>
+    <select id="logs-action" style="padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--surface-solid);">
+      <option value="">全部动作</option><option value="update">更新</option><option value="delete">删除</option>
+    </select>
+    <button onclick="loadMemoryLogs(true)">查询</button>
+  </div>
+  <div id="logs-list"></div>
+  <div style="margin-top:12px;"><button onclick="loadMoreLogs()">加载更多</button></div>
 </div>
 
 <div class="detail-panel" id="detail-panel">
@@ -1074,6 +1090,7 @@ const BASE = location.origin;
 let allBuckets = [];
 let currentFilter = 'all';
 let currentDetailId = null;
+let logsOffset = 0;
 
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -1085,13 +1102,57 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById('network-view').style.display = target === 'network' ? '' : 'none';
     document.getElementById('config-view').style.display = target === 'config' ? '' : 'none';
     document.getElementById('import-view').style.display = target === 'import' ? '' : 'none';
+    document.getElementById('logs-view').style.display = target === 'logs' ? '' : 'none';
     document.getElementById('settings-view').style.display = target === 'settings' ? '' : 'none';
     if (target === 'network') loadNetwork();
     if (target === 'config') loadConfig();
     if (target === 'import') { pollImportStatus(); loadImportResults(); }
+    if (target === 'logs') loadMemoryLogs(true);
     if (target === 'settings') loadSettingsStatus();
   });
 });
+
+  function buildSinceByRange(range) {
+  if (range === 'all') return '';
+  const now = Date.now();
+  const ms = range === '24h' ? 24 * 3600 * 1000 : 7 * 24 * 3600 * 1000;
+  return new Date(now - ms).toISOString();
+}
+
+async function loadMemoryLogs(reset) {
+  if (reset) logsOffset = 0;
+  const list = document.getElementById('logs-list');
+  const bucketId = document.getElementById('logs-bucket-id').value.trim();
+  const action = document.getElementById('logs-action').value;
+  const since = buildSinceByRange(document.getElementById('logs-range').value);
+  const p = new URLSearchParams();
+  if (bucketId) p.set('bucket_id', bucketId);
+  if (action) p.set('action', action);
+  if (since) p.set('since', since);
+  p.set('limit', '100');
+  p.set('offset', String(logsOffset));
+  const resp = await authFetch('/api/memory-logs?' + p.toString());
+  if (!resp) return;
+  const data = await resp.json();
+  const items = data.items || [];
+  if (reset) list.innerHTML = '';
+  if (!items.length && reset) { list.innerHTML = '<div class="loading">暂无日志</div>'; return; }
+  list.innerHTML += items.map(function(x) {
+    const summary = esc((x.old_content || '').slice(0, 90));
+    const oldEsc = esc(x.old_content || '');
+    const newEsc = esc(x.new_content || '');
+    return '<details style="margin-bottom:8px;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface);">' +
+      '<summary><b>' + x.timestamp + '</b> · ' + x.action + ' · ' + esc(x.memory_title || x.memory_id) + '<br><small>' + summary + '</small></summary>' +
+      '<div style="margin-top:8px;"><b>old_content</b><pre style="white-space:pre-wrap;">' + oldEsc + '</pre></div>' +
+      '<div><b>new_content</b><pre style="white-space:pre-wrap;">' + newEsc + '</pre></div>' +
+      '<button onclick=\"copyText(' + JSON.stringify(x.old_content || '') + ')\">复制 old_content</button>' +
+    '</details>';
+  }).join('');
+  logsOffset += items.length;
+}
+
+function loadMoreLogs() { loadMemoryLogs(false); }
+function copyText(t) { navigator.clipboard.writeText(t || ''); alert('已复制 old_content'); }
 
 let searchTimer;
 document.getElementById('search-input').addEventListener('input', (e) => {
