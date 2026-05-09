@@ -85,6 +85,16 @@ matching:
   fuzzy_threshold: 50             # Minimum match score (0-100) / 最低匹配分数
   max_results: 5                  # Max results per search / 单次搜索最多返回条数
 
+# --- Associative recall / 联想回忆参数 ---
+# Simulates brain-like "spreading activation" instead of strict keyword lookup.
+# 通过“扩散激活”模拟自然想起，而不是机械关键词命中。
+associative_recall:
+  enabled: true
+  noise: 0.15                     # Randomness in recall path / 联想路径随机扰动
+  temperature: 0.8                # Softmax temperature / 采样温度（越高越发散）
+  max_hops: 2                     # Association walk depth / 联想跳数
+  sim_threshold: 0.52             # Min semantic similarity / 最低语义相似度
+
 # --- Obsidian wikilinks / Obsidian 双链自动注入 ---
 wikilink:
   enabled: true
