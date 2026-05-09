@@ -43,6 +43,7 @@ import secrets
 import time
 import json as _json_lib
 import httpx
+import math
 
 
 # --- Ensure same-directory modules can be imported ---
@@ -104,6 +105,12 @@ dehydrator = Dehydrator(config)                      # Dehydrator / 脱水器
 decay_engine = DecayEngine(config, bucket_mgr)       # Decay engine / 衰减引擎
 import_engine = ImportEngine(config, bucket_mgr, dehydrator, embedding_engine)  # Import engine / 导入引擎
 memory_log_store = MemoryLogStore(config["buckets_dir"])
+associative_cfg = config.get("associative_recall", {}) or {}
+ASSOCIATIVE_RECALL_ENABLED = bool(associative_cfg.get("enabled", True))
+ASSOCIATIVE_NOISE = float(associative_cfg.get("noise", 0.15))
+ASSOCIATIVE_TEMP = max(0.01, float(associative_cfg.get("temperature", 0.8)))
+ASSOCIATIVE_HOPS = max(0, int(associative_cfg.get("max_hops", 2)))
+ASSOCIATIVE_SIM_THRESHOLD = float(associative_cfg.get("sim_threshold", 0.52))
 
 # --- Create MCP server instance / 创建 MCP 服务器实例 ---
 # host="0.0.0.0" so Docker container's SSE is externally reachable
@@ -694,8 +701,8 @@ async def breath(
             logger.error(f"Feel retrieval failed: {e}")
             return "读取 feel 失败。"
 
-    # --- With args: search mode (keyword + vector dual channel) ---
-    # --- 有参数：检索模式（关键词 + 向量双通道）---
+    # --- With args: associative recall mode ---
+    # --- 有参数：联想回忆模式（不是机械关键词检索）---
     domain_filter = [d.strip() for d in domain.split(",") if d.strip()] or None
     q_valence = valence if 0 <= valence <= 1 else None
     q_arousal = arousal if 0 <= arousal <= 1 else None
@@ -732,6 +739,83 @@ async def breath(
     except Exception as e:
         logger.warning(f"Vector search failed, using keyword only / 向量搜索失败: {e}")
 
+    # --- Associative spreading activation ---
+    # --- 联想扩散激活：沿“语义邻居”自然想起，而不是只返回直命中 ---
+    if ASSOCIATIVE_RECALL_ENABLED and embedding_engine and embedding_engine.enabled:
+        try:
+            base_ids = [b["id"] for b in matches[: min(8, len(matches))]]
+            association_candidates = {}
+
+            # Hop 1: from current query + direct hits
+            seeds = [query] + base_ids
+            for seed in seeds:
+                if isinstance(seed, str) and seed in base_ids:
+                    # Use bucket text as cue for memory-to-memory association
+                    seed_bucket = await bucket_mgr.get(seed)
+                    if not seed_bucket:
+                        continue
+                    seed_text = strip_wikilinks(seed_bucket.get("content", ""))
+                else:
+                    seed_text = query
+
+                neigh = await embedding_engine.search_similar(seed_text, top_k=12)
+                for bid, sim in neigh:
+                    if sim < ASSOCIATIVE_SIM_THRESHOLD:
+                        continue
+                    if bid in matched_ids:
+                        continue
+                    score = sim + random.uniform(-ASSOCIATIVE_NOISE, ASSOCIATIVE_NOISE)
+                    association_candidates[bid] = max(score, association_candidates.get(bid, -999))
+
+            # Hop 2+: lightweight random walk (controlled)
+            frontier = sorted(association_candidates.items(), key=lambda x: x[1], reverse=True)[:4]
+            for _ in range(1, ASSOCIATIVE_HOPS):
+                if not frontier:
+                    break
+                next_frontier = []
+                for fid, _fs in frontier:
+                    b = await bucket_mgr.get(fid)
+                    if not b:
+                        continue
+                    neigh = await embedding_engine.search_similar(strip_wikilinks(b.get("content", "")), top_k=6)
+                    for bid, sim in neigh:
+                        if sim < ASSOCIATIVE_SIM_THRESHOLD:
+                            continue
+                        if bid in matched_ids:
+                            continue
+                        score = sim + random.uniform(-ASSOCIATIVE_NOISE, ASSOCIATIVE_NOISE)
+                        old = association_candidates.get(bid, -999)
+                        if score > old:
+                            association_candidates[bid] = score
+                        next_frontier.append((bid, score))
+                frontier = sorted(next_frontier, key=lambda x: x[1], reverse=True)[:3]
+
+            # Stochastic pick (softmax sampling) to mimic natural "sudden recall"
+            picked_ids = []
+            ranked = sorted(association_candidates.items(), key=lambda x: x[1], reverse=True)[:10]
+            if ranked:
+                vals = [v for _, v in ranked]
+                exps = [math.exp(v / ASSOCIATIVE_TEMP) for v in vals]
+                total = sum(exps) or 1.0
+                probs = [e / total for e in exps]
+                k = min(3, len(ranked))
+                chosen = random.choices(ranked, weights=probs, k=k)
+                picked_ids = list(dict.fromkeys([cid for cid, _ in chosen]))
+
+            for bid in picked_ids:
+                if bid in matched_ids:
+                    continue
+                b = await bucket_mgr.get(bid)
+                if not b:
+                    continue
+                if b["metadata"].get("pinned") or b["metadata"].get("protected"):
+                    continue
+                b["associative_match"] = True
+                matches.append(b)
+                matched_ids.add(bid)
+        except Exception as e:
+            logger.warning(f"Associative recall failed, fallback to normal search / 联想回忆失败: {e}")
+            
     results = []
     token_used = 0
     for bucket in matches:
@@ -750,7 +834,9 @@ async def breath(
             if token_used + summary_tokens > max_tokens:
                 break
             await bucket_mgr.touch(bucket["id"])
-            if bucket.get("vector_match"):
+            if bucket.get("associative_match"):
+                summary = f"[忽然想起] [bucket_id:{bucket['id']}] {summary}"
+            elif bucket.get("vector_match"):
                 summary = f"[语义关联] [bucket_id:{bucket['id']}] {summary}"
             else:
                 summary = f"[bucket_id:{bucket['id']}] {summary}"
