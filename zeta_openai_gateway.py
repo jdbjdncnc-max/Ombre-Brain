@@ -186,6 +186,7 @@ class ZetaOpenAIGateway:
             "keyword_limit": self.keyword_limit,
             "semantic_limit": self.semantic_limit,
         })
+        memory_headers = self._memory_debug_headers(recalled)
         injected_text = self._build_injection_text(recalled)
         forward_payload = self._prepare_forward_payload(payload, injected_text)
 
@@ -196,6 +197,7 @@ class ZetaOpenAIGateway:
                 user_text=user_text,
                 user_raw_refs=user_raw_refs,
                 recalled=recalled,
+                memory_headers=memory_headers,
             )
 
         try:
@@ -213,7 +215,7 @@ class ZetaOpenAIGateway:
                 assistant_raw_refs=assistant_raw_refs,
                 recalled=recalled,
             )
-        return self._proxy_response(upstream_response)
+        return self._proxy_response(upstream_response, extra_headers=memory_headers)
 
     async def _forward_upstream(self, payload: dict[str, Any]) -> httpx.Response:
         return await self.http.post(
@@ -230,6 +232,7 @@ class ZetaOpenAIGateway:
         user_text: str,
         user_raw_refs: list[str],
         recalled: dict[str, Any],
+        memory_headers: dict[str, str],
     ) -> Response:
         request = self.http.build_request(
             "POST",
@@ -270,13 +273,27 @@ class ZetaOpenAIGateway:
             stream_body(),
             status_code=upstream_response.status_code,
             media_type=content_type,
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", **memory_headers},
         )
 
     def _payload_for_upstream(self, payload: dict[str, Any]) -> dict[str, Any]:
         upstream_payload = deepcopy(payload)
         upstream_payload["model"] = self.upstream_model
         return upstream_payload
+
+    def _memory_debug_headers(self, recalled: dict[str, Any]) -> dict[str, str]:
+        memories = recalled.get("memories") if isinstance(recalled, dict) else []
+        if not isinstance(memories, list):
+            memories = []
+        sources = sorted({
+            str(item.get("source"))
+            for item in memories
+            if isinstance(item, dict) and item.get("source")
+        })
+        headers = {"X-Zeta-Memory-Count": str(len(memories))}
+        if sources:
+            headers["X-Zeta-Memory-Sources"] = ",".join(sources)[:200]
+        return headers
 
     def _upstream_headers(self, api_key: str) -> dict[str, str]:
         headers = {
@@ -549,7 +566,7 @@ Return strict JSON with this shape:
             if isinstance(content, str):
                 assistant_parts.append(content)
 
-    def _proxy_response(self, response: httpx.Response) -> Response:
+    def _proxy_response(self, response: httpx.Response, extra_headers: dict[str, str] | None = None) -> Response:
         if response.status_code >= 400:
             return self._upstream_status_error(
                 response.status_code,
@@ -561,6 +578,8 @@ Return strict JSON with this shape:
             for key, value in response.headers.items()
             if key.lower() not in {"content-length", "transfer-encoding", "connection"}
         }
+        if extra_headers:
+            headers.update(extra_headers)
         return Response(
             content=response.content,
             status_code=response.status_code,
@@ -600,9 +619,52 @@ Return strict JSON with this shape:
         )
 
 
-config = load_config()
-setup_logging(config.get("log_level", "INFO"))
-gateway = ZetaOpenAIGateway(config)
+startup_error = ""
+gateway: ZetaOpenAIGateway | None = None
+try:
+    config = load_config()
+    setup_logging(config.get("log_level", "INFO"))
+    gateway = ZetaOpenAIGateway(config)
+except Exception as exc:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s] %(name)s %(levelname)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    startup_error = f"{type(exc).__name__}: {exc}"
+    logger.exception("Zeta OpenAI gateway startup failed")
+
+
+async def health_route(request: Request) -> JSONResponse:
+    if gateway is None:
+        return JSONResponse(
+            {
+                "status": "startup_error",
+                "gateway": "zeta_openai",
+                "error": startup_error,
+                "hint": "The web server is running, but memory gateway initialization failed. Check Zeabur logs and OMBRE_BUCKETS_DIR permissions.",
+            },
+            status_code=503,
+        )
+    return await gateway.health(request)
+
+
+async def models_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.models(request)
+
+
+async def chat_completions_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.chat_completions(request)
 
 
 @asynccontextmanager
@@ -610,13 +672,14 @@ async def lifespan(app):
     try:
         yield
     finally:
-        await gateway.close()
+        if gateway is not None:
+            await gateway.close()
 
 
 routes = [
-    Route("/health", gateway.health, methods=["GET"]),
-    Route("/v1/models", gateway.models, methods=["GET"]),
-    Route("/v1/chat/completions", gateway.chat_completions, methods=["POST"]),
+    Route("/health", health_route, methods=["GET"]),
+    Route("/v1/models", models_route, methods=["GET"]),
+    Route("/v1/chat/completions", chat_completions_route, methods=["POST"]),
 ]
 
 app = Starlette(routes=routes, lifespan=lifespan)
@@ -631,7 +694,7 @@ app.add_middleware(
 
 if __name__ == "__main__":
     try:
-        port = int(_env("OMBRE_PORT", "PORT", default="8000"))
+        port = int(_env("PORT", "OMBRE_PORT", default="8000"))
     except ValueError:
         port = 8000
     logger.info("Starting Zeta OpenAI gateway on port %s", port)
