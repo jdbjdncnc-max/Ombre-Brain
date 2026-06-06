@@ -25,6 +25,11 @@ class ZetaMemoryGateway:
             "no",
             "off",
         }
+        self.legacy_keyword_limit = self._bounded_int(
+            os.environ.get("OMBRE_RECALL_LEGACY_KEYWORD_LIMIT", "2"),
+            0,
+            8,
+        )
         self.raw_dir.mkdir(parents=True, exist_ok=True)
 
     def require_auth(self, request):
@@ -53,6 +58,7 @@ class ZetaMemoryGateway:
             "auth": "token" if os.environ.get("OMBRE_GATEWAY_TOKEN", "").strip() else "open",
             "embedding": bool(self.embedding_engine and self.embedding_engine.enabled),
             "include_legacy": self.include_legacy,
+            "legacy_keyword_limit": self.legacy_keyword_limit,
         }
 
     async def save_raw(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -168,6 +174,20 @@ class ZetaMemoryGateway:
         seen = set()
         buckets = []
 
+        if self.include_legacy and self.legacy_keyword_limit and keyword_limit:
+            legacy_target = min(self.legacy_keyword_limit, max_results)
+            legacy_hits = await self.bucket_mgr.search(query, limit=max(max_results * 12, legacy_target * 8))
+            legacy_added = 0
+            for bucket in legacy_hits:
+                if bucket["id"] in seen or not self._is_legacy_memory(bucket):
+                    continue
+                bucket["gateway_source"] = "legacy_keyword"
+                buckets.append(bucket)
+                seen.add(bucket["id"])
+                legacy_added += 1
+                if legacy_added >= legacy_target or len(buckets) >= max_results:
+                    break
+
         if keyword_limit:
             keyword_hits = await self.bucket_mgr.search(
                 query,
@@ -181,6 +201,8 @@ class ZetaMemoryGateway:
                     seen.add(bucket["id"])
                 if len([b for b in buckets if b.get("gateway_source") == "keyword"]) >= keyword_limit:
                     break
+                if len(buckets) >= max_results:
+                    break
 
         if semantic_limit and self.embedding_engine and self.embedding_engine.enabled:
             semantic_hits = await self.embedding_engine.search_similar(query, top_k=semantic_limit * 10 + 10)
@@ -189,10 +211,12 @@ class ZetaMemoryGateway:
                 if bucket_id in seen:
                     continue
                 bucket = await self.bucket_mgr.get(bucket_id)
-                if not bucket or not self._is_gateway_memory(bucket):
+                if not bucket or not (
+                    self._is_gateway_memory(bucket) or (self.include_legacy and self._is_legacy_memory(bucket))
+                ):
                     continue
                 bucket["score"] = round(float(semantic_score) * 100, 2)
-                bucket["gateway_source"] = "semantic"
+                bucket["gateway_source"] = "semantic" if self._is_gateway_memory(bucket) else "legacy_semantic"
                 buckets.append(bucket)
                 seen.add(bucket_id)
                 semantic_added += 1
@@ -214,7 +238,7 @@ class ZetaMemoryGateway:
             for bucket in legacy_hits:
                 if bucket["id"] in seen or not self._is_legacy_memory(bucket):
                     continue
-                bucket["gateway_source"] = "legacy"
+                bucket["gateway_source"] = "legacy_fill"
                 buckets.append(bucket)
                 seen.add(bucket["id"])
                 if len(buckets) >= max_results:
@@ -332,7 +356,11 @@ class ZetaMemoryGateway:
     def _format_legacy_memory(self, bucket: dict[str, Any]) -> dict[str, Any] | None:
         content = str(bucket.get("content") or "").strip()
         meta = bucket.get("metadata", {})
-        summary = str(meta.get("name") or "").strip() or self._compact_text(content, 220)
+        name = str(meta.get("name") or "").strip()
+        compact = self._compact_text(content, 260)
+        summary = name or compact
+        if name and compact and compact not in name:
+            summary = f"{name}: {compact}"
         if not summary:
             return None
         result = {
