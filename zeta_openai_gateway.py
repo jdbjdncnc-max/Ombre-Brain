@@ -187,6 +187,7 @@ class ZetaOpenAIGateway:
             "semantic_limit": self.semantic_limit,
         })
         memory_headers = self._memory_debug_headers(recalled)
+        self._log_recall(session_id, recalled)
         injected_text = self._build_injection_text(recalled)
         forward_payload = self._prepare_forward_payload(payload, injected_text)
 
@@ -294,6 +295,23 @@ class ZetaOpenAIGateway:
         if sources:
             headers["X-Zeta-Memory-Sources"] = ",".join(sources)[:200]
         return headers
+
+    def _log_recall(self, session_id: str, recalled: dict[str, Any]) -> None:
+        memories = recalled.get("memories") if isinstance(recalled, dict) else []
+        if not isinstance(memories, list):
+            memories = []
+        sources: dict[str, int] = {}
+        for item in memories:
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("source") or "unknown")
+            sources[source] = sources.get(source, 0) + 1
+        logger.info(
+            "Zeta recall | session=%s count=%s sources=%s",
+            session_id,
+            len(memories),
+            sources,
+        )
 
     def _upstream_headers(self, api_key: str) -> dict[str, str]:
         headers = {
@@ -447,6 +465,9 @@ Rules:
 - If nothing is worth remembering, return {{"memories":[]}}.
 - Store only stable preferences, relationship facts, commitments, identity-relevant events, or emotionally meaningful moments.
 - Do not store trivial chatter.
+- Do not store memories about the memory gateway, hidden memory injection, prompts, tools, MCP, Zeabur, OpenRouter, API keys, model settings, deployment, or debugging.
+- Do not store that "memories were injected" or that Zeta explained how memory works.
+- If the exchange is mainly testing or debugging memory behavior, return {{"memories":[]}} unless the user explicitly asks Zeta to remember a personal fact or preference.
 - Every memory must include summary_text, tags, importance, raw_ref.
 - tags may be a JSON array or comma-separated string.
 - importance must be 1-10.
@@ -494,8 +515,41 @@ Return strict JSON with this shape:
             for field in ("feel_text", "valence", "arousal"):
                 if item.get(field) is not None and item.get(field) != "":
                     entry[field] = item[field]
+            if self._is_rejected_reflection_entry(entry):
+                logger.info("Rejected meta memory from reflection | summary=%s", summary[:120])
+                continue
             entries.append(entry)
         return entries[:3]
+
+    def _is_rejected_reflection_entry(self, entry: dict[str, Any]) -> bool:
+        tags = entry.get("tags", [])
+        tag_text = ",".join(str(t) for t in tags) if isinstance(tags, list) else str(tags)
+        text = " ".join([
+            str(entry.get("summary_text") or ""),
+            str(entry.get("feel_text") or ""),
+            tag_text,
+        ]).lower()
+        blocked_terms = [
+            "memory gateway",
+            "zeta memory gateway",
+            "hidden context",
+            "injected",
+            "injection",
+            "long-term memories injected",
+            "system prompt",
+            "prompt",
+            "mcp",
+            "openrouter",
+            "zeabur",
+            "api key",
+            "base url",
+            "environment variable",
+            "deployment",
+            "debug",
+            "debugging",
+            "tool call",
+        ]
+        return any(term in text for term in blocked_terms)
 
     def _extract_last_user_text(self, messages: list[dict[str, Any]]) -> str:
         for message in reversed(messages):
