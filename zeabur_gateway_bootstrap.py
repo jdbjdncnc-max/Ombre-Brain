@@ -63,7 +63,11 @@ def _startup_error_app(error: str) -> Starlette:
 
 
 try:
-    from zeta_openai_gateway import app
+    import zeta_openai_gateway
+    from zeta_hidden_memory_patch import apply_hidden_memory_patch
+
+    apply_hidden_memory_patch(zeta_openai_gateway)
+    app = zeta_openai_gateway.app
 except Exception as exc:
     logger.exception("Failed to import zeta_openai_gateway")
     app = _startup_error_app(f"{type(exc).__name__}: {exc}")
