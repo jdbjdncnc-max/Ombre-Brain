@@ -383,13 +383,15 @@ class ZetaMemoryGateway:
         return index
 
     def _build_query(self, body: dict[str, Any]) -> str:
-        parts = [
-            body.get("query"),
-            body.get("current_text"),
-            body.get("user_message"),
-            body.get("recent_context"),
-        ]
-        text = "\n".join(str(p).strip() for p in parts if p)
+        explicit_query = str(body.get("query") or "").strip()
+        current_text = str(body.get("current_text") or body.get("user_message") or "").strip()
+        recent_context = str(body.get("recent_context") or "").strip()
+        if explicit_query:
+            text = explicit_query
+        elif len(current_text) >= 8:
+            text = current_text
+        else:
+            text = "\n".join(p for p in (current_text, recent_context) if p)
         return text[:4000]
 
     def _is_gateway_memory(self, bucket: dict[str, Any]) -> bool:
