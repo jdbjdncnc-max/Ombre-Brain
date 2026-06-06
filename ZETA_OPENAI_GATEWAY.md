@@ -2,7 +2,7 @@
 
 This is the natural-recall gateway path for Zeta.
 
-Operit talks to this service as if it were an OpenAI-compatible model API. The gateway saves raw turns, recalls relevant memories, injects them into the hidden system context, forwards the request to the real upstream model, then reflects after the reply and writes long-term memories when appropriate.
+Operit talks to this service as if it were an OpenAI-compatible model API. The gateway saves raw turns, recalls relevant memories, injects them into the hidden system context, forwards the request to the real upstream model, then lets Zeta decide whether to append a hidden memory request. The gateway removes that hidden block before the reply reaches Operit and stores only validated memory entries.
 
 ## Flow
 
@@ -12,11 +12,11 @@ Operit
 Zeta gateway
   -> save user raw text
   -> recall 3-5 memories
-  -> inject private memory context
+  -> inject private memory context and private memory-write instruction
   -> forward to upstream model
-  -> save Zeta reply raw text
-  -> background reflection
-  -> write memory entries if the exchange is worth remembering
+  -> remove any <zeta_memory_request> block from Zeta's reply
+  -> save visible Zeta reply raw text
+  -> write requested memory entries when Zeta chose to remember
 ```
 
 ## Operit Settings
@@ -76,9 +76,35 @@ OMBRE_GATEWAY_DEFAULT_SESSION_ID=zeta-main
 OMBRE_RECALL_MAX_RESULTS=5
 OMBRE_RECALL_KEYWORD_LIMIT=4
 OMBRE_RECALL_SEMANTIC_LIMIT=1
+OMBRE_MEMORY_WRITE_MODE=zeta
 ```
 
-Optional separate reflection model:
+## Memory Write Mode
+
+```text
+OMBRE_MEMORY_WRITE_MODE=zeta
+```
+
+Modes:
+
+```text
+zeta               Zeta writes hidden memory requests; gateway strips and stores them. This is the default.
+reflection         Use the older background reflection model only.
+both               Accept Zeta hidden requests and also run background reflection.
+zeta_or_reflection Use Zeta hidden requests first; run reflection only when Zeta wrote nothing.
+```
+
+When `zeta` mode is enabled, the gateway privately instructs Zeta to append this hidden block only when she wants to remember something:
+
+```text
+<zeta_memory_request>
+{"memories":[{"summary_text":"...","tags":["..."],"importance":7,"raw_ref":"auto","feel_text":"...","valence":0.8,"arousal":0.4}]}
+</zeta_memory_request>
+```
+
+The block is removed before the reply reaches Operit. Streaming replies are buffered safely so the hidden block is not shown; this may make the first streamed token arrive later than before.
+
+Optional separate reflection model, only used by `reflection`, `both`, or `zeta_or_reflection` modes:
 
 ```text
 OMBRE_REFLECTION_BASE_URL=https://api.openai.com/v1
@@ -102,6 +128,15 @@ POST /v1/chat/completions
 
 The gateway currently supports OpenAI-compatible chat completions. It supports normal and streaming responses.
 
+`GET /health` should include these fields after the hidden-memory patch is active:
+
+```json
+{
+  "memory_write_mode": "zeta",
+  "hidden_memory_request_enabled": true
+}
+```
+
 ## Existing Ombre Memories
 
 The gateway uses the same `OMBRE_BUCKETS_DIR`. Existing Ombre buckets remain in place. New Zeta raw logs and structured memory index are stored under:
@@ -115,7 +150,7 @@ Structured Zeta memories are also written as normal Ombre buckets under the `zet
 
 ## Dashboard Note
 
-This Dockerfile now starts `zeta_openai_gateway.py`, which is the model gateway. If you still want the original Dashboard/MCP UI at the same time, deploy a second Zeabur service from the same repository with the command:
+This Dockerfile now starts `zeabur_gateway_bootstrap.py`, which loads the model gateway. If you still want the original Dashboard/MCP UI at the same time, deploy a second Zeabur service from the same repository with the command:
 
 ```text
 python server.py
