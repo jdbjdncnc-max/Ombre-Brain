@@ -18,7 +18,7 @@ logger = logging.getLogger("ombre_brain.zeabur_bootstrap")
 
 
 def _port() -> int:
-    for name in ("PORT", "OMBRE_PORT"):
+    for name in ("OMBRE_PORT", "PORT"):
         value = os.environ.get(name, "").strip()
         if not value:
             continue
