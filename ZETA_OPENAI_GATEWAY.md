@@ -49,6 +49,25 @@ OMBRE_UPSTREAM_MODEL=gpt-4.1-mini
 OMBRE_BUCKETS_DIR=/app/buckets
 ```
 
+For OpenRouter, use:
+
+```text
+OMBRE_GATEWAY_TOKEN=long-random-token-for-operit
+OMBRE_UPSTREAM_BASE_URL=https://openrouter.ai/api/v1
+OMBRE_UPSTREAM_API_KEY=your-openrouter-api-key
+OMBRE_UPSTREAM_MODEL=openrouter-model-slug
+OMBRE_BUCKETS_DIR=/app/buckets
+```
+
+Optional OpenRouter app attribution headers:
+
+```text
+OMBRE_OPENROUTER_SITE_URL=https://your-zeabur-domain
+OMBRE_OPENROUTER_APP_NAME=Zeta Memory Gateway
+```
+
+`OMBRE_UPSTREAM_BASE_URL` may be either a provider base URL like `https://openrouter.ai/api/v1` or the full chat endpoint `https://openrouter.ai/api/v1/chat/completions`; the gateway normalizes both.
+
 Recommended:
 
 ```text
