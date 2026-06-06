@@ -19,6 +19,12 @@ class ZetaMemoryGateway:
         self.base_dir = Path(config["buckets_dir"]) / "gateway"
         self.raw_dir = self.base_dir / "raw"
         self.memory_index_path = self.base_dir / "memories.jsonl"
+        self.include_legacy = os.environ.get("OMBRE_RECALL_INCLUDE_LEGACY", "true").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
         self.raw_dir.mkdir(parents=True, exist_ok=True)
 
     def require_auth(self, request):
@@ -46,6 +52,7 @@ class ZetaMemoryGateway:
             "memory_index": str(self.memory_index_path),
             "auth": "token" if os.environ.get("OMBRE_GATEWAY_TOKEN", "").strip() else "open",
             "embedding": bool(self.embedding_engine and self.embedding_engine.enabled),
+            "include_legacy": self.include_legacy,
         }
 
     async def save_raw(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -202,11 +209,25 @@ class ZetaMemoryGateway:
                 if len(buckets) >= max_results:
                     break
 
+        if self.include_legacy and len(buckets) < max_results:
+            legacy_hits = await self.bucket_mgr.search(query, limit=max_results * 6)
+            for bucket in legacy_hits:
+                if bucket["id"] in seen or not self._is_legacy_memory(bucket):
+                    continue
+                bucket["gateway_source"] = "legacy"
+                buckets.append(bucket)
+                seen.add(bucket["id"])
+                if len(buckets) >= max_results:
+                    break
+
         return buckets[:max_results]
 
     async def _important_recent(self, limit: int) -> list[dict]:
         all_buckets = await self.bucket_mgr.list_all(include_archive=False)
-        candidates = [b for b in all_buckets if self._is_gateway_memory(b)]
+        candidates = [
+            b for b in all_buckets
+            if self._is_gateway_memory(b) or (self.include_legacy and self._is_legacy_memory(b))
+        ]
         candidates.sort(
             key=lambda b: (
                 int(b.get("metadata", {}).get("importance", 0)),
@@ -267,7 +288,7 @@ class ZetaMemoryGateway:
         if not record:
             record = self._parse_memory_content(bucket.get("content", ""))
         if not record:
-            return None
+            return self._format_legacy_memory(bucket)
         result = {
             "bucket_id": bucket["id"],
             "score": bucket.get("score"),
@@ -307,6 +328,27 @@ class ZetaMemoryGateway:
             elif key in ("summary_text", "raw_ref", "feel_text"):
                 record[key] = value
         return record
+
+    def _format_legacy_memory(self, bucket: dict[str, Any]) -> dict[str, Any] | None:
+        content = str(bucket.get("content") or "").strip()
+        meta = bucket.get("metadata", {})
+        summary = str(meta.get("name") or "").strip() or self._compact_text(content, 220)
+        if not summary:
+            return None
+        result = {
+            "bucket_id": bucket["id"],
+            "score": bucket.get("score"),
+            "source": bucket.get("gateway_source", "legacy"),
+            "summary_text": summary,
+            "tags": self._normalize_tags(meta.get("tags", [])),
+            "importance": self._bounded_int(meta.get("importance", 5), 1, 10),
+            "raw_ref": f"bucket://{bucket['id']}",
+        }
+        if meta.get("valence") is not None:
+            result["valence"] = meta.get("valence")
+        if meta.get("arousal") is not None:
+            result["arousal"] = meta.get("arousal")
+        return result
 
     def _injection_text(self, memories: list[dict[str, Any]]) -> str:
         if not memories:
@@ -354,6 +396,14 @@ class ZetaMemoryGateway:
         meta = bucket.get("metadata", {})
         domains = {str(d).lower() for d in meta.get("domain", [])}
         return GATEWAY_DOMAIN in domains or MEMORY_MARKER in bucket.get("content", "")
+
+    def _is_legacy_memory(self, bucket: dict[str, Any]) -> bool:
+        if self._is_gateway_memory(bucket):
+            return False
+        meta = bucket.get("metadata", {})
+        if str(meta.get("type", "")).lower() == "feel":
+            return False
+        return bool(str(bucket.get("content") or "").strip())
 
     def _parse_raw_ref(self, raw_ref: str) -> tuple[str, str] | None:
         match = re.fullmatch(r"convo://([^/]+)/([^/]+)", str(raw_ref).strip())
@@ -403,6 +453,13 @@ class ZetaMemoryGateway:
         except (TypeError, ValueError):
             number = low
         return max(low, min(high, number))
+
+    @staticmethod
+    def _compact_text(text: str, limit: int) -> str:
+        cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[:limit].rstrip() + "..."
 
 
 def _now_iso() -> str:
