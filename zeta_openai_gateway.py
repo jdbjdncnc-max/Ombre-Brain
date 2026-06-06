@@ -41,6 +41,20 @@ def _truthy(value: str) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _chat_completions_url(base_url: str) -> str:
+    cleaned = str(base_url or "").strip().rstrip("/")
+    if not cleaned:
+        return ""
+    if cleaned.endswith("/chat/completions"):
+        return cleaned
+    return f"{cleaned}/chat/completions"
+
+
+def _preview_text(text: str, limit: int = 800) -> str:
+    cleaned = str(text or "").replace("\r", " ").replace("\n", " ").strip()
+    return cleaned[:limit]
+
+
 class ZetaOpenAIGateway:
     def __init__(self, config: dict):
         self.config = config
@@ -56,6 +70,7 @@ class ZetaOpenAIGateway:
             "OMBRE_GATEWAY_UPSTREAM_BASE_URL",
             "OMBRE_GATEWAY_UPSTREAM_URL",
         ).rstrip("/")
+        self.upstream_chat_url = _chat_completions_url(self.upstream_base_url)
         self.upstream_api_key = _env(
             "OMBRE_UPSTREAM_API_KEY",
             "OMBRE_GATEWAY_UPSTREAM_API_KEY",
@@ -74,9 +89,16 @@ class ZetaOpenAIGateway:
 
         self.reflection_enabled = not _truthy(_env("OMBRE_REFLECTION_DISABLED"))
         self.reflection_base_url = _env("OMBRE_REFLECTION_BASE_URL", default=self.upstream_base_url).rstrip("/")
+        self.reflection_chat_url = _chat_completions_url(self.reflection_base_url)
         self.reflection_api_key = _env("OMBRE_REFLECTION_API_KEY", default=self.upstream_api_key)
         self.reflection_model = _env("OMBRE_REFLECTION_MODEL", default=self.upstream_model)
         self.reflection_timeout = float(_env("OMBRE_REFLECTION_TIMEOUT", default="30"))
+        self.openrouter_site_url = _env("OMBRE_OPENROUTER_SITE_URL", "OMBRE_SITE_URL")
+        self.openrouter_app_name = _env(
+            "OMBRE_OPENROUTER_APP_NAME",
+            "OMBRE_APP_NAME",
+            default="Zeta Memory Gateway",
+        )
 
         self.http = httpx.AsyncClient(timeout=120.0)
 
@@ -108,8 +130,11 @@ class ZetaOpenAIGateway:
             "token_configured": bool(self.gateway_token),
             "upstream_ready": bool(self.upstream_base_url and self.upstream_api_key),
             "upstream_base_url": self.upstream_base_url,
+            "upstream_chat_url": self.upstream_chat_url,
             "model": self.public_model,
             "reflection_enabled": self.reflection_enabled,
+            "reflection_chat_url": self.reflection_chat_url if self.reflection_enabled else "",
+            "openrouter_headers_configured": bool(self.openrouter_site_url or self.openrouter_app_name),
             "memory": self.memory_gateway.status(),
             "buckets": stats,
         })
@@ -132,7 +157,7 @@ class ZetaOpenAIGateway:
         auth = self._authorize(request)
         if auth is not None:
             return auth
-        if not self.upstream_base_url or not self.upstream_api_key:
+        if not self.upstream_chat_url or not self.upstream_api_key:
             return JSONResponse(
                 {"error": {"message": "Upstream model is not configured", "type": "server_error"}},
                 status_code=503,
@@ -173,7 +198,10 @@ class ZetaOpenAIGateway:
                 recalled=recalled,
             )
 
-        upstream_response = await self._forward_upstream(forward_payload)
+        try:
+            upstream_response = await self._forward_upstream(forward_payload)
+        except httpx.RequestError as exc:
+            return self._upstream_request_error(exc)
         if 200 <= upstream_response.status_code < 300:
             assistant_text = self._assistant_text_from_response(upstream_response)
             assistant_raw_refs = await self._save_turn(session_id, "zeta", assistant_text)
@@ -188,13 +216,9 @@ class ZetaOpenAIGateway:
         return self._proxy_response(upstream_response)
 
     async def _forward_upstream(self, payload: dict[str, Any]) -> httpx.Response:
-        url = f"{self.upstream_base_url}/chat/completions"
         return await self.http.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {self.upstream_api_key}",
-                "Content-Type": "application/json",
-            },
+            self.upstream_chat_url,
+            headers=self._upstream_headers(self.upstream_api_key),
             json=self._payload_for_upstream(payload),
         )
 
@@ -209,19 +233,19 @@ class ZetaOpenAIGateway:
     ) -> Response:
         request = self.http.build_request(
             "POST",
-            f"{self.upstream_base_url}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self.upstream_api_key}",
-                "Content-Type": "application/json",
-            },
+            self.upstream_chat_url,
+            headers=self._upstream_headers(self.upstream_api_key),
             json=self._payload_for_upstream(payload),
         )
-        upstream_response = await self.http.send(request, stream=True)
+        try:
+            upstream_response = await self.http.send(request, stream=True)
+        except httpx.RequestError as exc:
+            return self._upstream_request_error(exc)
         content_type = upstream_response.headers.get("content-type", "text/event-stream")
         if not 200 <= upstream_response.status_code < 300:
             body = await upstream_response.aread()
             await upstream_response.aclose()
-            return Response(content=body, status_code=upstream_response.status_code, media_type=content_type)
+            return self._upstream_status_error(upstream_response.status_code, content_type, body)
 
         async def stream_body():
             assistant_parts: list[str] = []
@@ -253,6 +277,18 @@ class ZetaOpenAIGateway:
         upstream_payload = deepcopy(payload)
         upstream_payload["model"] = self.upstream_model
         return upstream_payload
+
+    def _upstream_headers(self, api_key: str) -> dict[str, str]:
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        if self.openrouter_site_url:
+            headers["HTTP-Referer"] = self.openrouter_site_url
+        if self.openrouter_app_name:
+            headers["X-OpenRouter-Title"] = self.openrouter_app_name
+            headers["X-Title"] = self.openrouter_app_name
+        return headers
 
     def _prepare_forward_payload(self, payload: dict[str, Any], injected_text: str) -> dict[str, Any]:
         forward = deepcopy(payload)
@@ -327,7 +363,7 @@ class ZetaOpenAIGateway:
         assistant_raw_refs: list[str],
         recalled: dict[str, Any],
     ) -> None:
-        if not self.reflection_base_url or not self.reflection_api_key or not self.reflection_model:
+        if not self.reflection_chat_url or not self.reflection_api_key or not self.reflection_model:
             return
         raw_ref = user_raw_refs[0] if user_raw_refs else (assistant_raw_refs[0] if assistant_raw_refs else "")
         prompt = self._reflection_prompt(
@@ -338,11 +374,8 @@ class ZetaOpenAIGateway:
             recalled=recalled,
         )
         response = await self.http.post(
-            f"{self.reflection_base_url}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self.reflection_api_key}",
-                "Content-Type": "application/json",
-            },
+            self.reflection_chat_url,
+            headers=self._upstream_headers(self.reflection_api_key),
             json={
                 "model": self.reflection_model,
                 "messages": [
@@ -517,6 +550,12 @@ Return strict JSON with this shape:
                 assistant_parts.append(content)
 
     def _proxy_response(self, response: httpx.Response) -> Response:
+        if response.status_code >= 400:
+            return self._upstream_status_error(
+                response.status_code,
+                response.headers.get("content-type", ""),
+                response.content,
+            )
         headers = {
             key: value
             for key, value in response.headers.items()
@@ -527,6 +566,37 @@ Return strict JSON with this shape:
             status_code=response.status_code,
             headers=headers,
             media_type=response.headers.get("content-type"),
+        )
+
+    def _upstream_request_error(self, exc: httpx.RequestError) -> JSONResponse:
+        logger.warning("Upstream request failed | url=%s error=%s", self.upstream_chat_url, exc)
+        return JSONResponse(
+            {
+                "error": {
+                    "message": "Gateway could not reach the upstream model provider",
+                    "type": "upstream_connection_error",
+                    "upstream_chat_url": self.upstream_chat_url,
+                    "hint": "For OpenRouter use OMBRE_UPSTREAM_BASE_URL=https://openrouter.ai/api/v1, not the site URL.",
+                    "detail": str(exc),
+                }
+            },
+            status_code=502,
+        )
+
+    def _upstream_status_error(self, status_code: int, content_type: str, body: bytes) -> Response:
+        if "json" in str(content_type).lower():
+            return Response(content=body, status_code=status_code, media_type=content_type)
+        text = body.decode("utf-8", errors="replace")
+        return JSONResponse(
+            {
+                "error": {
+                    "message": f"Upstream model provider returned HTTP {status_code}",
+                    "type": "upstream_status_error",
+                    "upstream_chat_url": self.upstream_chat_url,
+                    "body_preview": _preview_text(text),
+                }
+            },
+            status_code=status_code,
         )
 
 
