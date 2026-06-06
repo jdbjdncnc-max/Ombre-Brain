@@ -13,6 +13,7 @@ RUN mkdir -p /app/buckets && chmod -R 777 /app/buckets
 
 ENV OMBRE_TRANSPORT=streamable-http
 ENV OMBRE_BUCKETS_DIR=/app/buckets
+ENV OMBRE_PORT=8000
 
 VOLUME ["/app/buckets"]
 EXPOSE 8000
