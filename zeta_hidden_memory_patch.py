@@ -198,6 +198,27 @@ def _should_run_reflection(self: Any, zeta_written_count: int) -> bool:
     return True
 
 
+def _remember_recall_debug(
+    self: Any,
+    *,
+    session_id: str,
+    user_text: str,
+    recalled: dict[str, Any],
+) -> None:
+    memories = recalled.get("memories") if isinstance(recalled, dict) else []
+    if not isinstance(memories, list):
+        memories = []
+    self.last_recall_debug = {
+        "session_id": session_id,
+        "query": recalled.get("query", user_text) if isinstance(recalled, dict) else user_text,
+        "user_text": user_text,
+        "count": len(memories),
+        "memories": memories,
+        "injection_text": recalled.get("injection_text", "") if isinstance(recalled, dict) else "",
+        "timestamp": int(time.time()),
+    }
+
+
 async def _hidden_chat_completions(self: Any, request: Any) -> Response:
     auth = self._authorize(request)
     if auth is not None:
@@ -233,6 +254,7 @@ async def _hidden_chat_completions(self: Any, request: Any) -> Response:
     })
     memory_headers = self._memory_debug_headers(recalled)
     self._log_recall(session_id, recalled)
+    self._remember_recall_debug(session_id=session_id, user_text=user_text, recalled=recalled)
     injected_text = self._build_gateway_system_text(recalled)
     forward_payload = self._prepare_forward_payload(payload, injected_text)
 
@@ -429,6 +451,7 @@ def apply_hidden_memory_patch(gateway_module: Any) -> None:
     gateway_class._write_zeta_memory_requests = _write_zeta_memory_requests
     gateway_class._augment_memory_headers = _augment_memory_headers
     gateway_class._should_run_reflection = _should_run_reflection
+    gateway_class._remember_recall_debug = _remember_recall_debug
     gateway_class._proxy_chat_response_with_text = _proxy_chat_response_with_text
     gateway_class._stream_events_from_text = _stream_events_from_text
     gateway_class._zeta_hidden_memory_patch_applied = True
