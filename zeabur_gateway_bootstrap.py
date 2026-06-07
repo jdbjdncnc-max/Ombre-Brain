@@ -1,5 +1,9 @@
 import logging
 import os
+import re
+import secrets
+import time
+from pathlib import Path
 
 import uvicorn
 from starlette.applications import Starlette
@@ -15,6 +19,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("ombre_brain.zeabur_bootstrap")
+dashboard_sessions: dict[str, float] = {}
 
 
 def _port() -> int:
@@ -72,6 +77,48 @@ def _debug_authorize(request: Request) -> JSONResponse | None:
     if provided == token:
         return None
     return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+
+
+def _dashboard_password() -> str:
+    return os.environ.get("OMBRE_DASHBOARD_PASSWORD", "").strip() or os.environ.get("OMBRE_GATEWAY_TOKEN", "").strip()
+
+
+def _dashboard_authenticated(request: Request) -> bool:
+    password = _dashboard_password()
+    if not password:
+        return True
+    token = request.cookies.get("ombre_session", "")
+    expires = dashboard_sessions.get(token, 0)
+    if token and expires > time.time():
+        return True
+    auth = request.headers.get("authorization", "")
+    header_token = request.headers.get("x-api-key", "")
+    provided = auth[7:].strip() if auth.lower().startswith("bearer ") else header_token.strip()
+    return bool(provided and provided == password)
+
+
+def _dashboard_auth_error(request: Request) -> JSONResponse | None:
+    if _dashboard_authenticated(request):
+        return None
+    return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+
+def _strip_wikilinks(text: str) -> str:
+    return re.sub(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]", lambda m: m.group(2) or m.group(1), str(text or ""))
+
+
+def _dashboard_score(meta: dict) -> float:
+    try:
+        importance = max(1, min(10, int(meta.get("importance", 5))))
+    except (TypeError, ValueError):
+        importance = 5
+    try:
+        activation = max(1.0, float(meta.get("activation_count", 1)))
+    except (TypeError, ValueError):
+        activation = 1.0
+    pinned = 20.0 if meta.get("pinned") or meta.get("protected") else 0.0
+    unresolved = 3.0 if not meta.get("resolved", False) else -5.0
+    return round(importance * 10 + min(activation, 10) + pinned + unresolved, 2)
 
 
 def _recall_debug_page() -> str:
@@ -132,13 +179,14 @@ def _recall_debug_page() -> str:
     }
     function render(data) {
       const memories = data.memories || [];
-      statusEl.textContent = `${data.mode || 'recall'} | count=${memories.length} | query=${data.query || ''}`;
+      statusEl.textContent = `${data.mode || 'recall'} | count=${memories.length} | query=${data.query || ''} | keyword=${data.keyword_query || ''}`;
       injectionEl.value = data.injection_text || '';
       resultsEl.innerHTML = memories.map((m, i) => `
         <article class="card">
           <div class="meta">
             <span>#${i + 1}</span>
             <span>source: ${esc(m.source)}</span>
+            <span>reason: ${esc(m.reason)}</span>
             <span>score: ${esc(m.score)}</span>
             <span>importance: ${esc(m.importance)}</span>
             <span>raw_ref: ${esc(m.raw_ref)}</span>
@@ -209,13 +257,225 @@ try:
             "ok": True,
             "mode": "query",
             "query": recalled.get("query", query) if isinstance(recalled, dict) else query,
+            "keyword_query": recalled.get("keyword_query", "") if isinstance(recalled, dict) else "",
             "count": len(memories) if isinstance(memories, list) else 0,
             "memories": memories if isinstance(memories, list) else [],
             "injection_text": recalled.get("injection_text", "") if isinstance(recalled, dict) else "",
         })
 
+    async def dashboard_page(request: Request) -> HTMLResponse:
+        dashboard_path = Path(__file__).with_name("dashboard.html")
+        if not dashboard_path.exists():
+            return HTMLResponse("<h1>dashboard.html not found</h1>", status_code=404)
+        return HTMLResponse(dashboard_path.read_text(encoding="utf-8"))
+
+    async def auth_status(request: Request) -> JSONResponse:
+        return JSONResponse({
+            "authenticated": _dashboard_authenticated(request),
+            "setup_needed": False,
+            "using_env_password": bool(_dashboard_password()),
+        })
+
+    async def auth_login(request: Request) -> JSONResponse:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        password = str(body.get("password") or "")
+        configured = _dashboard_password()
+        if configured and password != configured:
+            return JSONResponse({"error": "Invalid password"}, status_code=401)
+        token = secrets.token_urlsafe(32)
+        dashboard_sessions[token] = time.time() + 7 * 86400
+        response = JSONResponse({"ok": True})
+        response.set_cookie("ombre_session", token, max_age=7 * 86400, httponly=True, samesite="lax")
+        return response
+
+    async def auth_logout(request: Request) -> JSONResponse:
+        token = request.cookies.get("ombre_session", "")
+        if token:
+            dashboard_sessions.pop(token, None)
+        response = JSONResponse({"ok": True})
+        response.delete_cookie("ombre_session")
+        return response
+
+    async def auth_setup(request: Request) -> JSONResponse:
+        return JSONResponse({"error": "Dashboard password is configured with env vars on the gateway service."}, status_code=400)
+
+    async def auth_change_password(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        return JSONResponse({"error": "Change OMBRE_DASHBOARD_PASSWORD in Zeabur Variables."}, status_code=400)
+
+    def require_dashboard_gateway():
+        if zeta_openai_gateway.gateway is None:
+            return None
+        return zeta_openai_gateway.gateway
+
+    async def api_status(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"error": zeta_openai_gateway.startup_error}, status_code=503)
+        stats = await gateway.bucket_mgr.get_stats()
+        return JSONResponse({
+            "decay_engine": "gateway",
+            "embedding_enabled": bool(gateway.embedding_engine and gateway.embedding_engine.enabled),
+            "buckets": {
+                "permanent": stats.get("permanent_count", 0),
+                "dynamic": stats.get("dynamic_count", 0),
+                "archive": stats.get("archive_count", 0),
+                "total": stats.get("permanent_count", 0) + stats.get("dynamic_count", 0),
+            },
+            "using_env_password": bool(_dashboard_password()),
+            "version": "gateway-dashboard",
+        })
+
+    async def api_buckets(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"error": zeta_openai_gateway.startup_error}, status_code=503)
+        all_buckets = await gateway.bucket_mgr.list_all(include_archive=True)
+        result = []
+        for bucket in all_buckets:
+            meta = bucket.get("metadata", {})
+            result.append({
+                "id": bucket["id"],
+                "name": meta.get("name", bucket["id"]),
+                "type": meta.get("type", "dynamic"),
+                "domain": meta.get("domain", []),
+                "tags": meta.get("tags", []),
+                "valence": meta.get("valence", 0.5),
+                "arousal": meta.get("arousal", 0.3),
+                "model_valence": meta.get("model_valence"),
+                "importance": meta.get("importance", 5),
+                "resolved": meta.get("resolved", False),
+                "pinned": meta.get("pinned", False),
+                "digested": meta.get("digested", False),
+                "created": meta.get("created", ""),
+                "last_active": meta.get("last_active", ""),
+                "activation_count": meta.get("activation_count", 1),
+                "score": _dashboard_score(meta),
+                "content_preview": _strip_wikilinks(bucket.get("content", ""))[:200],
+            })
+        result.sort(key=lambda item: item["score"], reverse=True)
+        return JSONResponse(result)
+
+    async def api_bucket_detail(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"error": zeta_openai_gateway.startup_error}, status_code=503)
+        bucket = await gateway.bucket_mgr.get(request.path_params["bucket_id"])
+        if not bucket:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        meta = bucket.get("metadata", {})
+        return JSONResponse({
+            "id": bucket["id"],
+            "metadata": meta,
+            "content": _strip_wikilinks(bucket.get("content", "")),
+            "score": _dashboard_score(meta),
+        })
+
+    async def api_search(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"error": zeta_openai_gateway.startup_error}, status_code=503)
+        query = str(request.query_params.get("q") or "").strip()
+        if not query:
+            return JSONResponse({"error": "missing q parameter"}, status_code=400)
+        matches = await gateway.bucket_mgr.search(query, limit=20)
+        result = []
+        for bucket in matches:
+            meta = bucket.get("metadata", {})
+            result.append({
+                "id": bucket["id"],
+                "name": meta.get("name", bucket["id"]),
+                "score": bucket.get("score", 0),
+                "domain": meta.get("domain", []),
+                "valence": meta.get("valence", 0.5),
+                "arousal": meta.get("arousal", 0.3),
+                "content_preview": _strip_wikilinks(bucket.get("content", ""))[:200],
+            })
+        return JSONResponse(result)
+
+    async def api_network(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"error": zeta_openai_gateway.startup_error}, status_code=503)
+        all_buckets = await gateway.bucket_mgr.list_all(include_archive=False)
+        nodes = []
+        for bucket in all_buckets[:250]:
+            meta = bucket.get("metadata", {})
+            nodes.append({
+                "id": bucket["id"],
+                "name": meta.get("name", bucket["id"]),
+                "type": meta.get("type", "dynamic"),
+                "domain": meta.get("domain", []),
+                "importance": meta.get("importance", 5),
+                "valence": meta.get("valence", 0.5),
+                "arousal": meta.get("arousal", 0.3),
+                "score": _dashboard_score(meta),
+            })
+        return JSONResponse({"nodes": nodes, "edges": []})
+
+    async def api_config_get(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"error": zeta_openai_gateway.startup_error}, status_code=503)
+        return JSONResponse({
+            "dehydration_model": gateway.config.get("dehydration", {}).get("model", ""),
+            "embedding_enabled": bool(gateway.embedding_engine and gateway.embedding_engine.enabled),
+            "transport": "openai-gateway",
+            "buckets_dir": gateway.config.get("buckets_dir", ""),
+        })
+
+    async def api_not_enabled(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        return JSONResponse({"error": "This write/import endpoint is not enabled in gateway dashboard mode."}, status_code=501)
+
     app.router.routes.append(Route("/debug/recall", debug_recall_page, methods=["GET"]))
     app.router.routes.append(Route("/debug/recall.json", debug_recall_json, methods=["GET"]))
+    app.router.routes.append(Route("/", dashboard_page, methods=["GET"]))
+    app.router.routes.append(Route("/dashboard", dashboard_page, methods=["GET"]))
+    app.router.routes.append(Route("/auth/status", auth_status, methods=["GET"]))
+    app.router.routes.append(Route("/auth/login", auth_login, methods=["POST"]))
+    app.router.routes.append(Route("/auth/logout", auth_logout, methods=["POST"]))
+    app.router.routes.append(Route("/auth/setup", auth_setup, methods=["POST"]))
+    app.router.routes.append(Route("/auth/change-password", auth_change_password, methods=["POST"]))
+    app.router.routes.append(Route("/api/status", api_status, methods=["GET"]))
+    app.router.routes.append(Route("/api/buckets", api_buckets, methods=["GET"]))
+    app.router.routes.append(Route("/api/bucket/{bucket_id}", api_bucket_detail, methods=["GET"]))
+    app.router.routes.append(Route("/api/search", api_search, methods=["GET"]))
+    app.router.routes.append(Route("/api/network", api_network, methods=["GET"]))
+    app.router.routes.append(Route("/api/config", api_config_get, methods=["GET"]))
+    app.router.routes.append(Route("/api/config", api_not_enabled, methods=["POST"]))
+    app.router.routes.append(Route("/api/breath-debug", api_not_enabled, methods=["GET"]))
+    app.router.routes.append(Route("/api/import/upload", api_not_enabled, methods=["POST"]))
+    app.router.routes.append(Route("/api/import/status", api_not_enabled, methods=["GET"]))
+    app.router.routes.append(Route("/api/import/pause", api_not_enabled, methods=["POST"]))
+    app.router.routes.append(Route("/api/import/patterns", api_not_enabled, methods=["GET"]))
+    app.router.routes.append(Route("/api/import/results", api_not_enabled, methods=["GET"]))
+    app.router.routes.append(Route("/api/import/review", api_not_enabled, methods=["POST"]))
 except Exception as exc:
     logger.exception("Failed to import zeta_openai_gateway")
     app = _startup_error_app(f"{type(exc).__name__}: {exc}")
