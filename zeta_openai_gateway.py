@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import json
 import logging
 import os
@@ -55,6 +55,66 @@ def _chat_completions_url(base_url: str) -> str:
 def _preview_text(text: str, limit: int = 800) -> str:
     cleaned = str(text or "").replace("\r", " ").replace("\n", " ").strip()
     return cleaned[:limit]
+
+
+class _HiddenMemoryStreamFilter:
+    def __init__(self, parse_entries, enabled: bool):
+        self.parse_entries = parse_entries
+        self.enabled = enabled
+        self.buffer = ""
+        self.hidden_buffer = ""
+        self.hidden = False
+        self.entries: list[dict[str, Any]] = []
+        self.tail_len = max(0, len(MEMORY_REQUEST_OPEN) - 1)
+
+    def feed(self, text: str) -> str:
+        if not self.enabled or not text:
+            return text or ""
+        output = []
+        self._feed(text, output)
+        return "".join(output)
+
+    def flush(self) -> str:
+        if not self.enabled:
+            return ""
+        if self.hidden:
+            self.hidden_buffer = ""
+            return ""
+        tail = self.buffer
+        self.buffer = ""
+        return tail
+
+    def _feed(self, text: str, output: list[str]) -> None:
+        if self.hidden:
+            self.hidden_buffer += text
+            close_idx = self.hidden_buffer.lower().find(MEMORY_REQUEST_CLOSE.lower())
+            if close_idx < 0:
+                return
+            raw_json = self.hidden_buffer[:close_idx].strip()
+            self.entries.extend(self.parse_entries(raw_json))
+            rest = self.hidden_buffer[close_idx + len(MEMORY_REQUEST_CLOSE):]
+            self.hidden_buffer = ""
+            self.hidden = False
+            if rest:
+                self._feed(rest, output)
+            return
+
+        self.buffer += text
+        open_idx = self.buffer.lower().find(MEMORY_REQUEST_OPEN.lower())
+        if open_idx >= 0:
+            visible = self.buffer[:open_idx]
+            if visible:
+                output.append(visible)
+            self.hidden = True
+            hidden_rest = self.buffer[open_idx + len(MEMORY_REQUEST_OPEN):]
+            self.buffer = ""
+            self._feed(hidden_rest, output)
+            return
+
+        if len(self.buffer) > self.tail_len:
+            emit_len = len(self.buffer) - self.tail_len
+            output.append(self.buffer[:emit_len])
+            self.buffer = self.buffer[emit_len:]
 
 
 class ZetaOpenAIGateway:
@@ -263,43 +323,128 @@ class ZetaOpenAIGateway:
         recalled: dict[str, Any],
         memory_headers: dict[str, str],
     ) -> Response:
-        buffered_payload = deepcopy(payload)
-        buffered_payload["stream"] = False
         try:
-            upstream_response = await self._forward_upstream(buffered_payload)
+            stream_context = self.http.stream(
+                "POST",
+                self.upstream_chat_url,
+                headers=self._upstream_headers(self.upstream_api_key),
+                json=self._payload_for_upstream(payload),
+            )
+            upstream_response = await stream_context.__aenter__()
         except httpx.RequestError as exc:
             return self._upstream_request_error(exc)
-        if not 200 <= upstream_response.status_code < 300:
-            return self._proxy_response(upstream_response, extra_headers=memory_headers)
 
-        assistant_text = self._assistant_text_from_response(upstream_response)
-        visible_text, zeta_entries = self._extract_zeta_memory_request(assistant_text)
-        assistant_raw_refs = await self._save_turn(session_id, "zeta", visible_text)
-        zeta_written = await self._write_zeta_memory_requests(
-            session_id=session_id,
-            entries=zeta_entries,
-            default_raw_ref=user_raw_refs[0] if user_raw_refs else (assistant_raw_refs[0] if assistant_raw_refs else ""),
-        )
-        self._augment_memory_headers(memory_headers, zeta_entries, zeta_written)
-        if self._should_run_reflection(zeta_written):
-            self._schedule_reflection(
-                session_id=session_id,
-                user_text=user_text,
-                assistant_text=visible_text,
-                user_raw_refs=user_raw_refs,
-                assistant_raw_refs=assistant_raw_refs,
-                recalled=recalled,
+        if not 200 <= upstream_response.status_code < 300:
+            body = await upstream_response.aread()
+            await stream_context.__aexit__(None, None, None)
+            return self._upstream_status_error(
+                upstream_response.status_code,
+                upstream_response.headers.get("content-type", ""),
+                body,
             )
 
-        async def stream_body():
-            for event in self._stream_events_from_text(upstream_response, visible_text):
-                yield event
+        assistant_parts: list[str] = []
+        stream_filter = _HiddenMemoryStreamFilter(
+            self._parse_zeta_memory_json,
+            bool(getattr(self, "hidden_memory_enabled", False)),
+        )
+        last_chunk: dict[str, Any] = {}
+        finalized = False
 
+        def content_chunk(text: str) -> bytes:
+            base = deepcopy(last_chunk) if last_chunk else {
+                "id": f"chatcmpl-zeta-{int(time.time())}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": self.public_model,
+            }
+            base["choices"] = [{
+                "index": 0,
+                "delta": {"content": text},
+                "finish_reason": None,
+            }]
+            return f"data: {json.dumps(base, ensure_ascii=False)}\n\n".encode("utf-8")
+
+        async def finalize_stream() -> list[bytes]:
+            nonlocal finalized
+            if finalized:
+                return []
+            finalized = True
+            tail = stream_filter.flush()
+            emitted = []
+            if tail:
+                assistant_parts.append(tail)
+                emitted.append(content_chunk(tail))
+            visible_text = "".join(assistant_parts).strip()
+            assistant_raw_refs = await self._save_turn(session_id, "zeta", visible_text)
+            zeta_written = await self._write_zeta_memory_requests(
+                session_id=session_id,
+                entries=stream_filter.entries[:3],
+                default_raw_ref=user_raw_refs[0] if user_raw_refs else (
+                    assistant_raw_refs[0] if assistant_raw_refs else ""
+                ),
+            )
+            if self._should_run_reflection(zeta_written):
+                self._schedule_reflection(
+                    session_id=session_id,
+                    user_text=user_text,
+                    assistant_text=visible_text,
+                    user_raw_refs=user_raw_refs,
+                    assistant_raw_refs=assistant_raw_refs,
+                    recalled=recalled,
+                )
+            return emitted
+
+        async def stream_body():
+            nonlocal last_chunk
+            try:
+                async for line in upstream_response.aiter_lines():
+                    if not line:
+                        continue
+                    if not line.startswith("data:"):
+                        yield (line + "\n\n").encode("utf-8")
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        for event in await finalize_stream():
+                            yield event
+                        yield b"data: [DONE]\n\n"
+                        continue
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        yield (line + "\n\n").encode("utf-8")
+                        continue
+                    if isinstance(chunk, dict):
+                        last_chunk = chunk
+                    choices = chunk.get("choices") if isinstance(chunk, dict) else None
+                    if isinstance(choices, list):
+                        for choice in choices:
+                            delta = choice.get("delta") if isinstance(choice, dict) else None
+                            if not isinstance(delta, dict) or not isinstance(delta.get("content"), str):
+                                continue
+                            visible = stream_filter.feed(delta["content"])
+                            if visible:
+                                assistant_parts.append(visible)
+                            delta["content"] = visible
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+                for event in await finalize_stream():
+                    yield event
+            finally:
+                await stream_context.__aexit__(None, None, None)
+
+        headers = {
+            key: value
+            for key, value in upstream_response.headers.items()
+            if key.lower() not in {"content-length", "transfer-encoding", "connection"}
+        }
+        headers.update({"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        headers.update(memory_headers)
         return StreamingResponse(
             stream_body(),
-            status_code=200,
+            status_code=upstream_response.status_code,
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", **memory_headers},
+            headers=headers,
         )
 
     def _payload_for_upstream(self, payload: dict[str, Any]) -> dict[str, Any]:
