@@ -30,6 +30,11 @@ class ZetaMemoryGateway:
             0,
             8,
         )
+        self.natural_limit = self._bounded_int(
+            os.environ.get("OMBRE_RECALL_NATURAL_LIMIT", "1"),
+            0,
+            8,
+        )
         self.raw_dir.mkdir(parents=True, exist_ok=True)
 
     def require_auth(self, request):
@@ -59,6 +64,7 @@ class ZetaMemoryGateway:
             "embedding": bool(self.embedding_engine and self.embedding_engine.enabled),
             "include_legacy": self.include_legacy,
             "legacy_keyword_limit": self.legacy_keyword_limit,
+            "natural_limit": self.natural_limit,
         }
 
     async def save_raw(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -145,6 +151,7 @@ class ZetaMemoryGateway:
         return {
             "ok": True,
             "query": query,
+            "keyword_query": self._keyword_query(query),
             "count": len(memories),
             "memories": memories,
             "injection_text": self._injection_text(memories),
@@ -173,39 +180,46 @@ class ZetaMemoryGateway:
     async def _recall_buckets(self, query: str, keyword_limit: int, semantic_limit: int, max_results: int) -> list[dict]:
         seen = set()
         buckets = []
+        keyword_query = self._keyword_query(query)
+        natural_limit = min(self.natural_limit, max_results)
+        semantic_target = min(semantic_limit, max(0, max_results - natural_limit))
+        keyword_budget = max(0, max_results - semantic_target - natural_limit)
 
-        if self.include_legacy and self.legacy_keyword_limit and keyword_limit:
-            legacy_target = min(self.legacy_keyword_limit, max_results)
-            legacy_hits = await self.bucket_mgr.search(query, limit=max(max_results * 12, legacy_target * 8))
+        if self.include_legacy and self.legacy_keyword_limit and keyword_limit and keyword_budget:
+            legacy_target = min(self.legacy_keyword_limit, keyword_budget)
+            legacy_hits = await self.bucket_mgr.search(keyword_query, limit=max(max_results * 12, legacy_target * 8))
             legacy_added = 0
             for bucket in legacy_hits:
                 if bucket["id"] in seen or not self._is_legacy_memory(bucket):
                     continue
                 bucket["gateway_source"] = "legacy_keyword"
+                bucket["gateway_reason"] = "keyword slot: old Ombre bucket"
                 buckets.append(bucket)
                 seen.add(bucket["id"])
                 legacy_added += 1
-                if legacy_added >= legacy_target or len(buckets) >= max_results:
+                if legacy_added >= legacy_target or len(buckets) >= keyword_budget:
                     break
 
-        if keyword_limit:
+        if keyword_limit and len(buckets) < keyword_budget:
+            gateway_target = max(0, keyword_budget - len(buckets))
             keyword_hits = await self.bucket_mgr.search(
-                query,
-                limit=max(keyword_limit * 3, keyword_limit),
+                keyword_query,
+                limit=max(keyword_limit * 4, gateway_target * 4, keyword_limit),
                 domain_filter=[GATEWAY_DOMAIN],
             )
+            gateway_added = 0
             for bucket in keyword_hits:
                 if self._is_gateway_memory(bucket) and bucket["id"] not in seen:
                     bucket["gateway_source"] = "keyword"
+                    bucket["gateway_reason"] = "keyword slot: structured gateway memory"
                     buckets.append(bucket)
                     seen.add(bucket["id"])
-                if len([b for b in buckets if b.get("gateway_source") == "keyword"]) >= keyword_limit:
-                    break
-                if len(buckets) >= max_results:
+                    gateway_added += 1
+                if gateway_added >= gateway_target or len(buckets) >= keyword_budget:
                     break
 
-        if semantic_limit and self.embedding_engine and self.embedding_engine.enabled:
-            semantic_hits = await self.embedding_engine.search_similar(query, top_k=semantic_limit * 10 + 10)
+        if semantic_target and self.embedding_engine and self.embedding_engine.enabled:
+            semantic_hits = await self.embedding_engine.search_similar(query, top_k=semantic_target * 10 + 10)
             semantic_added = 0
             for bucket_id, semantic_score in semantic_hits:
                 if bucket_id in seen:
@@ -217,34 +231,61 @@ class ZetaMemoryGateway:
                     continue
                 bucket["score"] = round(float(semantic_score) * 100, 2)
                 bucket["gateway_source"] = "semantic" if self._is_gateway_memory(bucket) else "legacy_semantic"
+                bucket["gateway_reason"] = "semantic slot"
                 buckets.append(bucket)
                 seen.add(bucket_id)
                 semantic_added += 1
-                if semantic_added >= semantic_limit:
+                if semantic_added >= semantic_target or len(buckets) >= max_results:
+                    break
+
+        if natural_limit and len(buckets) < max_results:
+            natural_hits = await self._natural_float(seen, natural_limit)
+            for bucket in natural_hits:
+                buckets.append(bucket)
+                seen.add(bucket["id"])
+                if len(buckets) >= max_results:
                     break
 
         if len(buckets) < max_results:
-            fill_hits = await self.bucket_mgr.search(query, limit=max_results * 3, domain_filter=[GATEWAY_DOMAIN])
+            fill_hits = await self.bucket_mgr.search(keyword_query, limit=max_results * 4, domain_filter=[GATEWAY_DOMAIN])
             for bucket in fill_hits:
                 if self._is_gateway_memory(bucket) and bucket["id"] not in seen:
                     bucket["gateway_source"] = "fill"
+                    bucket["gateway_reason"] = "keyword backfill"
                     buckets.append(bucket)
                     seen.add(bucket["id"])
                 if len(buckets) >= max_results:
                     break
 
         if self.include_legacy and len(buckets) < max_results:
-            legacy_hits = await self.bucket_mgr.search(query, limit=max_results * 6)
+            legacy_hits = await self.bucket_mgr.search(keyword_query, limit=max_results * 8)
             for bucket in legacy_hits:
                 if bucket["id"] in seen or not self._is_legacy_memory(bucket):
                     continue
                 bucket["gateway_source"] = "legacy_fill"
+                bucket["gateway_reason"] = "old Ombre backfill"
                 buckets.append(bucket)
                 seen.add(bucket["id"])
                 if len(buckets) >= max_results:
                     break
 
         return buckets[:max_results]
+
+    async def _natural_float(self, seen: set[str], limit: int) -> list[dict]:
+        all_buckets = await self.bucket_mgr.list_all(include_archive=False)
+        candidates = []
+        for bucket in all_buckets:
+            if bucket["id"] in seen:
+                continue
+            if not (self._is_gateway_memory(bucket) or (self.include_legacy and self._is_legacy_memory(bucket))):
+                continue
+            meta = bucket.get("metadata", {})
+            bucket["gateway_source"] = "recent_emotional"
+            bucket["gateway_reason"] = "natural slot: emotion/time/importance"
+            bucket["natural_score"] = self._natural_score(meta)
+            candidates.append(bucket)
+        candidates.sort(key=lambda b: b.get("natural_score", 0), reverse=True)
+        return candidates[:limit]
 
     async def _important_recent(self, limit: int) -> list[dict]:
         all_buckets = await self.bucket_mgr.list_all(include_archive=False)
@@ -317,6 +358,7 @@ class ZetaMemoryGateway:
             "bucket_id": bucket["id"],
             "score": bucket.get("score"),
             "source": bucket.get("gateway_source", "search"),
+            "reason": bucket.get("gateway_reason", ""),
             "summary_text": record.get("summary_text", ""),
             "tags": record.get("tags", []),
             "importance": record.get("importance"),
@@ -367,6 +409,7 @@ class ZetaMemoryGateway:
             "bucket_id": bucket["id"],
             "score": bucket.get("score"),
             "source": bucket.get("gateway_source", "legacy"),
+            "reason": bucket.get("gateway_reason", ""),
             "summary_text": summary,
             "tags": self._normalize_tags(meta.get("tags", [])),
             "importance": self._bounded_int(meta.get("importance", 5), 1, 10),
@@ -387,6 +430,7 @@ class ZetaMemoryGateway:
                 f"{idx}. {memory.get('summary_text', '')}\n"
                 f"   tags: {', '.join(memory.get('tags') or [])}\n"
                 f"   importance: {memory.get('importance')}\n"
+                f"   reason: {memory.get('reason') or memory.get('source', '')}\n"
                 f"   raw_ref: {memory.get('raw_ref', '')}"
             )
             if memory.get("feel_text"):
@@ -421,6 +465,73 @@ class ZetaMemoryGateway:
         else:
             text = "\n".join(p for p in (current_text, recent_context) if p)
         return text[:4000]
+
+    def _keyword_query(self, text: str) -> str:
+        text = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not text:
+            return ""
+        quoted = re.search(r"[\"'\u201c\u2018\u300c\u300e\u300a](.{2,32}?)[\"'\u201d\u2019\u300d\u300f\u300b]", text)
+        if quoted:
+            return quoted.group(1).strip()
+        cjk_chunks = re.findall(r"[\u4e00-\u9fffA-Za-z0-9_ -]{2,32}", text)
+        stop_words = [
+            "\u4f60\u8fd8\u8bb0\u5f97",
+            "\u8fd8\u8bb0\u5f97",
+            "\u8bb0\u4e0d\u8bb0\u5f97",
+            "\u77e5\u4e0d\u77e5\u9053",
+            "\u80fd\u4e0d\u80fd",
+            "\u53ef\u4ee5",
+            "\u5e2e\u6211",
+            "\u6211\u4eec",
+            "\u4e4b\u524d",
+            "\u4ee5\u524d",
+            "\u521a\u521a",
+            "\u90a3\u4e2a",
+            "\u8fd9\u4e2a",
+            "\u4e8b\u60c5",
+            "\u5185\u5bb9",
+            "\u56de\u5fc6",
+            "\u8bb0\u5fc6",
+            "\u76f8\u5173",
+            "\u4ec0\u4e48",
+            "\u600e\u4e48",
+            "\u4e3a\u4ec0\u4e48",
+            "\u662f\u4e0d\u662f",
+            "\u6709\u6ca1\u6709",
+            "\u5417",
+            "\u5462",
+            "\u554a",
+            "\u5440",
+            "\u7684",
+            "\u4e86",
+        ]
+        candidates = []
+        for chunk in cjk_chunks:
+            cleaned = chunk.strip(" _-")
+            for word in stop_words:
+                cleaned = cleaned.replace(word, " ")
+            cleaned = re.sub(r"\s+", " ", cleaned).strip(" _-")
+            if 2 <= len(cleaned) <= 18:
+                candidates.append(cleaned)
+        if candidates:
+            candidates.sort(key=lambda item: (len(item), item), reverse=True)
+            return candidates[0]
+        return text[:80]
+
+    def _natural_score(self, meta: dict[str, Any]) -> float:
+        importance = self._bounded_int(meta.get("importance", 5), 1, 10) / 10.0
+        try:
+            arousal = max(0.0, min(1.0, float(meta.get("arousal", 0.3))))
+        except (TypeError, ValueError):
+            arousal = 0.3
+        try:
+            activation = max(1.0, float(meta.get("activation_count", 1)))
+        except (TypeError, ValueError):
+            activation = 1.0
+        recency = self._recency_score(meta.get("last_active") or meta.get("created"))
+        unresolved = 0.15 if not meta.get("resolved", False) else -0.2
+        pinned = 0.5 if meta.get("pinned") or meta.get("protected") else 0.0
+        return importance * 0.35 + arousal * 0.2 + min(1.0, activation / 8.0) * 0.15 + recency * 0.2 + unresolved + pinned
 
     def _is_gateway_memory(self, bucket: dict[str, Any]) -> bool:
         meta = bucket.get("metadata", {})
@@ -490,6 +601,19 @@ class ZetaMemoryGateway:
         if len(cleaned) <= limit:
             return cleaned
         return cleaned[:limit].rstrip() + "..."
+
+    @staticmethod
+    def _recency_score(value: Any) -> float:
+        raw = str(value or "").strip()
+        if not raw:
+            return 0.2
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+            days = max(0.0, (now - dt).total_seconds() / 86400.0)
+        except ValueError:
+            return 0.2
+        return 1.0 / (1.0 + days / 14.0)
 
 
 def _now_iso() -> str:
