@@ -264,6 +264,90 @@ def _recall_debug_page() -> str:
 """.strip()
 
 
+def _dashboard_cleanup_script() -> str:
+    return """
+<script>
+(function() {
+  function apiFetch(url, options) {
+    options = options || {};
+    options.headers = Object.assign({}, options.headers || {});
+    if (window.localStorage) {
+      var token = localStorage.getItem('zeta-dashboard-token') || localStorage.getItem('zeta-debug-token') || '';
+      if (token && !options.headers['x-api-key']) options.headers['x-api-key'] = token;
+    }
+    return fetch(url, options);
+  }
+  window.exportMemories = async function() {
+    try {
+      var res = await apiFetch('/api/export');
+      var data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'export failed');
+      var blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'ombre-memory-export-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert('导出失败: ' + e.message);
+    }
+  };
+  window.archiveBucket = async function(id) {
+    if (!confirm('确定把这个记忆桶移入归档？归档后不会占正常召回位置。')) return;
+    try {
+      var res = await apiFetch('/api/bucket/' + encodeURIComponent(id) + '/archive', {method: 'POST'});
+      var data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'archive failed');
+      if (typeof closeDetail === 'function') closeDetail();
+      if (typeof loadBuckets === 'function') await loadBuckets();
+      else location.reload();
+    } catch (e) {
+      alert('归档失败: ' + e.message);
+    }
+  };
+  window.deleteBucket = async function(id) {
+    if (!confirm('确定彻底删除这个记忆桶？这个操作不可撤销，建议先导出备份。')) return;
+    try {
+      var res = await apiFetch('/api/bucket/' + encodeURIComponent(id), {method: 'DELETE'});
+      var data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'delete failed');
+      if (typeof closeDetail === 'function') closeDetail();
+      if (typeof loadBuckets === 'function') await loadBuckets();
+      else location.reload();
+    } catch (e) {
+      alert('删除失败: ' + e.message);
+    }
+  };
+  function addButtons(id) {
+    var content = document.getElementById('detail-content');
+    if (!content || content.querySelector('[data-zeta-cleanup-actions]')) return;
+    var title = content.querySelector('h2');
+    var row = document.createElement('div');
+    row.setAttribute('data-zeta-cleanup-actions', '1');
+    row.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px;';
+    row.innerHTML =
+      '<button class="btn" onclick="exportMemories()">导出全部</button>' +
+      '<button class="btn" onclick="archiveBucket(\'' + String(id).replace(/'/g, "\\'") + '\')">归档此桶</button>' +
+      '<button class="btn danger" onclick="deleteBucket(\'' + String(id).replace(/'/g, "\\'") + '\')">删除此桶</button>';
+    if (title && title.parentNode) title.parentNode.insertBefore(row, title.nextSibling);
+    else content.insertBefore(row, content.firstChild);
+  }
+  var originalShowDetail = window.showDetail;
+  if (typeof originalShowDetail === 'function') {
+    window.showDetail = async function(id) {
+      var result = await originalShowDetail.apply(this, arguments);
+      setTimeout(function() { addButtons(id); }, 0);
+      return result;
+    };
+  }
+})();
+</script>
+""".strip()
+
+
 try:
     import zeta_openai_gateway
     from zeta_hidden_memory_patch import apply_hidden_memory_patch
@@ -388,7 +472,13 @@ try:
         dashboard_path = Path(__file__).with_name("dashboard.html")
         if not dashboard_path.exists():
             return HTMLResponse("<h1>dashboard.html not found</h1>", status_code=404)
-        return HTMLResponse(dashboard_path.read_text(encoding="utf-8"))
+        html = dashboard_path.read_text(encoding="utf-8")
+        script = _dashboard_cleanup_script()
+        if "</body>" in html:
+            html = html.replace("</body>", script + "\n</body>", 1)
+        else:
+            html += "\n" + script
+        return HTMLResponse(html)
 
     async def auth_status(request: Request) -> JSONResponse:
         return JSONResponse({
