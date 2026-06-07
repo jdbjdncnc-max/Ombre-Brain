@@ -211,6 +211,7 @@ def _remember_recall_debug(
     self.last_recall_debug = {
         "session_id": session_id,
         "query": recalled.get("query", user_text) if isinstance(recalled, dict) else user_text,
+        "keyword_query": recalled.get("keyword_query", "") if isinstance(recalled, dict) else "",
         "user_text": user_text,
         "count": len(memories),
         "memories": memories,
