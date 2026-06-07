@@ -152,6 +152,7 @@ class ZetaMemoryGateway:
             "ok": True,
             "query": query,
             "keyword_query": self._keyword_query(query),
+            "keyword_terms": self._keyword_terms(query),
             "count": len(memories),
             "memories": memories,
             "injection_text": self._injection_text(memories),
@@ -180,14 +181,15 @@ class ZetaMemoryGateway:
     async def _recall_buckets(self, query: str, keyword_limit: int, semantic_limit: int, max_results: int) -> list[dict]:
         seen = set()
         buckets = []
-        keyword_query = self._keyword_query(query)
+        keyword_terms = self._keyword_terms(query)
+        keyword_query = " ".join(keyword_terms)
         natural_limit = min(self.natural_limit, max_results)
         semantic_target = min(semantic_limit, max(0, max_results - natural_limit))
         keyword_budget = max(0, max_results - semantic_target - natural_limit)
 
         if self.include_legacy and self.legacy_keyword_limit and keyword_limit and keyword_budget:
             legacy_target = min(self.legacy_keyword_limit, keyword_budget)
-            legacy_hits = await self.bucket_mgr.search(keyword_query, limit=max(max_results * 12, legacy_target * 8))
+            legacy_hits = await self._keyword_search(keyword_terms, limit=max(max_results * 12, legacy_target * 8))
             legacy_added = 0
             for bucket in legacy_hits:
                 if bucket["id"] in seen or not self._is_legacy_memory(bucket):
@@ -202,8 +204,8 @@ class ZetaMemoryGateway:
 
         if keyword_limit and len(buckets) < keyword_budget:
             gateway_target = max(0, keyword_budget - len(buckets))
-            keyword_hits = await self.bucket_mgr.search(
-                keyword_query,
+            keyword_hits = await self._keyword_search(
+                keyword_terms,
                 limit=max(keyword_limit * 4, gateway_target * 4, keyword_limit),
                 domain_filter=[GATEWAY_DOMAIN],
             )
@@ -247,7 +249,7 @@ class ZetaMemoryGateway:
                     break
 
         if len(buckets) < max_results:
-            fill_hits = await self.bucket_mgr.search(keyword_query, limit=max_results * 4, domain_filter=[GATEWAY_DOMAIN])
+            fill_hits = await self._keyword_search(keyword_terms, limit=max_results * 4, domain_filter=[GATEWAY_DOMAIN])
             for bucket in fill_hits:
                 if self._is_gateway_memory(bucket) and bucket["id"] not in seen:
                     bucket["gateway_source"] = "fill"
@@ -258,7 +260,7 @@ class ZetaMemoryGateway:
                     break
 
         if self.include_legacy and len(buckets) < max_results:
-            legacy_hits = await self.bucket_mgr.search(keyword_query, limit=max_results * 8)
+            legacy_hits = await self._keyword_search(keyword_terms, limit=max_results * 8)
             for bucket in legacy_hits:
                 if bucket["id"] in seen or not self._is_legacy_memory(bucket):
                     continue
@@ -270,6 +272,18 @@ class ZetaMemoryGateway:
                     break
 
         return buckets[:max_results]
+
+    async def _keyword_search(self, terms: list[str], limit: int, domain_filter: list[str] | None = None) -> list[dict]:
+        merged = {}
+        for term in terms[:6]:
+            hits = await self.bucket_mgr.search(term, limit=max(limit, 4), domain_filter=domain_filter)
+            for bucket in hits:
+                existing = merged.get(bucket["id"])
+                if not existing or float(bucket.get("score") or 0) > float(existing.get("score") or 0):
+                    merged[bucket["id"]] = bucket
+        ranked = list(merged.values())
+        ranked.sort(key=lambda bucket: float(bucket.get("score") or 0), reverse=True)
+        return ranked[:limit]
 
     async def _natural_float(self, seen: set[str], limit: int) -> list[dict]:
         all_buckets = await self.bucket_mgr.list_all(include_archive=False)
@@ -467,13 +481,47 @@ class ZetaMemoryGateway:
         return text[:4000]
 
     def _keyword_query(self, text: str) -> str:
-        text = re.sub(r"\s+", " ", str(text or "")).strip()
+        return " ".join(self._keyword_terms(text))
+
+    def _keyword_terms(self, text: str, limit: int = 5) -> list[str]:
+        text = self._clean_keyword_text(text)
         if not text:
-            return ""
-        quoted = re.search(r"[\"'\u201c\u2018\u300c\u300e\u300a](.{2,32}?)[\"'\u201d\u2019\u300d\u300f\u300b]", text)
-        if quoted:
-            return quoted.group(1).strip()
-        cjk_chunks = re.findall(r"[\u4e00-\u9fffA-Za-z0-9_ -]{2,32}", text)
+            return []
+        terms = []
+        for quoted in re.findall(r"[\"'\u201c\u2018\u300c\u300e\u300a](.{2,32}?)[\"'\u201d\u2019\u300d\u300f\u300b]", text):
+            self._add_keyword_candidate(terms, quoted, limit)
+        text_without_quotes = re.sub(
+            r"[\"'\u201c\u2018\u300c\u300e\u300a].{2,32}?[\"'\u201d\u2019\u300d\u300f\u300b]",
+            " ",
+            text,
+        )
+        ascii_stop = {
+            "filename",
+            "file",
+            "image",
+            "attachment",
+            "content",
+            "message",
+            "user",
+            "assistant",
+            "system",
+            "http",
+            "https",
+            "true",
+            "false",
+            "null",
+            "none",
+            "png",
+            "jpg",
+            "jpeg",
+            "webp",
+            "json",
+        }
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{1,30}", text_without_quotes):
+            lowered = token.lower()
+            if lowered in ascii_stop:
+                continue
+            self._add_keyword_candidate(terms, token, limit)
         stop_words = [
             "\u4f60\u8fd8\u8bb0\u5f97",
             "\u8fd8\u8bb0\u5f97",
@@ -504,19 +552,48 @@ class ZetaMemoryGateway:
             "\u5440",
             "\u7684",
             "\u4e86",
+            "\u63d0\u5230",
+            "\u804a\u5230",
+            "\u8bf4\u5230",
+            "\u4e00\u4e0b",
+            "\u6211\u521a\u521a",
+            "\u4e00\u53e5\u8bdd\u91cc",
+            "\u7b49\u7b49\u540d\u8bcd",
+            "\u7b49\u7b49",
+            "\u540d\u8bcd",
         ]
-        candidates = []
-        for chunk in cjk_chunks:
-            cleaned = chunk.strip(" _-")
+        for chunk in re.findall(r"[\u4e00-\u9fff]{2,32}", text_without_quotes):
+            cleaned = chunk.strip()
             for word in stop_words:
                 cleaned = cleaned.replace(word, " ")
             cleaned = re.sub(r"\s+", " ", cleaned).strip(" _-")
             if 2 <= len(cleaned) <= 18:
-                candidates.append(cleaned)
-        if candidates:
-            candidates.sort(key=lambda item: (len(item), item), reverse=True)
-            return candidates[0]
-        return text[:80]
+                self._add_keyword_candidate(terms, cleaned, limit)
+        if terms:
+            return terms[:limit]
+        fallback = text.strip(" _-")
+        return [fallback[:80]] if fallback else []
+
+    @staticmethod
+    def _clean_keyword_text(text: Any) -> str:
+        cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+        cleaned = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", cleaned)
+        cleaned = re.sub(r"https?://\S+", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\b(?:file_?name|filename|name)\s*=\s*[^,\s;，。]+", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\b(?:mime|type|size|path|url)\s*=\s*[^,\s;，。]+", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\bfilename\b", " ", cleaned, flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", cleaned).strip()
+
+    @staticmethod
+    def _add_keyword_candidate(terms: list[str], value: str, limit: int) -> None:
+        cleaned = re.sub(r"\s+", " ", str(value or "")).strip(" _-:：,，.。;；")
+        if not cleaned or cleaned == "=" or len(cleaned) > 32:
+            return
+        if cleaned.lower() in {term.lower() for term in terms}:
+            return
+        terms.append(cleaned)
+        if len(terms) > limit:
+            del terms[limit:]
 
     def _natural_score(self, meta: dict[str, Any]) -> float:
         importance = self._bounded_int(meta.get("importance", 5), 1, 10) / 10.0
