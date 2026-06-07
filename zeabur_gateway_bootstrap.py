@@ -506,6 +506,47 @@ try:
             "score": _dashboard_score(meta),
         })
 
+    async def api_bucket_delete(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"error": zeta_openai_gateway.startup_error}, status_code=503)
+        bucket_id = request.path_params["bucket_id"]
+        ok = await gateway.bucket_mgr.delete(bucket_id)
+        if not ok:
+            return JSONResponse({"error": "not found or delete failed"}, status_code=404)
+        return JSONResponse({"ok": True, "deleted": bucket_id})
+
+    async def api_bucket_archive(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"error": zeta_openai_gateway.startup_error}, status_code=503)
+        bucket_id = request.path_params["bucket_id"]
+        ok = await gateway.bucket_mgr.archive(bucket_id)
+        if not ok:
+            return JSONResponse({"error": "not found or archive failed"}, status_code=404)
+        return JSONResponse({"ok": True, "archived": bucket_id})
+
+    async def api_export(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"error": zeta_openai_gateway.startup_error}, status_code=503)
+        all_buckets = await gateway.bucket_mgr.list_all(include_archive=True)
+        return JSONResponse({
+            "version": 1,
+            "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "count": len(all_buckets),
+            "buckets": all_buckets,
+        })
+
     async def api_search(request: Request) -> JSONResponse:
         err = _dashboard_auth_error(request)
         if err is not None:
@@ -588,8 +629,11 @@ try:
     app.router.routes.append(Route("/api/status", api_status, methods=["GET"]))
     app.router.routes.append(Route("/api/buckets", api_buckets, methods=["GET"]))
     app.router.routes.append(Route("/api/bucket/{bucket_id}", api_bucket_detail, methods=["GET"]))
+    app.router.routes.append(Route("/api/bucket/{bucket_id}", api_bucket_delete, methods=["DELETE"]))
+    app.router.routes.append(Route("/api/bucket/{bucket_id}/archive", api_bucket_archive, methods=["POST"]))
     app.router.routes.append(Route("/api/search", api_search, methods=["GET"]))
     app.router.routes.append(Route("/api/network", api_network, methods=["GET"]))
+    app.router.routes.append(Route("/api/export", api_export, methods=["GET"]))
     app.router.routes.append(Route("/api/config", api_config_get, methods=["GET"]))
     app.router.routes.append(Route("/api/config", api_not_enabled, methods=["POST"]))
     app.router.routes.append(Route("/api/breath-debug", api_not_enabled, methods=["GET"]))
