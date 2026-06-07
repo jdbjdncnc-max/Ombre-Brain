@@ -121,6 +121,49 @@ def _dashboard_score(meta: dict) -> float:
     return round(importance * 10 + min(activation, 10) + pinned + unresolved, 2)
 
 
+def _normalize_tags(value) -> list[str]:
+    if isinstance(value, list):
+        raw_tags = value
+    else:
+        raw_tags = str(value or "").split(",")
+    tags = []
+    for tag in raw_tags:
+        tag = str(tag).strip()
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags
+
+
+def _compact_text(text: str, limit: int) -> str:
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[:limit].rstrip() + "..."
+
+
+def _bounded_int(value, low: int, high: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = low
+    return max(low, min(high, number))
+
+
+def _bounded_float_or_none(value):
+    if value is None or value == "":
+        return None
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _diary_ref(visibility: str, diary_id: str) -> str:
+    safe_visibility = "public" if visibility == "public" else "private"
+    safe_id = re.sub(r"[^A-Za-z0-9_.:-]+", "_", str(diary_id or "").strip())[:120]
+    return f"diary://{safe_visibility}/{safe_id or 'unknown'}"
+
+
 def _recall_debug_page() -> str:
     return """
 <!doctype html>
@@ -179,7 +222,8 @@ def _recall_debug_page() -> str:
     }
     function render(data) {
       const memories = data.memories || [];
-      statusEl.textContent = `${data.mode || 'recall'} | count=${memories.length} | query=${data.query || ''} | keyword=${data.keyword_query || ''}`;
+      const terms = (data.keyword_terms || []).join(', ');
+      statusEl.textContent = `${data.mode || 'recall'} | count=${memories.length} | query=${data.query || ''} | keyword=${data.keyword_query || ''} | terms=${terms}`;
       injectionEl.value = data.injection_text || '';
       resultsEl.innerHTML = memories.map((m, i) => `
         <article class="card">
@@ -258,10 +302,87 @@ try:
             "mode": "query",
             "query": recalled.get("query", query) if isinstance(recalled, dict) else query,
             "keyword_query": recalled.get("keyword_query", "") if isinstance(recalled, dict) else "",
+            "keyword_terms": recalled.get("keyword_terms", []) if isinstance(recalled, dict) else [],
             "count": len(memories) if isinstance(memories, list) else 0,
             "memories": memories if isinstance(memories, list) else [],
             "injection_text": recalled.get("injection_text", "") if isinstance(recalled, dict) else "",
         })
+
+    async def gateway_diary_index(request: Request) -> JSONResponse:
+        auth = _debug_authorize(request)
+        if auth is not None:
+            return auth
+        if zeta_openai_gateway.gateway is None:
+            return JSONResponse({"ok": False, "error": zeta_openai_gateway.startup_error}, status_code=503)
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False, "error": "Request body must be valid JSON"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "error": "Request body must be an object"}, status_code=400)
+
+        visibility = str(body.get("visibility") or "private").strip().lower()
+        visibility = "public" if visibility == "public" else "private"
+        diary_id = str(body.get("id") or body.get("diary_id") or "").strip()
+        title = str(body.get("title") or "").strip()
+        mood = str(body.get("mood") or "").strip()
+        source = str(body.get("source") or "diary").strip() or "diary"
+        content = str(body.get("content") or "").strip()
+        created_at = str(body.get("created_at") or body.get("date") or "").strip()
+        raw_ref = str(body.get("raw_ref") or "").strip() or _diary_ref(visibility, diary_id)
+
+        summary_text = str(body.get("summary_text") or "").strip()
+        if not summary_text:
+            if visibility == "public" and content:
+                summary_text = f"Diary note: {_compact_text(content, 160)}"
+            elif title:
+                summary_text = f"Diary note: {title}"
+            elif mood:
+                summary_text = f"Diary note with mood: {mood}"
+            else:
+                summary_text = f"Diary note from {created_at or 'unknown time'}"
+
+        tags = _normalize_tags(body.get("tags"))
+        for tag in ("diary", f"diary:{visibility}"):
+            if tag not in tags:
+                tags.append(tag)
+        if mood and mood not in tags:
+            tags.append(mood)
+        if source and source not in tags:
+            tags.append(source)
+
+        memory = {
+            "summary_text": summary_text,
+            "tags": tags,
+            "importance": _bounded_int(body.get("importance", 6), 1, 10),
+            "raw_ref": raw_ref,
+        }
+        feel_text = str(body.get("feel_text") or "").strip()
+        if feel_text:
+            memory["feel_text"] = feel_text
+        valence = _bounded_float_or_none(body.get("valence"))
+        arousal = _bounded_float_or_none(body.get("arousal"))
+        if valence is not None:
+            memory["valence"] = valence
+        if arousal is not None:
+            memory["arousal"] = arousal
+
+        result = await zeta_openai_gateway.gateway.memory_gateway.write_memory(memory)
+        return JSONResponse({
+            "ok": True,
+            "diary_ref": raw_ref,
+            "visibility": visibility,
+            "memory": result,
+        })
+
+    async def gateway_diary_lookup(request: Request) -> JSONResponse:
+        auth = _debug_authorize(request)
+        if auth is not None:
+            return auth
+        return JSONResponse({
+            "ok": False,
+            "error": "Full diary text lives in Operit local storage. Use read_diary in Operit with the diary:// visibility and id.",
+        }, status_code=501)
 
     async def dashboard_page(request: Request) -> HTMLResponse:
         dashboard_path = Path(__file__).with_name("dashboard.html")
@@ -455,6 +576,8 @@ try:
 
     app.router.routes.append(Route("/debug/recall", debug_recall_page, methods=["GET"]))
     app.router.routes.append(Route("/debug/recall.json", debug_recall_json, methods=["GET"]))
+    app.router.routes.append(Route("/gateway/diary", gateway_diary_index, methods=["POST"]))
+    app.router.routes.append(Route("/gateway/diary/lookup", gateway_diary_lookup, methods=["GET", "POST"]))
     app.router.routes.append(Route("/", dashboard_page, methods=["GET"]))
     app.router.routes.append(Route("/dashboard", dashboard_page, methods=["GET"]))
     app.router.routes.append(Route("/auth/status", auth_status, methods=["GET"]))
