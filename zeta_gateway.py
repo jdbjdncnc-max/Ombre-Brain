@@ -281,9 +281,64 @@ class ZetaMemoryGateway:
                 existing = merged.get(bucket["id"])
                 if not existing or float(bucket.get("score") or 0) > float(existing.get("score") or 0):
                     merged[bucket["id"]] = bucket
+        content_hits = await self._content_search(terms, limit=max(limit, 4), domain_filter=domain_filter)
+        for bucket in content_hits:
+            existing = merged.get(bucket["id"])
+            if not existing or float(bucket.get("score") or 0) > float(existing.get("score") or 0):
+                merged[bucket["id"]] = bucket
         ranked = list(merged.values())
         ranked.sort(key=lambda bucket: float(bucket.get("score") or 0), reverse=True)
         return ranked[:limit]
+
+    async def _content_search(self, terms: list[str], limit: int, domain_filter: list[str] | None = None) -> list[dict]:
+        terms = [str(term).strip() for term in terms if str(term).strip()]
+        if not terms:
+            return []
+        all_buckets = await self.bucket_mgr.list_all(include_archive=False)
+        domain_set = {d.lower() for d in domain_filter or []}
+        scored = []
+        for bucket in all_buckets:
+            meta = bucket.get("metadata", {})
+            if domain_set and not ({str(d).lower() for d in meta.get("domain", [])} & domain_set):
+                continue
+            score = self._content_relevance(terms, bucket)
+            if score <= 0:
+                continue
+            bucket["score"] = max(float(bucket.get("score") or 0), score)
+            scored.append(bucket)
+        scored.sort(key=lambda bucket: float(bucket.get("score") or 0), reverse=True)
+        return scored[:limit]
+
+    def _content_relevance(self, terms: list[str], bucket: dict) -> float:
+        meta = bucket.get("metadata", {})
+        name = str(meta.get("name") or "").lower()
+        tags = " ".join(str(t) for t in meta.get("tags", [])).lower()
+        domains = " ".join(str(d) for d in meta.get("domain", [])).lower()
+        content = str(bucket.get("content") or "").lower()
+        score = 0.0
+        for raw_term in terms:
+            term = raw_term.lower()
+            if not term:
+                continue
+            if term in content:
+                score += 55.0
+            if term in name:
+                score += 35.0
+            if term in tags:
+                score += 28.0
+            if term in domains:
+                score += 18.0
+            if len(term) >= 4:
+                pieces = [p for p in re.split(r"\s+", term) if len(p) >= 2]
+                if pieces and any(piece in content for piece in pieces):
+                    score += 18.0
+        if score <= 0:
+            return 0.0
+        try:
+            importance = max(1, min(10, int(meta.get("importance", 5))))
+        except (TypeError, ValueError):
+            importance = 5
+        return min(99.0, score + importance)
 
     async def _natural_float(self, seen: set[str], limit: int) -> list[dict]:
         all_buckets = await self.bucket_mgr.list_all(include_archive=False)
@@ -557,6 +612,8 @@ class ZetaMemoryGateway:
             "\u8bf4\u5230",
             "\u4e00\u4e0b",
             "\u6211\u521a\u521a",
+            "\u6211\u60f3\u804a",
+            "\u60f3\u804a",
             "\u4e00\u53e5\u8bdd\u91cc",
             "\u7b49\u7b49\u540d\u8bcd",
             "\u7b49\u7b49",
@@ -567,8 +624,10 @@ class ZetaMemoryGateway:
             for word in stop_words:
                 cleaned = cleaned.replace(word, " ")
             cleaned = re.sub(r"\s+", " ", cleaned).strip(" _-")
-            if 2 <= len(cleaned) <= 18:
-                self._add_keyword_candidate(terms, cleaned, limit)
+            for piece in re.split(r"[\u548c\u4e0e\u3001,，/]+", cleaned):
+                piece = piece.strip()
+                if 2 <= len(piece) <= 18:
+                    self._add_keyword_candidate(terms, piece, limit)
         if terms:
             return terms[:limit]
         fallback = text.strip(" _-")
@@ -577,6 +636,12 @@ class ZetaMemoryGateway:
     @staticmethod
     def _clean_keyword_text(text: Any) -> str:
         cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+        query_matches = re.findall(
+            r"(?im)^\s*(?:query|user_message|message|text)\s*[:=]\s*(.+?)\s*$",
+            str(text or ""),
+        )
+        if query_matches:
+            cleaned = query_matches[-1].strip()
         cleaned = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", cleaned)
         cleaned = re.sub(r"https?://\S+", " ", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"\b(?:file_?name|filename|name)\s*=\s*[^,\s;，。]+", " ", cleaned, flags=re.IGNORECASE)
