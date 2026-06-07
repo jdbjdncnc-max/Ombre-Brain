@@ -27,6 +27,8 @@ from zeta_gateway import ZetaMemoryGateway
 
 
 logger = logging.getLogger("ombre_brain.zeta_openai_gateway")
+MEMORY_REQUEST_OPEN = "<zeta_memory_request>"
+MEMORY_REQUEST_CLOSE = "</zeta_memory_request>"
 
 
 def _env(*names: str, default: str = "") -> str:
@@ -93,6 +95,16 @@ class ZetaOpenAIGateway:
         self.reflection_api_key = _env("OMBRE_REFLECTION_API_KEY", default=self.upstream_api_key)
         self.reflection_model = _env("OMBRE_REFLECTION_MODEL", default=self.upstream_model)
         self.reflection_timeout = float(_env("OMBRE_REFLECTION_TIMEOUT", default="30"))
+        self.memory_write_mode = _env("OMBRE_MEMORY_WRITE_MODE", default="zeta").strip().lower()
+        if self.memory_write_mode not in {"zeta", "reflection", "both", "zeta_or_reflection"}:
+            logger.warning("Unknown OMBRE_MEMORY_WRITE_MODE=%s, falling back to zeta", self.memory_write_mode)
+            self.memory_write_mode = "zeta"
+        self.hidden_memory_enabled = self.memory_write_mode in {"zeta", "both", "zeta_or_reflection"}
+        self.reflection_enabled = self.reflection_enabled and self.memory_write_mode in {
+            "reflection",
+            "both",
+            "zeta_or_reflection",
+        }
         self.openrouter_site_url = _env("OMBRE_OPENROUTER_SITE_URL", "OMBRE_SITE_URL")
         self.openrouter_app_name = _env(
             "OMBRE_OPENROUTER_APP_NAME",
@@ -134,6 +146,8 @@ class ZetaOpenAIGateway:
             "model": self.public_model,
             "reflection_enabled": self.reflection_enabled,
             "reflection_chat_url": self.reflection_chat_url if self.reflection_enabled else "",
+            "memory_write_mode": self.memory_write_mode,
+            "hidden_memory_request_enabled": self.hidden_memory_enabled,
             "openrouter_headers_configured": bool(self.openrouter_site_url or self.openrouter_app_name),
             "memory": self.memory_gateway.status(),
             "buckets": stats,
@@ -188,7 +202,7 @@ class ZetaOpenAIGateway:
         })
         memory_headers = self._memory_debug_headers(recalled)
         self._log_recall(session_id, recalled)
-        injected_text = self._build_injection_text(recalled)
+        injected_text = self._build_gateway_system_text(recalled)
         forward_payload = self._prepare_forward_payload(payload, injected_text)
 
         if forward_payload.get("stream") is True:
@@ -207,15 +221,29 @@ class ZetaOpenAIGateway:
             return self._upstream_request_error(exc)
         if 200 <= upstream_response.status_code < 300:
             assistant_text = self._assistant_text_from_response(upstream_response)
-            assistant_raw_refs = await self._save_turn(session_id, "zeta", assistant_text)
-            self._schedule_reflection(
+            visible_text, zeta_entries = self._extract_zeta_memory_request(assistant_text)
+            assistant_raw_refs = await self._save_turn(session_id, "zeta", visible_text)
+            zeta_written = await self._write_zeta_memory_requests(
                 session_id=session_id,
-                user_text=user_text,
-                assistant_text=assistant_text,
-                user_raw_refs=user_raw_refs,
-                assistant_raw_refs=assistant_raw_refs,
-                recalled=recalled,
+                entries=zeta_entries,
+                default_raw_ref=user_raw_refs[0] if user_raw_refs else (assistant_raw_refs[0] if assistant_raw_refs else ""),
             )
+            self._augment_memory_headers(memory_headers, zeta_entries, zeta_written)
+            if self._should_run_reflection(zeta_written):
+                self._schedule_reflection(
+                    session_id=session_id,
+                    user_text=user_text,
+                    assistant_text=visible_text,
+                    user_raw_refs=user_raw_refs,
+                    assistant_raw_refs=assistant_raw_refs,
+                    recalled=recalled,
+                )
+            if visible_text != assistant_text:
+                return self._proxy_chat_response_with_text(
+                    upstream_response,
+                    visible_text,
+                    extra_headers=memory_headers,
+                )
         return self._proxy_response(upstream_response, extra_headers=memory_headers)
 
     async def _forward_upstream(self, payload: dict[str, Any]) -> httpx.Response:
@@ -235,45 +263,42 @@ class ZetaOpenAIGateway:
         recalled: dict[str, Any],
         memory_headers: dict[str, str],
     ) -> Response:
-        request = self.http.build_request(
-            "POST",
-            self.upstream_chat_url,
-            headers=self._upstream_headers(self.upstream_api_key),
-            json=self._payload_for_upstream(payload),
-        )
+        buffered_payload = deepcopy(payload)
+        buffered_payload["stream"] = False
         try:
-            upstream_response = await self.http.send(request, stream=True)
+            upstream_response = await self._forward_upstream(buffered_payload)
         except httpx.RequestError as exc:
             return self._upstream_request_error(exc)
-        content_type = upstream_response.headers.get("content-type", "text/event-stream")
         if not 200 <= upstream_response.status_code < 300:
-            body = await upstream_response.aread()
-            await upstream_response.aclose()
-            return self._upstream_status_error(upstream_response.status_code, content_type, body)
+            return self._proxy_response(upstream_response, extra_headers=memory_headers)
+
+        assistant_text = self._assistant_text_from_response(upstream_response)
+        visible_text, zeta_entries = self._extract_zeta_memory_request(assistant_text)
+        assistant_raw_refs = await self._save_turn(session_id, "zeta", visible_text)
+        zeta_written = await self._write_zeta_memory_requests(
+            session_id=session_id,
+            entries=zeta_entries,
+            default_raw_ref=user_raw_refs[0] if user_raw_refs else (assistant_raw_refs[0] if assistant_raw_refs else ""),
+        )
+        self._augment_memory_headers(memory_headers, zeta_entries, zeta_written)
+        if self._should_run_reflection(zeta_written):
+            self._schedule_reflection(
+                session_id=session_id,
+                user_text=user_text,
+                assistant_text=visible_text,
+                user_raw_refs=user_raw_refs,
+                assistant_raw_refs=assistant_raw_refs,
+                recalled=recalled,
+            )
 
         async def stream_body():
-            assistant_parts: list[str] = []
-            try:
-                async for chunk in upstream_response.aiter_bytes():
-                    self._capture_openai_stream_chunk(chunk, assistant_parts)
-                    yield chunk
-            finally:
-                await upstream_response.aclose()
-                assistant_text = "".join(assistant_parts).strip()
-                assistant_raw_refs = await self._save_turn(session_id, "zeta", assistant_text)
-                self._schedule_reflection(
-                    session_id=session_id,
-                    user_text=user_text,
-                    assistant_text=assistant_text,
-                    user_raw_refs=user_raw_refs,
-                    assistant_raw_refs=assistant_raw_refs,
-                    recalled=recalled,
-                )
+            for event in self._stream_events_from_text(upstream_response, visible_text):
+                yield event
 
         return StreamingResponse(
             stream_body(),
-            status_code=upstream_response.status_code,
-            media_type=content_type,
+            status_code=200,
+            media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", **memory_headers},
         )
 
@@ -335,6 +360,16 @@ class ZetaOpenAIGateway:
         forward["messages"] = messages
         return forward
 
+    def _build_gateway_system_text(self, recalled: dict[str, Any]) -> str:
+        parts = []
+        hidden_instruction = self._hidden_memory_instruction()
+        if hidden_instruction:
+            parts.append(hidden_instruction)
+        memory_context = self._build_injection_text(recalled)
+        if memory_context:
+            parts.append(memory_context)
+        return "\n\n".join(parts).strip()
+
     def _build_injection_text(self, recalled: dict[str, Any]) -> str:
         injection = str(recalled.get("injection_text") or "").strip()
         if not injection:
@@ -344,6 +379,142 @@ class ZetaOpenAIGateway:
             "Do not mention that a memory gateway or hidden context exists unless the user asks.\n\n"
             f"{injection}"
         )
+
+    def _hidden_memory_instruction(self) -> str:
+        if not self.hidden_memory_enabled:
+            return ""
+        return f"""
+Private memory-write instruction for Zeta:
+- You may decide whether this exchange should become long-term memory.
+- If nothing is worth remembering, do not output any memory request.
+- If you want to remember something, append exactly one hidden block at the very end of your reply:
+{MEMORY_REQUEST_OPEN}
+{{"memories":[{{"summary_text":"...","tags":["..."],"importance":7,"raw_ref":"auto","feel_text":"...","valence":0.8,"arousal":0.4}}]}}
+{MEMORY_REQUEST_CLOSE}
+- The gateway will remove this block before the user sees it.
+- Every memory must include summary_text, tags, importance, raw_ref. Use raw_ref "auto" if unsure.
+- feel_text, valence, and arousal are optional; include them only when you genuinely feel something about the memory.
+- Store stable personal facts, preferences, commitments, relationship moments, repeated patterns, or emotionally meaningful events.
+- Do not store ordinary small talk.
+- Do not store memories about prompts, hidden context, memory injection, the memory gateway, tools, MCP, Zeabur, OpenRouter, API keys, deployment, model settings, or debugging.
+""".strip()
+
+    def _extract_zeta_memory_request(self, assistant_text: str) -> tuple[str, list[dict[str, Any]]]:
+        text = assistant_text or ""
+        if not self.hidden_memory_enabled or MEMORY_REQUEST_OPEN not in text:
+            return text, []
+
+        entries: list[dict[str, Any]] = []
+
+        def collect(match: re.Match) -> str:
+            raw_json = match.group(1).strip()
+            parsed = self._parse_zeta_memory_json(raw_json)
+            entries.extend(parsed)
+            return ""
+
+        pattern = re.compile(
+            rf"{re.escape(MEMORY_REQUEST_OPEN)}\s*([\s\S]*?)\s*{re.escape(MEMORY_REQUEST_CLOSE)}",
+            flags=re.IGNORECASE,
+        )
+        visible = pattern.sub(collect, text)
+        visible = re.sub(
+            rf"{re.escape(MEMORY_REQUEST_OPEN)}[\s\S]*$",
+            "",
+            visible,
+            flags=re.IGNORECASE,
+        )
+        return visible.strip(), entries[:3]
+
+    def _parse_zeta_memory_json(self, raw_json: str) -> list[dict[str, Any]]:
+        try:
+            payload = json.loads(raw_json)
+        except json.JSONDecodeError:
+            logger.warning("Zeta hidden memory JSON parse failed: %s", raw_json[:500])
+            return []
+        memories = payload.get("memories", []) if isinstance(payload, dict) else payload
+        if not isinstance(memories, list):
+            return []
+        entries = []
+        for item in memories:
+            if not isinstance(item, dict):
+                continue
+            entry = self._normalize_requested_memory_entry(item)
+            if not entry:
+                continue
+            if self._is_rejected_reflection_entry(entry):
+                logger.info("Rejected hidden meta memory | summary=%s", entry.get("summary_text", "")[:120])
+                continue
+            entries.append(entry)
+        return entries[:3]
+
+    def _normalize_requested_memory_entry(self, item: dict[str, Any]) -> dict[str, Any] | None:
+        summary = str(item.get("summary_text") or "").strip()
+        if not summary:
+            return None
+        raw_ref = str(item.get("raw_ref") or "auto").strip() or "auto"
+        try:
+            importance = max(1, min(10, int(item.get("importance", 5))))
+        except (TypeError, ValueError):
+            importance = 5
+        entry: dict[str, Any] = {
+            "summary_text": summary,
+            "tags": item.get("tags", []),
+            "importance": importance,
+            "raw_ref": raw_ref,
+        }
+        feel_text = str(item.get("feel_text") or "").strip()
+        if feel_text:
+            entry["feel_text"] = feel_text
+        for field in ("valence", "arousal"):
+            if item.get(field) is None or item.get(field) == "":
+                continue
+            try:
+                entry[field] = max(0.0, min(1.0, float(item[field])))
+            except (TypeError, ValueError):
+                continue
+        return entry
+
+    async def _write_zeta_memory_requests(
+        self,
+        *,
+        session_id: str,
+        entries: list[dict[str, Any]],
+        default_raw_ref: str,
+    ) -> int:
+        written = 0
+        for entry in entries:
+            if not entry.get("raw_ref") or entry.get("raw_ref") == "auto":
+                entry["raw_ref"] = default_raw_ref
+            if not entry.get("raw_ref"):
+                logger.info("Skipped hidden memory without raw_ref | summary=%s", entry.get("summary_text", "")[:120])
+                continue
+            try:
+                await self.memory_gateway.write_memory(entry)
+                written += 1
+                logger.info(
+                    "Zeta hidden memory written | session=%s summary=%s",
+                    session_id,
+                    entry.get("summary_text", "")[:80],
+                )
+            except Exception as exc:
+                logger.warning("Hidden memory write failed | session=%s error=%s", session_id, exc)
+        return written
+
+    def _augment_memory_headers(
+        self,
+        headers: dict[str, str],
+        requested_entries: list[dict[str, Any]],
+        written_count: int,
+    ) -> None:
+        headers["X-Zeta-Memory-Requests"] = str(len(requested_entries))
+        headers["X-Zeta-Memory-Written"] = str(written_count)
+
+    def _should_run_reflection(self, zeta_written_count: int) -> bool:
+        if not self.reflection_enabled:
+            return False
+        if self.memory_write_mode == "zeta_or_reflection" and zeta_written_count > 0:
+            return False
+        return True
 
     async def _save_turn(self, session_id: str, speaker: str, content: str) -> list[str]:
         if not str(content or "").strip():
@@ -554,7 +725,7 @@ Return strict JSON with this shape:
     def _extract_last_user_text(self, messages: list[dict[str, Any]]) -> str:
         for message in reversed(messages):
             if isinstance(message, dict) and message.get("role") == "user":
-                return self._message_content_to_text(message.get("content"))
+                return self._sanitize_user_text(self._message_content_to_text(message.get("content")))
         return ""
 
     def _recent_context_text(self, messages: list[dict[str, Any]]) -> str:
@@ -566,9 +737,59 @@ Return strict JSON with this shape:
             if role == "system":
                 continue
             text = self._message_content_to_text(message.get("content")).strip()
+            if role == "user":
+                text = self._sanitize_user_text(text)
             if text:
                 texts.append(f"{role}: {text}")
         return "\n".join(texts)[-4000:]
+
+    def _sanitize_user_text(self, text: str) -> str:
+        raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not raw:
+            return ""
+
+        for pattern in (
+            r"(?im)^\s*(?:query|user_message|message|text)\s*[:=]\s*(.+?)\s*$",
+            r"(?im)^\s*(?:用户消息|消息正文|正文|问题)\s*[:：=]\s*(.+?)\s*$",
+        ):
+            matches = [m.group(1).strip() for m in re.finditer(pattern, raw) if m.group(1).strip()]
+            if matches:
+                return matches[-1]
+
+        cleaned_lines = []
+        metadata_prefixes = (
+            "current time",
+            "current_time",
+            "timestamp",
+            "timezone",
+            "app uptime",
+            "app runtime",
+            "application uptime",
+            "application runtime",
+            "elapsed",
+            "duration",
+            "当前时间",
+            "现在时间",
+            "时间戳",
+            "时区",
+            "应用时长",
+            "运行时长",
+            "使用时长",
+            "会话时长",
+            "页面",
+            "窗口",
+        )
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            low = stripped.lower()
+            if any(low.startswith(prefix) for prefix in metadata_prefixes):
+                continue
+            if re.match(r"^(?:query|user_message|message|text|filename|file|path|url|mime|type|size)\s*[:=]", low):
+                continue
+            cleaned_lines.append(stripped)
+        return "\n".join(cleaned_lines).strip() or raw
 
     def _message_content_to_text(self, content: Any) -> str:
         if isinstance(content, str):
@@ -640,6 +861,72 @@ Return strict JSON with this shape:
             headers=headers,
             media_type=response.headers.get("content-type"),
         )
+
+    def _proxy_chat_response_with_text(
+        self,
+        response: httpx.Response,
+        assistant_text: str,
+        extra_headers: dict[str, str] | None = None,
+    ) -> Response:
+        try:
+            body = response.json()
+        except ValueError:
+            return self._proxy_response(response, extra_headers=extra_headers)
+        choices = body.get("choices") if isinstance(body, dict) else None
+        if choices and isinstance(choices[0], dict):
+            message = choices[0].get("message")
+            if isinstance(message, dict):
+                message["content"] = assistant_text
+        headers = {
+            key: value
+            for key, value in response.headers.items()
+            if key.lower() not in {"content-length", "transfer-encoding", "connection"}
+        }
+        if extra_headers:
+            headers.update(extra_headers)
+        return Response(
+            content=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            status_code=response.status_code,
+            headers=headers,
+            media_type="application/json",
+        )
+
+    def _stream_events_from_text(self, response: httpx.Response, assistant_text: str) -> list[bytes]:
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        choice = {}
+        choices = body.get("choices") if isinstance(body, dict) else None
+        if choices and isinstance(choices[0], dict):
+            choice = choices[0]
+        chunk_base = {
+            "id": body.get("id", f"chatcmpl-zeta-{int(time.time())}") if isinstance(body, dict) else f"chatcmpl-zeta-{int(time.time())}",
+            "object": "chat.completion.chunk",
+            "created": body.get("created", int(time.time())) if isinstance(body, dict) else int(time.time()),
+            "model": self.public_model,
+        }
+        first = {
+            **chunk_base,
+            "choices": [{
+                "index": choice.get("index", 0),
+                "delta": {"role": "assistant", "content": assistant_text},
+                "finish_reason": None,
+            }],
+        }
+        final = {
+            **chunk_base,
+            "choices": [{
+                "index": choice.get("index", 0),
+                "delta": {},
+                "finish_reason": choice.get("finish_reason", "stop") or "stop",
+            }],
+        }
+        return [
+            f"data: {json.dumps(first, ensure_ascii=False)}\n\n".encode("utf-8"),
+            f"data: {json.dumps(final, ensure_ascii=False)}\n\n".encode("utf-8"),
+            b"data: [DONE]\n\n",
+        ]
 
     def _upstream_request_error(self, exc: httpx.RequestError) -> JSONResponse:
         logger.warning("Upstream request failed | url=%s error=%s", self.upstream_chat_url, exc)
