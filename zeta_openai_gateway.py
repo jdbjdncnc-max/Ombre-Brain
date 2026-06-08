@@ -43,6 +43,10 @@ def _truthy(value: str) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _falsy(value: str) -> bool:
+    return str(value or "").strip().lower() in {"0", "false", "no", "off"}
+
+
 def _chat_completions_url(base_url: str) -> str:
     cleaned = str(base_url or "").strip().rstrip("/")
     if not cleaned:
@@ -171,6 +175,11 @@ class ZetaOpenAIGateway:
             "OMBRE_APP_NAME",
             default="Zeta Memory Gateway",
         )
+        self.reasoning_config = self._load_reasoning_config()
+        self.reasoning_force = _truthy(_env(
+            "OMBRE_REASONING_FORCE",
+            "OMBRE_OPENROUTER_REASONING_FORCE",
+        ))
 
         self.http = httpx.AsyncClient(timeout=120.0)
 
@@ -209,6 +218,8 @@ class ZetaOpenAIGateway:
             "memory_write_mode": self.memory_write_mode,
             "hidden_memory_request_enabled": self.hidden_memory_enabled,
             "openrouter_headers_configured": bool(self.openrouter_site_url or self.openrouter_app_name),
+            "reasoning_configured": bool(self.reasoning_config),
+            "reasoning_force": self.reasoning_force,
             "memory": self.memory_gateway.status(),
             "buckets": stats,
         })
@@ -450,7 +461,91 @@ class ZetaOpenAIGateway:
     def _payload_for_upstream(self, payload: dict[str, Any]) -> dict[str, Any]:
         upstream_payload = deepcopy(payload)
         upstream_payload["model"] = self.upstream_model
+        self._apply_reasoning_config(upstream_payload)
         return upstream_payload
+
+    def _load_reasoning_config(self) -> dict[str, Any]:
+        configured: dict[str, Any] = {}
+        enabled = _env(
+            "OMBRE_REASONING_ENABLED",
+            "OMBRE_OPENROUTER_REASONING_ENABLED",
+        )
+        effort = _env(
+            "OMBRE_REASONING_EFFORT",
+            "OMBRE_OPENROUTER_REASONING_EFFORT",
+        ).lower()
+        max_tokens = _env(
+            "OMBRE_REASONING_MAX_TOKENS",
+            "OMBRE_OPENROUTER_REASONING_MAX_TOKENS",
+        )
+        exclude = _env(
+            "OMBRE_REASONING_EXCLUDE",
+            "OMBRE_OPENROUTER_REASONING_EXCLUDE",
+        )
+
+        if max_tokens:
+            try:
+                parsed_max_tokens = int(max_tokens)
+            except ValueError:
+                logger.warning("Ignoring invalid OMBRE_REASONING_MAX_TOKENS=%s", max_tokens)
+            else:
+                if parsed_max_tokens > 0:
+                    configured["max_tokens"] = parsed_max_tokens
+                else:
+                    logger.warning("Ignoring non-positive OMBRE_REASONING_MAX_TOKENS=%s", max_tokens)
+
+        allowed_efforts = {"xhigh", "high", "medium", "low", "minimal", "none"}
+        if effort:
+            if effort in allowed_efforts:
+                if "max_tokens" in configured and effort != "none":
+                    logger.warning("OMBRE_REASONING_MAX_TOKENS is set; ignoring OMBRE_REASONING_EFFORT=%s", effort)
+                elif "max_tokens" not in configured:
+                    configured["effort"] = effort
+            else:
+                logger.warning("Ignoring invalid OMBRE_REASONING_EFFORT=%s", effort)
+
+        if "effort" not in configured and "max_tokens" not in configured and _truthy(enabled):
+            configured["enabled"] = True
+
+        if exclude:
+            if _truthy(exclude):
+                configured["exclude"] = True
+            elif _falsy(exclude):
+                configured["exclude"] = False
+            else:
+                logger.warning("Ignoring invalid OMBRE_REASONING_EXCLUDE=%s", exclude)
+
+        return configured
+
+    def _apply_reasoning_config(self, upstream_payload: dict[str, Any]) -> None:
+        existing = upstream_payload.get("reasoning")
+        reasoning = deepcopy(existing) if isinstance(existing, dict) else {}
+
+        incoming_effort = str(upstream_payload.get("reasoning_effort") or "").strip().lower()
+        if incoming_effort and (self.reasoning_force or (
+            "effort" not in reasoning and "max_tokens" not in reasoning
+        )):
+            reasoning["effort"] = incoming_effort
+
+        if "include_reasoning" in upstream_payload and (self.reasoning_force or "exclude" not in reasoning):
+            reasoning["exclude"] = not bool(upstream_payload.get("include_reasoning"))
+
+        for key, value in self.reasoning_config.items():
+            if self.reasoning_force or key not in reasoning:
+                if key == "effort" and "max_tokens" in reasoning and not self.reasoning_force:
+                    continue
+                if key == "max_tokens" and "effort" in reasoning and not self.reasoning_force:
+                    continue
+                reasoning[key] = value
+
+        if "effort" in reasoning and "max_tokens" in reasoning:
+            if self.reasoning_force and "max_tokens" in self.reasoning_config:
+                reasoning.pop("effort", None)
+            else:
+                reasoning.pop("max_tokens", None)
+
+        if reasoning:
+            upstream_payload["reasoning"] = reasoning
 
     def _memory_debug_headers(self, recalled: dict[str, Any]) -> dict[str, str]:
         memories = recalled.get("memories") if isinstance(recalled, dict) else []

@@ -66,6 +66,21 @@ OMBRE_OPENROUTER_SITE_URL=https://your-zeabur-domain
 OMBRE_OPENROUTER_APP_NAME=Zeta Memory Gateway
 ```
 
+Optional OpenRouter reasoning / thinking passthrough:
+
+```text
+OMBRE_REASONING_ENABLED=true
+OMBRE_REASONING_EFFORT=high
+```
+
+Use `OMBRE_REASONING_EFFORT=xhigh|high|medium|low|minimal|none` for OpenAI-style reasoning models. For models that prefer an explicit reasoning token budget, use `OMBRE_REASONING_MAX_TOKENS=2000` instead of `OMBRE_REASONING_EFFORT`.
+
+The gateway preserves any reasoning settings sent by the client. These environment variables fill in missing reasoning settings. To override client settings, add:
+
+```text
+OMBRE_REASONING_FORCE=true
+```
+
 `OMBRE_UPSTREAM_BASE_URL` may be either a provider base URL like `https://openrouter.ai/api/v1` or the full chat endpoint `https://openrouter.ai/api/v1/chat/completions`; the gateway normalizes both.
 
 Recommended:
@@ -133,7 +148,8 @@ The gateway currently supports OpenAI-compatible chat completions. It supports n
 ```json
 {
   "memory_write_mode": "zeta",
-  "hidden_memory_request_enabled": true
+  "hidden_memory_request_enabled": true,
+  "reasoning_configured": true
 }
 ```
 
