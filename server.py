@@ -58,6 +58,7 @@ from decay_engine import DecayEngine
 from embedding_engine import EmbeddingEngine
 from import_memory import ImportEngine
 from memory_logs import MemoryLogStore
+from zeta_gateway import ZetaMemoryGateway
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
@@ -111,6 +112,7 @@ ASSOCIATIVE_NOISE = float(associative_cfg.get("noise", 0.15))
 ASSOCIATIVE_TEMP = max(0.01, float(associative_cfg.get("temperature", 0.8)))
 ASSOCIATIVE_HOPS = max(0, int(associative_cfg.get("max_hops", 2)))
 ASSOCIATIVE_SIM_THRESHOLD = float(associative_cfg.get("sim_threshold", 0.52))
+zeta_gateway = ZetaMemoryGateway(config, bucket_mgr, embedding_engine)
 
 # --- Create MCP server instance / 创建 MCP 服务器实例 ---
 # host="0.0.0.0" so Docker container's SSE is externally reachable
@@ -210,6 +212,13 @@ def _require_auth(request):
             status_code=401,
         )
     return None
+
+
+def _require_dashboard_or_gateway_auth(request):
+    """Allow dashboard sessions or the gateway token for /gateway routes."""
+    if _is_authenticated(request):
+        return None
+    return zeta_gateway.require_auth(request)
 
 
 def _log_memory_change(action: str, bucket_before: dict, new_content: str | None = None) -> None:
@@ -340,6 +349,82 @@ async def health_check(request):
         })
     except Exception as e:
         return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
+
+
+# =============================================================
+# Zeta memory gateway endpoints
+# =============================================================
+@mcp.custom_route("/gateway/status", methods=["GET"])
+async def gateway_status(request):
+    from starlette.responses import JSONResponse
+    auth_error = _require_dashboard_or_gateway_auth(request)
+    if auth_error is not None:
+        return auth_error
+    return JSONResponse(zeta_gateway.status())
+
+
+@mcp.custom_route("/gateway/raw", methods=["POST"])
+async def gateway_save_raw(request):
+    from starlette.responses import JSONResponse
+    auth_error = _require_dashboard_or_gateway_auth(request)
+    if auth_error is not None:
+        return auth_error
+    try:
+        body = await request.json()
+        result = await zeta_gateway.save_raw(body)
+        return JSONResponse(result)
+    except Exception as e:
+        logger.warning(f"Zeta gateway raw save failed: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+@mcp.custom_route("/gateway/memory", methods=["POST"])
+async def gateway_write_memory(request):
+    from starlette.responses import JSONResponse
+    auth_error = _require_dashboard_or_gateway_auth(request)
+    if auth_error is not None:
+        return auth_error
+    try:
+        body = await request.json()
+        result = await zeta_gateway.write_memory(body)
+        return JSONResponse(result)
+    except Exception as e:
+        logger.warning(f"Zeta gateway memory write failed: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+@mcp.custom_route("/gateway/recall", methods=["POST"])
+async def gateway_recall(request):
+    from starlette.responses import JSONResponse
+    auth_error = _require_dashboard_or_gateway_auth(request)
+    if auth_error is not None:
+        return auth_error
+    try:
+        body = await request.json()
+        result = await zeta_gateway.recall(body)
+        return JSONResponse(result)
+    except Exception as e:
+        logger.warning(f"Zeta gateway recall failed: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+@mcp.custom_route("/gateway/raw/lookup", methods=["GET", "POST"])
+async def gateway_lookup_raw(request):
+    from starlette.responses import JSONResponse
+    auth_error = _require_dashboard_or_gateway_auth(request)
+    if auth_error is not None:
+        return auth_error
+    try:
+        if request.method == "POST":
+            body = await request.json()
+            raw_ref = body.get("raw_ref", "")
+        else:
+            raw_ref = request.query_params.get("ref", "")
+        result = await zeta_gateway.lookup_raw(raw_ref)
+        return JSONResponse(result, status_code=200 if result.get("ok") else 404)
+    except Exception as e:
+        logger.warning(f"Zeta gateway raw lookup failed: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
 
 # =============================================================

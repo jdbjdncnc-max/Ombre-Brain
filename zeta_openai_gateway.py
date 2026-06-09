@@ -1023,6 +1023,9 @@ Return strict JSON with this shape:
             stripped = line.strip()
             if not stripped:
                 continue
+            stripped = self._strip_operit_context_noise(stripped).strip()
+            if not stripped:
+                continue
             low = stripped.lower()
             if any(low.startswith(prefix) for prefix in metadata_prefixes):
                 continue
@@ -1030,6 +1033,59 @@ Return strict JSON with this shape:
                 continue
             cleaned_lines.append(stripped)
         return "\n".join(cleaned_lines).strip() or raw
+
+    @staticmethod
+    def _strip_operit_context_noise(text: str) -> str:
+        cleaned = str(text or "")
+        if not cleaned.strip():
+            return ""
+
+        metadata_markers = [
+            "【当前屏幕应用】",
+            "【应用使用时长】",
+            "统计窗口:",
+            "最近使用:",
+            "包名:",
+            "Activity:",
+            "来源: wttr.in",
+            "source: wttr.in",
+            "message_insert_extra_bundle",
+            "keyword=",
+            "terms=",
+        ]
+        positions = [cleaned.find(marker) for marker in metadata_markers if cleaned.find(marker) >= 0]
+        if positions:
+            prefix = cleaned[:min(positions)].strip()
+            cleaned = prefix if prefix else ""
+
+        cleaned = re.sub(r"\bkeyword\s*=\s*[^|\n]*", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\bterms\s*=\s*.*$", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\bmessage_insert_extra_bundle_\d+\b", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\bcom\.[A-Za-z0-9_.-]+\b", " ", cleaned)
+        cleaned = re.sub(r"\bActivity\s*:\s*\S+", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\b(?:package|pkg|包名)\s*[:：]\s*\S+", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\b(?:current\s+app|app\s+uptime|recent\s+use)\b.*", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"(?:风速|湿度|来源\s*[:：]\s*wttr\.in|weather|thundery)[^。！？\n]*", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if "%" in cleaned and re.fullmatch(r"[\d\s%./:-]+", cleaned):
+            return ""
+
+        metadata_only_markers = (
+            "当前屏幕应用",
+            "应用使用时长",
+            "最近使用",
+            "统计窗口",
+            "wttr.in",
+            "风速",
+            "包名",
+            "activity",
+            "keyword=",
+            "terms=",
+        )
+        lowered = cleaned.lower()
+        if any(marker in lowered for marker in metadata_only_markers):
+            return ""
+        return cleaned
 
     def _message_content_to_text(self, content: Any) -> str:
         if isinstance(content, str):

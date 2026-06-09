@@ -612,6 +612,7 @@
 </div>
 
 <div class="tabs">
+  <div class="tab" data-tab="gateway">Zeta Gateway</div>
   <div class="tab active" data-tab="list">记忆桶</div>
   <div class="tab" data-tab="breath">Breath 模拟</div>
   <div class="tab" data-tab="network">记忆网络</div>
@@ -654,6 +655,55 @@
   <div class="breath-info" id="breath-info" style="display:none"></div>
   <div id="breath-results">
     <div class="loading">输入 query 后点击「模拟 Breath」查看评分链路</div>
+  </div>
+</div>
+
+<div class="content" id="gateway-view" style="display:none">
+  <div style="max-width:980px;margin:0 auto;display:grid;gap:16px;">
+    <div class="config-section">
+      <h3>Zeta Gateway</h3>
+      <div id="gateway-status" style="font-size:13px;color:var(--text-dim);line-height:1.8;">Not loaded</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+        <button onclick="loadGatewayStatus()">Refresh Status</button>
+        <button onclick="showGatewayBuckets()">Show zeta_gateway Buckets</button>
+      </div>
+    </div>
+
+    <div class="config-section">
+      <h3>Recall Inspector</h3>
+      <div style="display:grid;grid-template-columns:1fr 120px 120px 120px;gap:8px;align-items:end;">
+        <div>
+          <label>Text / Query</label>
+          <textarea id="gateway-recall-text" rows="3" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface-solid);"></textarea>
+        </div>
+        <div>
+          <label>Max</label>
+          <input id="gateway-max-results" type="number" min="1" max="8" value="5" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface-solid);" />
+        </div>
+        <div>
+          <label>Keyword</label>
+          <input id="gateway-keyword-limit" type="number" min="0" max="8" value="4" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface-solid);" />
+        </div>
+        <div>
+          <label>Semantic</label>
+          <input id="gateway-semantic-limit" type="number" min="0" max="8" value="1" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface-solid);" />
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+        <button class="btn-primary" onclick="runGatewayRecall()">Run Recall</button>
+        <span id="gateway-recall-meta" style="font-size:12px;color:var(--text-dim);align-self:center;"></span>
+      </div>
+      <div id="gateway-recall-results" style="margin-top:12px;"></div>
+    </div>
+
+    <div class="config-section">
+      <h3>Raw Lookup</h3>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input id="gateway-raw-ref" placeholder="convo://session/turn or bucket://..." style="flex:1;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface-solid);" />
+        <button onclick="lookupGatewayRaw()">Lookup</button>
+      </div>
+      <div id="gateway-raw-results" style="margin-top:12px;"></div>
+    </div>
   </div>
 </div>
 
@@ -1099,12 +1149,14 @@ document.querySelectorAll('.tab').forEach(tab => {
     const target = tab.dataset.tab;
     document.getElementById('list-view').style.display = target === 'list' ? '' : 'none';
     document.getElementById('breath-view').style.display = target === 'breath' ? '' : 'none';
+    document.getElementById('gateway-view').style.display = target === 'gateway' ? '' : 'none';
     document.getElementById('network-view').style.display = target === 'network' ? '' : 'none';
     document.getElementById('config-view').style.display = target === 'config' ? '' : 'none';
     document.getElementById('import-view').style.display = target === 'import' ? '' : 'none';
     document.getElementById('logs-view').style.display = target === 'logs' ? '' : 'none';
     document.getElementById('settings-view').style.display = target === 'settings' ? '' : 'none';
     if (target === 'network') loadNetwork();
+    if (target === 'gateway') loadGatewayStatus();
     if (target === 'config') loadConfig();
     if (target === 'import') { pollImportStatus(); loadImportResults(); }
     if (target === 'logs') loadMemoryLogs(true);
@@ -1153,6 +1205,129 @@ async function loadMemoryLogs(reset) {
 
 function loadMoreLogs() { loadMemoryLogs(false); }
 function copyText(t) { navigator.clipboard.writeText(t || ''); alert('已复制 old_content'); }
+
+async function loadGatewayStatus() {
+  const el = document.getElementById('gateway-status');
+  if (!el) return;
+  el.textContent = 'Loading...';
+  try {
+    const resp = await authFetch('/gateway/status');
+    if (!resp) return;
+    const data = await resp.json();
+    if (!resp.ok || data.ok === false) throw new Error(data.error || resp.statusText);
+    el.innerHTML =
+      'gateway: <strong>' + esc(data.gateway || 'zeta') + '</strong><br>' +
+      'embedding: <strong>' + String(!!data.embedding) + '</strong><br>' +
+      'include_legacy: <strong>' + String(!!data.include_legacy) + '</strong><br>' +
+      'legacy_keyword_limit: <strong>' + esc(data.legacy_keyword_limit) + '</strong><br>' +
+      'natural_limit: <strong>' + esc(data.natural_limit) + '</strong><br>' +
+      'raw_dir: <code>' + esc(data.raw_dir || '') + '</code><br>' +
+      'memory_index: <code>' + esc(data.memory_index || '') + '</code>';
+  } catch (e) {
+    el.innerHTML = '<span style="color:var(--negative)">Gateway status failed: ' + esc(e.message) + '</span>';
+  }
+}
+
+function showGatewayBuckets() {
+  currentFilter = 'domain:zeta_gateway';
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  const listTab = document.querySelector('.tab[data-tab="list"]');
+  if (listTab) listTab.classList.add('active');
+  document.getElementById('list-view').style.display = '';
+  document.getElementById('breath-view').style.display = 'none';
+  document.getElementById('gateway-view').style.display = 'none';
+  document.getElementById('network-view').style.display = 'none';
+  document.getElementById('config-view').style.display = 'none';
+  document.getElementById('import-view').style.display = 'none';
+  document.getElementById('logs-view').style.display = 'none';
+  document.getElementById('settings-view').style.display = 'none';
+  renderBuckets(filterBuckets(allBuckets));
+}
+
+async function runGatewayRecall() {
+  const text = document.getElementById('gateway-recall-text').value.trim();
+  const maxResults = parseInt(document.getElementById('gateway-max-results').value, 10) || 5;
+  const keywordLimit = parseInt(document.getElementById('gateway-keyword-limit').value, 10) || 0;
+  const semanticLimit = parseInt(document.getElementById('gateway-semantic-limit').value, 10) || 0;
+  const meta = document.getElementById('gateway-recall-meta');
+  const results = document.getElementById('gateway-recall-results');
+  results.innerHTML = '<div class="loading">Running recall...</div>';
+  meta.textContent = '';
+  try {
+    const resp = await authFetch('/gateway/recall', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        current_text: text,
+        max_results: maxResults,
+        keyword_limit: keywordLimit,
+        semantic_limit: semanticLimit,
+      }),
+    });
+    if (!resp) return;
+    const data = await resp.json();
+    if (!resp.ok || data.ok === false) throw new Error(data.error || resp.statusText);
+    meta.innerHTML =
+      'query: <code>' + esc(data.query || '') + '</code> | keyword_query: <code>' +
+      esc(data.keyword_query || '') + '</code> | terms: <code>' +
+      esc((data.keyword_terms || []).join(', ')) + '</code>';
+    const memories = data.memories || [];
+    if (!memories.length) {
+      results.innerHTML = '<div class="loading">No memories recalled</div>';
+      return;
+    }
+    results.innerHTML = memories.map(function(m, i) {
+      const rawRef = m.raw_ref || '';
+      const tags = (m.tags || []).join(', ');
+      const emotion = (m.valence != null && m.arousal != null) ? ' V' + m.valence + '/A' + m.arousal : '';
+      const lookupAttr = JSON.stringify(rawRef).replace(/"/g, '&quot;');
+      return '<div style="padding:12px;margin-bottom:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface);">' +
+        '<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">' +
+          '<strong>' + (i + 1) + '. ' + esc(m.summary_text || '') + '</strong>' +
+          '<span style="font-size:12px;color:var(--text-dim);white-space:nowrap;">' + esc(m.source || '') + '</span>' +
+        '</div>' +
+        '<div style="font-size:12px;color:var(--text-dim);margin-top:6px;">reason: ' + esc(m.reason || '') + ' | score: ' + esc(m.score) + ' | importance: ' + esc(m.importance) + emotion + '</div>' +
+        '<div style="font-size:12px;color:var(--text-dim);margin-top:4px;">tags: ' + esc(tags) + '</div>' +
+        '<div style="font-size:12px;margin-top:6px;">raw_ref: <code>' + esc(rawRef) + '</code> ' +
+          (rawRef ? '<button onclick="lookupGatewayRawRef(' + lookupAttr + ')" style="font-size:12px;padding:2px 8px;">Lookup raw</button>' : '') +
+        '</div>' +
+        (m.feel_text ? '<div style="margin-top:8px;font-size:13px;">feel: ' + esc(m.feel_text) + '</div>' : '') +
+      '</div>';
+    }).join('');
+  } catch (e) {
+    results.innerHTML = '<div class="loading">Gateway recall failed: ' + esc(e.message) + '</div>';
+  }
+}
+
+async function lookupGatewayRawRef(rawRef) {
+  document.getElementById('gateway-raw-ref').value = rawRef || '';
+  await lookupGatewayRaw();
+}
+
+async function lookupGatewayRaw() {
+  const rawRef = document.getElementById('gateway-raw-ref').value.trim();
+  const results = document.getElementById('gateway-raw-results');
+  if (!rawRef) {
+    results.innerHTML = '<div class="loading">Enter a raw_ref first</div>';
+    return;
+  }
+  results.innerHTML = '<div class="loading">Looking up raw text...</div>';
+  try {
+    const resp = await authFetch('/gateway/raw/lookup?ref=' + encodeURIComponent(rawRef));
+    if (!resp) return;
+    const data = await resp.json();
+    if (!resp.ok || data.ok === false) throw new Error(data.error || resp.statusText);
+    const records = data.records || [];
+    results.innerHTML = records.map(function(r) {
+      return '<div style="padding:12px;margin-bottom:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface);">' +
+        '<div style="font-size:12px;color:var(--text-dim);">' + esc(r.timestamp || '') + ' | ' + esc(r.speaker || '') + ' | ' + esc(r.source || '') + '</div>' +
+        '<pre style="white-space:pre-wrap;margin:8px 0 0;">' + esc(r.content || '') + '</pre>' +
+      '</div>';
+    }).join('') || '<div class="loading">No raw record found</div>';
+  } catch (e) {
+    results.innerHTML = '<div class="loading">Raw lookup failed: ' + esc(e.message) + '</div>';
+  }
+}
 
 let searchTimer;
 document.getElementById('search-input').addEventListener('input', (e) => {
@@ -1278,6 +1453,11 @@ async function showDetail(id) {
     var meta = b.metadata || {};
     content.innerHTML =
       '<h2>' + esc(meta.name || id) + '</h2>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px;">' +
+        '<button class="btn" onclick="exportMemories()">导出全部</button>' +
+        '<button class="btn" onclick="archiveBucket(\'' + esc(id) + '\')">归档此桶</button>' +
+        '<button class="btn danger" onclick="deleteBucket(\'' + esc(id) + '\')">删除此桶</button>' +
+      '</div>' +
       '<div class="detail-meta">' +
         '<div class="field"><label>ID</label>' + id + '</div>' +
         '<div class="field"><label>类型</label>' + (meta.type || 'dynamic') + '</div>' +
@@ -1306,6 +1486,55 @@ async function showDetail(id) {
     editor.value = b.content || '';
   } catch (e) {
     content.innerHTML = '<div class="loading">加载失败: ' + e.message + '</div>';
+  }
+}
+
+async function exportMemories() {
+  try {
+    var res = await authFetch(BASE + '/api/export');
+    if (!res) return;
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error || '导出失败');
+    var blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    var stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    a.href = url;
+    a.download = 'ombre-memory-export-' + stamp + '.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('导出失败: ' + e.message);
+  }
+}
+
+async function archiveBucket(id) {
+  if (!confirm('确定把这个记忆桶移入归档？归档后不会占正常召回位置。')) return;
+  try {
+    var res = await authFetch(BASE + '/api/bucket/' + encodeURIComponent(id) + '/archive', {method: 'POST'});
+    if (!res) return;
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error || '归档失败');
+    closeDetail();
+    await loadBuckets();
+  } catch (e) {
+    alert('归档失败: ' + e.message);
+  }
+}
+
+async function deleteBucket(id) {
+  if (!confirm('确定彻底删除这个记忆桶？这个操作不可撤销，建议先导出备份。')) return;
+  try {
+    var res = await authFetch(BASE + '/api/bucket/' + encodeURIComponent(id), {method: 'DELETE'});
+    if (!res) return;
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error || '删除失败');
+    closeDetail();
+    await loadBuckets();
+  } catch (e) {
+    alert('删除失败: ' + e.message);
   }
 }
 

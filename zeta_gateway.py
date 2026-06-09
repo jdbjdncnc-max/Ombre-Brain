@@ -188,7 +188,7 @@ class ZetaMemoryGateway:
         keyword_budget = max(0, max_results - semantic_target - natural_limit)
 
         if self.include_legacy and self.legacy_keyword_limit and keyword_limit and keyword_budget:
-            legacy_target = min(self.legacy_keyword_limit, keyword_budget)
+            legacy_target = min(self.legacy_keyword_limit, max(1, keyword_budget // 3), keyword_budget)
             legacy_hits = await self._keyword_search(keyword_terms, limit=max(max_results * 12, legacy_target * 8))
             legacy_added = 0
             for bucket in legacy_hits:
@@ -315,30 +315,51 @@ class ZetaMemoryGateway:
         tags = " ".join(str(t) for t in meta.get("tags", [])).lower()
         domains = " ".join(str(d) for d in meta.get("domain", [])).lower()
         content = str(bucket.get("content") or "").lower()
+        record = self._parse_memory_content(bucket.get("content", "")) if MEMORY_MARKER.lower() in content else {}
+        summary = str(record.get("summary_text") or "").lower()
+        record_tags = " ".join(str(t) for t in record.get("tags", [])).lower()
+        feel_text = str(record.get("feel_text") or "").lower()
         score = 0.0
+        matched_terms = 0
         for raw_term in terms:
             term = raw_term.lower()
             if not term:
                 continue
-            if term in content:
-                score += 55.0
+            term_score = 0.0
+            if term in summary:
+                term_score += 90.0
+            if term in record_tags:
+                term_score += 70.0
             if term in name:
-                score += 35.0
+                term_score += 45.0
             if term in tags:
-                score += 28.0
+                term_score += 38.0
+            if term in content:
+                term_score += 30.0
+            if term in feel_text:
+                term_score += 24.0
+            if term in name:
+                term_score += 15.0
+            if term in tags:
+                term_score += 12.0
             if term in domains:
-                score += 18.0
+                term_score += 4.0
             if len(term) >= 4:
                 pieces = [p for p in re.split(r"\s+", term) if len(p) >= 2]
-                if pieces and any(piece in content for piece in pieces):
-                    score += 18.0
+                if pieces and any(piece in summary or piece in record_tags for piece in pieces):
+                    term_score += 26.0
+                elif pieces and any(piece in content for piece in pieces):
+                    term_score += 12.0
+            if term_score > 0:
+                matched_terms += 1
+                score += term_score
         if score <= 0:
             return 0.0
         try:
             importance = max(1, min(10, int(meta.get("importance", 5))))
         except (TypeError, ValueError):
             importance = 5
-        return min(99.0, score + importance)
+        return min(99.0, score + importance + matched_terms * 8.0)
 
     async def _natural_float(self, seen: set[str], limit: int) -> list[dict]:
         all_buckets = await self.bucket_mgr.list_all(include_archive=False)
@@ -524,9 +545,9 @@ class ZetaMemoryGateway:
         return index
 
     def _build_query(self, body: dict[str, Any]) -> str:
-        explicit_query = str(body.get("query") or "").strip()
-        current_text = str(body.get("current_text") or body.get("user_message") or "").strip()
-        recent_context = str(body.get("recent_context") or "").strip()
+        explicit_query = self._clean_recall_text(body.get("query") or "")
+        current_text = self._clean_recall_text(body.get("current_text") or body.get("user_message") or "")
+        recent_context = self._clean_recall_text(body.get("recent_context") or "")
         if explicit_query:
             text = explicit_query
         elif len(current_text) >= 8:
@@ -571,6 +592,18 @@ class ZetaMemoryGateway:
             "jpeg",
             "webp",
             "json",
+            "keyword",
+            "terms",
+            "codex",
+            "id",
+            "operit",
+            "activity",
+            "package",
+            "pkg",
+            "bundle",
+            "message_insert_extra_bundle",
+            "wttr",
+            "thundery",
         }
         for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{1,30}", text_without_quotes):
             lowered = token.lower()
@@ -635,7 +668,7 @@ class ZetaMemoryGateway:
 
     @staticmethod
     def _clean_keyword_text(text: Any) -> str:
-        cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+        cleaned = ZetaMemoryGateway._clean_recall_text(text)
         query_matches = re.findall(
             r"(?im)^\s*(?:query|user_message|message|text)\s*[:=]\s*(.+?)\s*$",
             str(text or ""),
@@ -648,6 +681,89 @@ class ZetaMemoryGateway:
         cleaned = re.sub(r"\b(?:mime|type|size|path|url)\s*=\s*[^,\s;，。]+", " ", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"\bfilename\b", " ", cleaned, flags=re.IGNORECASE)
         return re.sub(r"\s+", " ", cleaned).strip()
+
+    @staticmethod
+    def _clean_recall_text(text: Any) -> str:
+        raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+        if not raw.strip():
+            return ""
+
+        metadata_prefixes = (
+            "current time",
+            "current_time",
+            "timestamp",
+            "timezone",
+            "app uptime",
+            "app runtime",
+            "application uptime",
+            "application runtime",
+            "elapsed",
+            "duration",
+            "当前时间",
+            "现在时间",
+            "时间戳",
+            "时区",
+            "应用时长",
+            "运行时长",
+            "使用时长",
+            "会话时长",
+            "页面",
+            "窗口",
+        )
+        metadata_markers = [
+            "【当前屏幕应用】",
+            "【应用使用时长】",
+            "统计窗口:",
+            "最近使用:",
+            "包名:",
+            "Activity:",
+            "来源: wttr.in",
+            "source: wttr.in",
+            "message_insert_extra_bundle",
+            "keyword=",
+            "terms=",
+        ]
+        metadata_only_markers = (
+            "当前屏幕应用",
+            "应用使用时长",
+            "最近使用",
+            "统计窗口",
+            "wttr.in",
+            "风速",
+            "包名",
+            "activity",
+            "keyword=",
+            "terms=",
+        )
+
+        cleaned_lines = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            low = line.lower()
+            if any(low.startswith(prefix) for prefix in metadata_prefixes):
+                continue
+            positions = [line.find(marker) for marker in metadata_markers if line.find(marker) >= 0]
+            if positions:
+                line = line[:min(positions)].strip()
+            line = re.sub(r"\bkeyword\s*=\s*[^|\n]*", " ", line, flags=re.IGNORECASE)
+            line = re.sub(r"\bterms\s*=\s*.*$", " ", line, flags=re.IGNORECASE)
+            line = re.sub(r"\bmessage_insert_extra_bundle_\d+\b", " ", line, flags=re.IGNORECASE)
+            line = re.sub(r"\bcom\.[A-Za-z0-9_.-]+\b", " ", line)
+            line = re.sub(r"\bActivity\s*:\s*\S+", " ", line, flags=re.IGNORECASE)
+            line = re.sub(r"\b(?:package|pkg|包名)\s*[:：]\s*\S+", " ", line, flags=re.IGNORECASE)
+            line = re.sub(r"\b(?:current\s+app|app\s+uptime|recent\s+use)\b.*", " ", line, flags=re.IGNORECASE)
+            line = re.sub(r"(?:风速|湿度|来源\s*[:：]\s*wttr\.in|weather|thundery)[^。！？\n]*", " ", line, flags=re.IGNORECASE)
+            line = re.sub(r"\s+", " ", line).strip()
+            low = line.lower()
+            if "%" in line and re.fullmatch(r"[\d\s%./:-]+", line):
+                continue
+            if not line or any(marker in low for marker in metadata_only_markers):
+                continue
+            cleaned_lines.append(line)
+
+        return re.sub(r"\s+", " ", "\n".join(cleaned_lines)).strip()
 
     @staticmethod
     def _add_keyword_candidate(terms: list[str], value: str, limit: int) -> None:
