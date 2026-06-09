@@ -468,6 +468,54 @@ try:
             "error": "Full diary text lives in Operit local storage. Use read_diary in Operit with the diary:// visibility and id.",
         }, status_code=501)
 
+    async def gateway_status(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"ok": False, "error": zeta_openai_gateway.startup_error}, status_code=503)
+        return JSONResponse(gateway.memory_gateway.status())
+
+    async def gateway_recall(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"ok": False, "error": zeta_openai_gateway.startup_error}, status_code=503)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "error": "Request body must be an object"}, status_code=400)
+        try:
+            result = await gateway.memory_gateway.recall(body)
+            return JSONResponse(result)
+        except Exception as exc:
+            logger.warning("Gateway dashboard recall failed: %s", exc)
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    async def gateway_raw_lookup(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"ok": False, "error": zeta_openai_gateway.startup_error}, status_code=503)
+        try:
+            if request.method == "POST":
+                body = await request.json()
+                raw_ref = str(body.get("raw_ref") or "").strip() if isinstance(body, dict) else ""
+            else:
+                raw_ref = str(request.query_params.get("ref") or "").strip()
+            result = await gateway.memory_gateway.lookup_raw(raw_ref)
+            return JSONResponse(result, status_code=200 if result.get("ok") else 404)
+        except Exception as exc:
+            logger.warning("Gateway dashboard raw lookup failed: %s", exc)
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
     async def dashboard_page(request: Request) -> HTMLResponse:
         dashboard_path = Path(__file__).with_name("dashboard.html")
         if not dashboard_path.exists():
@@ -709,6 +757,9 @@ try:
     app.router.routes.append(Route("/debug/recall.json", debug_recall_json, methods=["GET"]))
     app.router.routes.append(Route("/gateway/diary", gateway_diary_index, methods=["POST"]))
     app.router.routes.append(Route("/gateway/diary/lookup", gateway_diary_lookup, methods=["GET", "POST"]))
+    app.router.routes.append(Route("/gateway/status", gateway_status, methods=["GET"]))
+    app.router.routes.append(Route("/gateway/recall", gateway_recall, methods=["POST"]))
+    app.router.routes.append(Route("/gateway/raw/lookup", gateway_raw_lookup, methods=["GET", "POST"]))
     app.router.routes.append(Route("/", dashboard_page, methods=["GET"]))
     app.router.routes.append(Route("/dashboard", dashboard_page, methods=["GET"]))
     app.router.routes.append(Route("/auth/status", auth_status, methods=["GET"]))
