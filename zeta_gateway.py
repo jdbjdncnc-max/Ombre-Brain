@@ -35,6 +35,16 @@ class ZetaMemoryGateway:
             0,
             8,
         )
+        self.use_boost_threshold = self._bounded_int(
+            os.environ.get("OMBRE_RECALL_USECOUNT_BOOST_THRESHOLD", "3"),
+            1,
+            50,
+        )
+        self.use_boost_importance_max = self._bounded_int(
+            os.environ.get("OMBRE_RECALL_USECOUNT_IMPORTANCE_MAX", "7"),
+            1,
+            10,
+        )
         self.raw_dir.mkdir(parents=True, exist_ok=True)
 
     def require_auth(self, request):
@@ -65,6 +75,8 @@ class ZetaMemoryGateway:
             "include_legacy": self.include_legacy,
             "legacy_keyword_limit": self.legacy_keyword_limit,
             "natural_limit": self.natural_limit,
+            "use_boost_threshold": self.use_boost_threshold,
+            "use_boost_importance_max": self.use_boost_importance_max,
         }
 
     async def save_raw(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -139,6 +151,7 @@ class ZetaMemoryGateway:
         max_results = self._bounded_int(body.get("max_results", 5), 1, 8)
         keyword_limit = self._bounded_int(body.get("keyword_limit", 4), 0, max_results)
         semantic_limit = self._bounded_int(body.get("semantic_limit", 1), 0, max_results)
+        track_usage = self._truthy(body.get("track_usage", False))
 
         if not query:
             buckets = await self._important_recent(max_results)
@@ -148,6 +161,8 @@ class ZetaMemoryGateway:
         index = self._load_memory_index()
         memories = [self._format_memory(b, index) for b in buckets]
         memories = [m for m in memories if m]
+        if track_usage:
+            memories = await self._track_recalled_usage(memories, index)
         return {
             "ok": True,
             "query": query,
@@ -287,7 +302,7 @@ class ZetaMemoryGateway:
             if not existing or float(bucket.get("score") or 0) > float(existing.get("score") or 0):
                 merged[bucket["id"]] = bucket
         ranked = list(merged.values())
-        ranked.sort(key=lambda bucket: float(bucket.get("score") or 0), reverse=True)
+        ranked.sort(key=self._ranking_score, reverse=True)
         return ranked[:limit]
 
     async def _content_search(self, terms: list[str], limit: int, domain_filter: list[str] | None = None) -> list[dict]:
@@ -355,11 +370,22 @@ class ZetaMemoryGateway:
                 score += term_score
         if score <= 0:
             return 0.0
+        return min(99.0, score + matched_terms * 8.0)
+
+    def _importance_bonus(self, bucket: dict[str, Any]) -> float:
+        meta = bucket.get("metadata", {}) if isinstance(bucket, dict) else {}
         try:
             importance = max(1, min(10, int(meta.get("importance", 5))))
         except (TypeError, ValueError):
             importance = 5
-        return min(99.0, score + importance + matched_terms * 8.0)
+        return importance * 0.75
+
+    def _ranking_score(self, bucket: dict[str, Any]) -> float:
+        try:
+            base_score = float(bucket.get("score") or 0)
+        except (TypeError, ValueError):
+            base_score = 0.0
+        return base_score + self._importance_bonus(bucket)
 
     async def _natural_float(self, seen: set[str], limit: int) -> list[dict]:
         all_buckets = await self.bucket_mgr.list_all(include_archive=False)
@@ -407,7 +433,11 @@ class ZetaMemoryGateway:
             "tags": tags,
             "importance": importance,
             "raw_ref": raw_ref,
+            "useCount": self._bounded_int(body.get("useCount", 0), 0, 1000000),
         }
+        last_used_at = str(body.get("lastUsedAt") or "").strip()
+        if last_used_at:
+            entry["lastUsedAt"] = last_used_at
 
         feel_text = str(body.get("feel_text") or "").strip()
         if feel_text:
@@ -426,8 +456,11 @@ class ZetaMemoryGateway:
             f"summary_text: {entry['summary_text']}",
             f"tags: {', '.join(entry['tags'])}",
             f"importance: {entry['importance']}",
+            f"useCount: {entry.get('useCount', 0)}",
             f"raw_ref: {entry['raw_ref']}",
         ]
+        if entry.get("lastUsedAt"):
+            lines.append(f"lastUsedAt: {entry['lastUsedAt']}")
         if entry.get("feel_text"):
             lines.append(f"feel_text: {entry['feel_text']}")
         if entry.get("valence") is not None:
@@ -454,7 +487,7 @@ class ZetaMemoryGateway:
             "importance": record.get("importance"),
             "raw_ref": record.get("raw_ref", ""),
         }
-        for field in ("feel_text", "valence", "arousal", "memory_id", "created"):
+        for field in ("feel_text", "valence", "arousal", "memory_id", "created", "useCount", "lastUsedAt"):
             if record.get(field) is not None:
                 result[field] = record[field]
         return result
@@ -479,9 +512,11 @@ class ZetaMemoryGateway:
                 record[key] = self._normalize_tags(value)
             elif key == "importance":
                 record[key] = self._bounded_int(value, 1, 10)
+            elif key == "useCount":
+                record[key] = self._bounded_int(value, 0, 1000000)
             elif key in ("valence", "arousal"):
                 record[key] = float(value)
-            elif key in ("summary_text", "raw_ref", "feel_text"):
+            elif key in ("summary_text", "raw_ref", "feel_text", "lastUsedAt"):
                 record[key] = value
         return record
 
@@ -509,7 +544,109 @@ class ZetaMemoryGateway:
             result["valence"] = meta.get("valence")
         if meta.get("arousal") is not None:
             result["arousal"] = meta.get("arousal")
+        if meta.get("useCount") is not None:
+            result["useCount"] = meta.get("useCount")
+        if meta.get("lastUsedAt") is not None:
+            result["lastUsedAt"] = meta.get("lastUsedAt")
         return result
+
+    async def _track_recalled_usage(
+        self,
+        memories: list[dict[str, Any]],
+        index: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        now = _now_iso()
+        tracked = []
+        for memory in memories:
+            updated = dict(memory)
+            bucket_id = str(updated.get("bucket_id") or "").strip()
+            if not bucket_id:
+                tracked.append(updated)
+                continue
+
+            try:
+                bucket = await self.bucket_mgr.get(bucket_id)
+            except Exception:
+                bucket = None
+            meta = bucket.get("metadata", {}) if bucket else {}
+            record = dict(index.get(bucket_id, {}))
+
+            current_count = self._count_value(
+                record.get("useCount", updated.get("useCount", meta.get("useCount", meta.get("activation_count", 0))))
+            ) + 1
+            old_importance = self._bounded_int(
+                record.get("importance", updated.get("importance", meta.get("importance", 5))),
+                1,
+                10,
+            )
+            new_importance = self._boosted_importance(old_importance, current_count)
+
+            updated["useCount"] = current_count
+            updated["lastUsedAt"] = now
+            updated["importance"] = new_importance
+
+            if bucket:
+                bucket_updates: dict[str, Any] = {
+                    "useCount": current_count,
+                    "lastUsedAt": now,
+                    "activation_count": current_count,
+                }
+                if new_importance != old_importance:
+                    bucket_updates["importance"] = new_importance
+
+                if self._is_gateway_memory(bucket):
+                    full_record = self._usage_record(record, updated, bucket_id, now)
+                    self._append_jsonl(self.memory_index_path, [full_record])
+                    bucket_updates["content"] = self._memory_content(full_record)
+
+                try:
+                    await self.bucket_mgr.update(bucket_id, **bucket_updates)
+                except Exception:
+                    pass
+
+            tracked.append(updated)
+        return tracked
+
+    def _boosted_importance(self, importance: int, use_count: int) -> int:
+        if use_count < self.use_boost_threshold:
+            return importance
+        if use_count % self.use_boost_threshold != 0:
+            return importance
+        if importance >= self.use_boost_importance_max:
+            return importance
+        return min(self.use_boost_importance_max, importance + 1)
+
+    def _usage_record(
+        self,
+        record: dict[str, Any],
+        memory: dict[str, Any],
+        bucket_id: str,
+        now: str,
+    ) -> dict[str, Any]:
+        merged = dict(record)
+        merged["bucket_id"] = bucket_id
+        for field in (
+            "memory_id",
+            "created",
+            "summary_text",
+            "tags",
+            "importance",
+            "raw_ref",
+            "feel_text",
+            "valence",
+            "arousal",
+            "useCount",
+            "lastUsedAt",
+        ):
+            if memory.get(field) is not None:
+                merged[field] = memory[field]
+        if not merged.get("memory_id"):
+            merged["memory_id"] = f"mem_{uuid.uuid4().hex[:12]}"
+        if not merged.get("created"):
+            merged["created"] = now
+        if not isinstance(merged.get("tags"), list):
+            merged["tags"] = self._normalize_tags(merged.get("tags", []))
+        return merged
 
     def _injection_text(self, memories: list[dict[str, Any]]) -> str:
         if not memories:
@@ -550,10 +687,13 @@ class ZetaMemoryGateway:
         recent_context = self._clean_recall_text(body.get("recent_context") or "")
         if explicit_query:
             text = explicit_query
-        elif len(current_text) >= 8:
-            text = current_text
         else:
-            text = "\n".join(p for p in (current_text, recent_context) if p)
+            parts = []
+            if recent_context:
+                parts.append(recent_context)
+            if current_text and current_text not in recent_context:
+                parts.append(current_text)
+            text = "\n".join(parts)
         return text[:4000]
 
     def _keyword_query(self, text: str) -> str:
@@ -852,6 +992,17 @@ class ZetaMemoryGateway:
         except (TypeError, ValueError):
             number = low
         return max(low, min(high, number))
+
+    @staticmethod
+    def _count_value(value: Any) -> int:
+        try:
+            return max(0, int(float(value)))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _truthy(value: Any) -> bool:
+        return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
     @staticmethod
     def _compact_text(text: str, limit: int) -> str:

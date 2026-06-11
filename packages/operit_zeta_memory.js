@@ -87,6 +87,7 @@ export async function zeta_recall_memories(current_text, recent_context, options
     max_results: options && options.max_results ? options.max_results : 5,
     keyword_limit: options && options.keyword_limit !== undefined ? options.keyword_limit : 4,
     semantic_limit: options && options.semantic_limit !== undefined ? options.semantic_limit : 1,
+    track_usage: !options || options.track_usage === undefined ? true : Boolean(options.track_usage),
   });
   return result.injection_text || "";
 }

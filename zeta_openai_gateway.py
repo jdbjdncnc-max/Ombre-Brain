@@ -264,12 +264,14 @@ class ZetaOpenAIGateway:
 
         user_text = self._extract_last_user_text(payload.get("messages", []))
         user_raw_refs = await self._save_turn(session_id, "user", user_text)
+        recall_context = self._recall_context_text(payload.get("messages", []))
         recalled = await self.memory_gateway.recall({
             "current_text": user_text,
-            "recent_context": self._recent_context_text(payload.get("messages", [])),
+            "recent_context": recall_context,
             "max_results": self.recall_max_results,
             "keyword_limit": self.keyword_limit,
             "semantic_limit": self.semantic_limit,
+            "track_usage": True,
         })
         memory_headers = self._memory_debug_headers(recalled)
         self._log_recall(session_id, recalled)
@@ -967,6 +969,44 @@ Return strict JSON with this shape:
             if isinstance(message, dict) and message.get("role") == "user":
                 return self._sanitize_user_text(self._message_content_to_text(message.get("content")))
         return ""
+
+    def _recall_context_text(self, messages: list[dict[str, Any]]) -> str:
+        if not isinstance(messages, list):
+            return ""
+
+        current_index = None
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            if isinstance(message, dict) and message.get("role") == "user":
+                current_index = index
+                break
+        if current_index is None:
+            return self._recent_context_text(messages)
+
+        selected: list[tuple[str, str]] = []
+        for index in range(current_index - 1, -1, -1):
+            message = messages[index]
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "")
+            if role not in {"user", "assistant"}:
+                continue
+            text = self._message_content_to_text(message.get("content")).strip()
+            if role == "user":
+                text = self._sanitize_user_text(text)
+            if text:
+                selected.append((role, text))
+            if len(selected) >= 2:
+                break
+        selected.reverse()
+
+        current_user = self._sanitize_user_text(
+            self._message_content_to_text(messages[current_index].get("content"))
+        )
+        if current_user:
+            selected.append(("user", current_user))
+
+        return "\n".join(f"{role}: {text}" for role, text in selected)[-4000:]
 
     def _recent_context_text(self, messages: list[dict[str, Any]]) -> str:
         texts = []

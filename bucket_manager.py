@@ -282,6 +282,12 @@ class BucketManager:
             post["digested"] = bool(kwargs["digested"])
         if "model_valence" in kwargs:
             post["model_valence"] = max(0.0, min(1.0, float(kwargs["model_valence"])))
+        if "useCount" in kwargs:
+            post["useCount"] = max(0, int(kwargs["useCount"]))
+        if "lastUsedAt" in kwargs:
+            post["lastUsedAt"] = str(kwargs["lastUsedAt"])
+        if "activation_count" in kwargs:
+            post["activation_count"] = max(0, float(kwargs["activation_count"]))
 
         # --- Auto-refresh activation time / 自动刷新激活时间 ---
         post["last_active"] = now_iso()
