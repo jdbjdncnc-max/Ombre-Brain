@@ -689,12 +689,18 @@ class ZetaMemoryGateway:
             text = explicit_query
         else:
             parts = []
-            if recent_context:
-                parts.append(recent_context)
-            if current_text and current_text not in recent_context:
+            if current_text:
                 parts.append(current_text)
+            if recent_context:
+                context = recent_context
+                if current_text:
+                    context = context.replace(f"user: {current_text}", "")
+                    context = context.replace(current_text, "")
+                    context = re.sub(r"\n{2,}", "\n", context).strip()
+                if context:
+                    parts.append(context)
             text = "\n".join(parts)
-        return text[:4000]
+        return text[:3000]
 
     def _keyword_query(self, text: str) -> str:
         return " ".join(self._keyword_terms(text))

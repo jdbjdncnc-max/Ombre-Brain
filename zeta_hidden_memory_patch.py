@@ -307,12 +307,19 @@ async def _hidden_chat_completions(self: Any, request: Any) -> Response:
 
     user_text = self._extract_last_user_text(payload.get("messages", []))
     user_raw_refs = await self._save_turn(session_id, "user", user_text)
+    recall_context_builder = getattr(self, "_recall_context_text", None)
+    recall_context = (
+        recall_context_builder(payload.get("messages", []))
+        if callable(recall_context_builder)
+        else self._recent_context_text(payload.get("messages", []))
+    )
     recalled = await self.memory_gateway.recall({
         "current_text": user_text,
-        "recent_context": self._recent_context_text(payload.get("messages", [])),
+        "recent_context": recall_context,
         "max_results": self.recall_max_results,
         "keyword_limit": self.keyword_limit,
         "semantic_limit": self.semantic_limit,
+        "track_usage": True,
     })
     memory_headers = self._memory_debug_headers(recalled)
     self._log_recall(session_id, recalled)

@@ -981,9 +981,10 @@ Return strict JSON with this shape:
                 current_index = index
                 break
         if current_index is None:
-            return self._recent_context_text(messages)
+            return ""
 
-        selected: list[tuple[str, str]] = []
+        previous_user: tuple[str, str] | None = None
+        previous_assistant: tuple[str, str] | None = None
         for index in range(current_index - 1, -1, -1):
             message = messages[index]
             if not isinstance(message, dict):
@@ -994,19 +995,36 @@ Return strict JSON with this shape:
             text = self._message_content_to_text(message.get("content")).strip()
             if role == "user":
                 text = self._sanitize_user_text(text)
-            if text:
-                selected.append((role, text))
-            if len(selected) >= 2:
+            text = self._recall_context_piece(text, 900)
+            if not text:
+                continue
+            if role == "assistant" and previous_assistant is None:
+                previous_assistant = (role, text)
+                continue
+            if role == "user":
+                previous_user = (role, text)
                 break
-        selected.reverse()
+
+        selected: list[tuple[str, str]] = []
+        if previous_user:
+            selected.append(previous_user)
+        if previous_assistant:
+            selected.append(previous_assistant)
 
         current_user = self._sanitize_user_text(
             self._message_content_to_text(messages[current_index].get("content"))
         )
+        current_user = self._recall_context_piece(current_user, 1800)
         if current_user:
             selected.append(("user", current_user))
 
-        return "\n".join(f"{role}: {text}" for role, text in selected)[-4000:]
+        return "\n".join(f"{role}: {text}" for role, text in selected)[-2800:]
+
+    def _recall_context_piece(self, text: str, limit: int) -> str:
+        text = re.sub(r"\s+", " ", str(text or "")).strip()
+        if len(text) <= limit:
+            return text
+        return text[-limit:]
 
     def _recent_context_text(self, messages: list[dict[str, Any]]) -> str:
         texts = []
