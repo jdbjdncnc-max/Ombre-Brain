@@ -600,7 +600,39 @@ class ZetaOpenAIGateway:
             insert_at = 1 if messages and messages[0].get("role") == "system" else 0
             messages.insert(insert_at, memory_message)
         forward["messages"] = messages
+        self._remove_visible_private_diary_tools(forward)
         return forward
+
+    def _remove_visible_private_diary_tools(self, payload: dict[str, Any]) -> None:
+        tools = payload.get("tools")
+        if not isinstance(tools, list) or not tools:
+            return
+        kept = [tool for tool in tools if not self._is_visible_private_diary_tool(tool)]
+        if len(kept) == len(tools):
+            return
+        if kept:
+            payload["tools"] = kept
+        else:
+            payload.pop("tools", None)
+            payload.pop("tool_choice", None)
+
+    def _is_visible_private_diary_tool(self, tool: Any) -> bool:
+        if not isinstance(tool, dict):
+            return False
+        function = tool.get("function") if isinstance(tool.get("function"), dict) else {}
+        name = str(function.get("name") or tool.get("name") or "").lower()
+        description = str(function.get("description") or tool.get("description") or "").lower()
+        text = f"{name} {description}"
+        blocked = (
+            "write_diary",
+            "read_diary",
+            "private_diary",
+            "operit_diary:write",
+            "operit_diary.write",
+            "operit_diary:read",
+            "operit_diary.read",
+        )
+        return any(marker in text for marker in blocked)
 
     def _build_gateway_system_text(self, recalled: dict[str, Any]) -> str:
         parts = []

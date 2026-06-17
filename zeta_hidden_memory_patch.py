@@ -14,17 +14,26 @@ logger = logging.getLogger("ombre_brain.zeta_hidden_memory_patch")
 
 MEMORY_REQUEST_OPEN = "<zeta_memory_request>"
 MEMORY_REQUEST_CLOSE = "</zeta_memory_request>"
+PRIVATE_DIARY_OPEN = "<zeta_private_diary>"
+PRIVATE_DIARY_CLOSE = "</zeta_private_diary>"
 
 
 class _HiddenMemoryStreamFilter:
-    def __init__(self, parse_entries, enabled: bool):
+    def __init__(self, parse_entries, enabled: bool, parse_diaries=None):
         self.parse_entries = parse_entries
+        self.parse_diaries = parse_diaries
         self.enabled = enabled
         self.buffer = ""
         self.hidden_buffer = ""
-        self.hidden = False
+        self.hidden_close = ""
+        self.hidden_kind = ""
         self.entries: list[dict[str, Any]] = []
-        self.tail_len = max(0, len(MEMORY_REQUEST_OPEN) - 1)
+        self.diaries: list[dict[str, Any]] = []
+        self.hidden_specs = [
+            ("memory", MEMORY_REQUEST_OPEN, MEMORY_REQUEST_CLOSE),
+            ("private_diary", PRIVATE_DIARY_OPEN, PRIVATE_DIARY_CLOSE),
+        ]
+        self.tail_len = max(0, max(len(open_tag) for _, open_tag, _ in self.hidden_specs) - 1)
 
     def feed(self, text: str) -> str:
         if not self.enabled or not text:
@@ -36,7 +45,7 @@ class _HiddenMemoryStreamFilter:
     def flush(self) -> str:
         if not self.enabled:
             return ""
-        if self.hidden:
+        if self.hidden_close:
             self.hidden_buffer = ""
             return ""
         tail = self.buffer
@@ -44,28 +53,31 @@ class _HiddenMemoryStreamFilter:
         return tail
 
     def _feed(self, text: str, output: list[str]) -> None:
-        if self.hidden:
+        if self.hidden_close:
             self.hidden_buffer += text
-            close_idx = self.hidden_buffer.lower().find(MEMORY_REQUEST_CLOSE.lower())
+            close_idx = self.hidden_buffer.lower().find(self.hidden_close.lower())
             if close_idx < 0:
                 return
             raw_json = self.hidden_buffer[:close_idx].strip()
-            self.entries.extend(self.parse_entries(raw_json))
-            rest = self.hidden_buffer[close_idx + len(MEMORY_REQUEST_CLOSE):]
+            self._collect_hidden(raw_json)
+            rest = self.hidden_buffer[close_idx + len(self.hidden_close):]
             self.hidden_buffer = ""
-            self.hidden = False
+            self.hidden_close = ""
+            self.hidden_kind = ""
             if rest:
                 self._feed(rest, output)
             return
 
         self.buffer += text
-        open_idx = self.buffer.lower().find(MEMORY_REQUEST_OPEN.lower())
-        if open_idx >= 0:
+        found = self._find_open_block(self.buffer)
+        if found is not None:
+            open_idx, kind, open_tag, close_tag = found
             visible = self.buffer[:open_idx]
             if visible:
                 output.append(visible)
-            self.hidden = True
-            hidden_rest = self.buffer[open_idx + len(MEMORY_REQUEST_OPEN):]
+            self.hidden_kind = kind
+            self.hidden_close = close_tag
+            hidden_rest = self.buffer[open_idx + len(open_tag):]
             self.buffer = ""
             self._feed(hidden_rest, output)
             return
@@ -74,6 +86,24 @@ class _HiddenMemoryStreamFilter:
             emit_len = len(self.buffer) - self.tail_len
             output.append(self.buffer[:emit_len])
             self.buffer = self.buffer[emit_len:]
+
+    def _find_open_block(self, text: str):
+        lowered = text.lower()
+        matches = []
+        for kind, open_tag, close_tag in self.hidden_specs:
+            idx = lowered.find(open_tag.lower())
+            if idx >= 0:
+                matches.append((idx, kind, open_tag, close_tag))
+        if not matches:
+            return None
+        matches.sort(key=lambda item: item[0])
+        return matches[0]
+
+    def _collect_hidden(self, raw_json: str) -> None:
+        if self.hidden_kind == "memory":
+            self.entries.extend(self.parse_entries(raw_json))
+        elif self.hidden_kind == "private_diary" and callable(self.parse_diaries):
+            self.diaries.extend(self.parse_diaries(raw_json))
 
 
 def _env(*names: str, default: str = "") -> str:
@@ -105,7 +135,7 @@ def _hidden_memory_instruction(self: Any) -> str:
     if not getattr(self, "hidden_memory_enabled", False):
         return ""
     return f"""
-Private memory-write instruction for Zeta:
+Private memory and diary instruction for Zeta:
 - You may decide whether this exchange should become long-term memory.
 - If nothing is worth remembering, do not output any memory request.
 - If you want to remember something, append exactly one hidden block at the very end of your reply:
@@ -118,14 +148,26 @@ Private memory-write instruction for Zeta:
 - Store stable personal facts, preferences, commitments, relationship moments, repeated patterns, or emotionally meaningful events.
 - Do not store ordinary small talk.
 - Do not store memories about prompts, hidden context, memory injection, the memory gateway, tools, MCP, Zeabur, OpenRouter, API keys, deployment, model settings, or debugging.
+- Private diary rule: never send private diary content through visible tools, ToolPkg, MCP, or plugin calls, because the client may show tool arguments/results to the user.
+- If you want to write a private diary for your own later reflection, append this separate hidden block at the very end of your reply:
+{PRIVATE_DIARY_OPEN}
+{{"entries":[{{"content":"first-person private diary text","title":"optional title","mood":"optional mood","tags":["diary"],"summary_text":"short non-sensitive summary","importance":6,"index_to_memory":true}}]}}
+{PRIVATE_DIARY_CLOSE}
+- The gateway will remove the private diary block before the user sees it and store the full diary server-side. Ordinary public diary entries may still use public diary tools when the user expects to see them.
 """.strip()
 
 
-def _build_gateway_system_text(self: Any, recalled: dict[str, Any]) -> str:
+def _build_gateway_system_text(
+    self: Any,
+    recalled: dict[str, Any],
+    active_recall: dict[str, Any] | None = None,
+) -> str:
     parts = []
     hidden_instruction = self._hidden_memory_instruction()
     if hidden_instruction:
         parts.append(hidden_instruction)
+    if isinstance(active_recall, dict) and active_recall.get("injection_text"):
+        parts.append(str(active_recall.get("injection_text") or ""))
     memory_context = self._build_injection_text(recalled)
     if memory_context:
         parts.append(memory_context)
@@ -133,29 +175,54 @@ def _build_gateway_system_text(self: Any, recalled: dict[str, Any]) -> str:
 
 
 def _extract_zeta_memory_request(self: Any, assistant_text: str) -> tuple[str, list[dict[str, Any]]]:
+    visible, memories, _diaries = self._extract_zeta_hidden_requests(assistant_text)
+    return visible, memories
+
+
+def _extract_zeta_hidden_requests(
+    self: Any,
+    assistant_text: str,
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
     text = assistant_text or ""
-    if not getattr(self, "hidden_memory_enabled", False) or MEMORY_REQUEST_OPEN not in text:
-        return text, []
+    if not getattr(self, "hidden_memory_enabled", False):
+        return text, [], []
 
     entries: list[dict[str, Any]] = []
+    diaries: list[dict[str, Any]] = []
 
-    def collect(match: re.Match) -> str:
+    def collect_memory(match: re.Match) -> str:
         raw_json = match.group(1).strip()
         entries.extend(self._parse_zeta_memory_json(raw_json))
         return ""
 
-    pattern = re.compile(
+    def collect_diary(match: re.Match) -> str:
+        raw_json = match.group(1).strip()
+        diaries.extend(self._parse_zeta_private_diary_json(raw_json))
+        return ""
+
+    memory_pattern = re.compile(
         rf"{re.escape(MEMORY_REQUEST_OPEN)}\s*([\s\S]*?)\s*{re.escape(MEMORY_REQUEST_CLOSE)}",
         flags=re.IGNORECASE,
     )
-    visible = pattern.sub(collect, text)
+    diary_pattern = re.compile(
+        rf"{re.escape(PRIVATE_DIARY_OPEN)}\s*([\s\S]*?)\s*{re.escape(PRIVATE_DIARY_CLOSE)}",
+        flags=re.IGNORECASE,
+    )
+    visible = memory_pattern.sub(collect_memory, text)
+    visible = diary_pattern.sub(collect_diary, visible)
     visible = re.sub(
         rf"{re.escape(MEMORY_REQUEST_OPEN)}[\s\S]*$",
         "",
         visible,
         flags=re.IGNORECASE,
     )
-    return visible.strip(), entries[:3]
+    visible = re.sub(
+        rf"{re.escape(PRIVATE_DIARY_OPEN)}[\s\S]*$",
+        "",
+        visible,
+        flags=re.IGNORECASE,
+    )
+    return visible.strip(), entries[:3], diaries[:3]
 
 
 def _parse_zeta_memory_json(self: Any, raw_json: str) -> list[dict[str, Any]]:
@@ -179,6 +246,50 @@ def _parse_zeta_memory_json(self: Any, raw_json: str) -> list[dict[str, Any]]:
             continue
         entries.append(entry)
     return entries[:3]
+
+
+def _parse_zeta_private_diary_json(self: Any, raw_json: str) -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(raw_json)
+    except json.JSONDecodeError:
+        logger.warning("Zeta private diary JSON parse failed: %s", raw_json[:500])
+        return []
+    entries = payload.get("entries", []) if isinstance(payload, dict) else payload
+    if not isinstance(entries, list):
+        return []
+    diaries = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        diary = self._normalize_private_diary_entry(item)
+        if diary:
+            diaries.append(diary)
+    return diaries[:3]
+
+
+def _normalize_private_diary_entry(self: Any, item: dict[str, Any]) -> dict[str, Any] | None:
+    content = str(item.get("content") or "").strip()
+    if not content:
+        return None
+    tags = item.get("tags", [])
+    if isinstance(tags, str):
+        tags = [tag.strip() for tag in tags.split(",") if tag.strip()]
+    if not isinstance(tags, list):
+        tags = []
+    entry: dict[str, Any] = {
+        "content": content,
+        "title": str(item.get("title") or "").strip(),
+        "mood": str(item.get("mood") or "").strip(),
+        "tags": tags,
+        "summary_text": str(item.get("summary_text") or item.get("summary") or "").strip(),
+        "importance": item.get("importance", 6),
+        "index_to_memory": item.get("index_to_memory", True),
+        "raw_ref": str(item.get("raw_ref") or "").strip(),
+    }
+    for field in ("feel_text", "valence", "arousal"):
+        if item.get(field) is not None:
+            entry[field] = item.get(field)
+    return entry
 
 
 def _normalize_requested_memory_entry(self: Any, item: dict[str, Any]) -> dict[str, Any] | None:
@@ -240,14 +351,42 @@ async def _write_zeta_memory_requests(
     return written
 
 
+async def _write_zeta_private_diary_requests(
+    self: Any,
+    *,
+    session_id: str,
+    entries: list[dict[str, Any]],
+    default_raw_ref: str,
+) -> int:
+    written = 0
+    for entry in entries:
+        if not entry.get("raw_ref"):
+            entry["raw_ref"] = default_raw_ref
+        entry["session_id"] = session_id
+        try:
+            result = await self.memory_gateway.save_private_diary(entry)
+            if result.get("ok"):
+                written += 1
+                logger.info(
+                    "Zeta private diary written | session=%s title=%s",
+                    session_id,
+                    str(result.get("title", ""))[:80],
+                )
+        except Exception as exc:
+            logger.warning("Private diary write failed | session=%s error=%s", session_id, exc)
+    return written
+
+
 def _augment_memory_headers(
     self: Any,
     headers: dict[str, str],
     requested_entries: list[dict[str, Any]],
     written_count: int,
+    diary_count: int = 0,
 ) -> None:
     headers["X-Zeta-Memory-Requests"] = str(len(requested_entries))
     headers["X-Zeta-Memory-Written"] = str(written_count)
+    headers["X-Zeta-Private-Diary-Written"] = str(diary_count)
 
 
 def _should_run_reflection(self: Any, zeta_written_count: int) -> bool:
@@ -279,6 +418,39 @@ def _remember_recall_debug(
         "injection_text": recalled.get("injection_text", "") if isinstance(recalled, dict) else "",
         "timestamp": int(time.time()),
     }
+
+
+def _should_run_active_recall(self: Any, text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    time_markers = (
+        "昨晚",
+        "昨天",
+        "前天",
+        "今天",
+        "刚刚",
+        "刚才",
+        "最近",
+        "这几天",
+        "这两天",
+        "上周",
+        "上次",
+        "之前",
+    )
+    recall_markers = (
+        "聊了什么",
+        "聊过什么",
+        "说了什么",
+        "说过什么",
+        "发生了什么",
+        "记得",
+        "回忆",
+        "想起来",
+        "提到过",
+        "总结一下",
+    )
+    return any(marker in value for marker in time_markers) and any(marker in value for marker in recall_markers)
 
 
 async def _hidden_chat_completions(self: Any, request: Any) -> Response:
@@ -321,10 +493,21 @@ async def _hidden_chat_completions(self: Any, request: Any) -> Response:
         "semantic_limit": self.semantic_limit,
         "track_usage": True,
     })
+    active_recalled = None
+    if self._should_run_active_recall(user_text):
+        active_recalled = await self.memory_gateway.active_recall({
+            "current_text": user_text,
+            "session_id": session_id,
+            "max_turns": 10,
+            "max_memories": 6,
+            "max_diaries": 3,
+        })
     memory_headers = self._memory_debug_headers(recalled)
+    if isinstance(active_recalled, dict) and active_recalled.get("injection_text"):
+        memory_headers["X-Zeta-Active-Recall"] = "1"
     self._log_recall(session_id, recalled)
     self._remember_recall_debug(session_id=session_id, user_text=user_text, recalled=recalled)
-    injected_text = self._build_gateway_system_text(recalled)
+    injected_text = self._build_gateway_system_text(recalled, active_recalled)
     forward_payload = self._prepare_forward_payload(payload, injected_text)
 
     if forward_payload.get("stream") is True:
@@ -343,14 +526,21 @@ async def _hidden_chat_completions(self: Any, request: Any) -> Response:
         return self._upstream_request_error(exc)
     if 200 <= upstream_response.status_code < 300:
         assistant_text = self._assistant_text_from_response(upstream_response)
-        visible_text, zeta_entries = self._extract_zeta_memory_request(assistant_text)
+        visible_text, zeta_entries, diary_entries = self._extract_zeta_hidden_requests(assistant_text)
         assistant_raw_refs = await self._save_turn(session_id, "zeta", visible_text)
+        diary_written = await self._write_zeta_private_diary_requests(
+            session_id=session_id,
+            entries=diary_entries,
+            default_raw_ref=assistant_raw_refs[0] if assistant_raw_refs else (
+                user_raw_refs[0] if user_raw_refs else ""
+            ),
+        )
         zeta_written = await self._write_zeta_memory_requests(
             session_id=session_id,
             entries=zeta_entries,
             default_raw_ref=user_raw_refs[0] if user_raw_refs else (assistant_raw_refs[0] if assistant_raw_refs else ""),
         )
-        self._augment_memory_headers(memory_headers, zeta_entries, zeta_written)
+        self._augment_memory_headers(memory_headers, zeta_entries, zeta_written, diary_written)
         if self._should_run_reflection(zeta_written):
             self._schedule_reflection(
                 session_id=session_id,
@@ -399,6 +589,7 @@ async def _hidden_stream_upstream(
     stream_filter = _HiddenMemoryStreamFilter(
         self._parse_zeta_memory_json,
         bool(getattr(self, "hidden_memory_enabled", False)),
+        self._parse_zeta_private_diary_json,
     )
     last_chunk: dict[str, Any] = {}
     finalized = False
@@ -427,24 +618,32 @@ async def _hidden_stream_upstream(
         if tail:
             assistant_parts.append(tail)
             emitted.append(content_chunk(tail))
-        visible_text = "".join(assistant_parts).strip()
-        assistant_raw_refs = await self._save_turn(session_id, "zeta", visible_text)
-        zeta_written = await self._write_zeta_memory_requests(
-            session_id=session_id,
-            entries=stream_filter.entries[:3],
-            default_raw_ref=user_raw_refs[0] if user_raw_refs else (
-                assistant_raw_refs[0] if assistant_raw_refs else ""
-            ),
-        )
-        if self._should_run_reflection(zeta_written):
-            self._schedule_reflection(
+            visible_text = "".join(assistant_parts).strip()
+            assistant_raw_refs = await self._save_turn(session_id, "zeta", visible_text)
+            diary_written = await self._write_zeta_private_diary_requests(
                 session_id=session_id,
-                user_text=user_text,
-                assistant_text=visible_text,
-                user_raw_refs=user_raw_refs,
-                assistant_raw_refs=assistant_raw_refs,
-                recalled=recalled,
+                entries=stream_filter.diaries[:3],
+                default_raw_ref=assistant_raw_refs[0] if assistant_raw_refs else (
+                    user_raw_refs[0] if user_raw_refs else ""
+                ),
             )
+            zeta_written = await self._write_zeta_memory_requests(
+                session_id=session_id,
+                entries=stream_filter.entries[:3],
+                default_raw_ref=user_raw_refs[0] if user_raw_refs else (
+                    assistant_raw_refs[0] if assistant_raw_refs else ""
+                ),
+            )
+            self._augment_memory_headers(memory_headers, stream_filter.entries[:3], zeta_written, diary_written)
+            if self._should_run_reflection(zeta_written):
+                self._schedule_reflection(
+                    session_id=session_id,
+                    user_text=user_text,
+                    assistant_text=visible_text,
+                    user_raw_refs=user_raw_refs,
+                    assistant_raw_refs=assistant_raw_refs,
+                    recalled=recalled,
+                )
         return emitted
 
     async def stream_body():
@@ -590,6 +789,7 @@ def apply_hidden_memory_patch(gateway_module: Any) -> None:
             payload = {}
         payload["memory_write_mode"] = getattr(self, "memory_write_mode", "zeta")
         payload["hidden_memory_request_enabled"] = bool(getattr(self, "hidden_memory_enabled", False))
+        payload["private_diary_hidden_write_enabled"] = bool(getattr(self, "hidden_memory_enabled", False))
         payload["reflection_enabled"] = bool(getattr(self, "reflection_enabled", False))
         return JSONResponse(payload, status_code=response.status_code)
 
@@ -600,12 +800,17 @@ def apply_hidden_memory_patch(gateway_module: Any) -> None:
     gateway_class._build_gateway_system_text = _build_gateway_system_text
     gateway_class._hidden_memory_instruction = _hidden_memory_instruction
     gateway_class._extract_zeta_memory_request = _extract_zeta_memory_request
+    gateway_class._extract_zeta_hidden_requests = _extract_zeta_hidden_requests
     gateway_class._parse_zeta_memory_json = _parse_zeta_memory_json
+    gateway_class._parse_zeta_private_diary_json = _parse_zeta_private_diary_json
     gateway_class._normalize_requested_memory_entry = _normalize_requested_memory_entry
+    gateway_class._normalize_private_diary_entry = _normalize_private_diary_entry
     gateway_class._write_zeta_memory_requests = _write_zeta_memory_requests
+    gateway_class._write_zeta_private_diary_requests = _write_zeta_private_diary_requests
     gateway_class._augment_memory_headers = _augment_memory_headers
     gateway_class._should_run_reflection = _should_run_reflection
     gateway_class._remember_recall_debug = _remember_recall_debug
+    gateway_class._should_run_active_recall = _should_run_active_recall
     gateway_class._proxy_chat_response_with_text = _proxy_chat_response_with_text
     gateway_class._stream_events_from_text = _stream_events_from_text
     gateway_class._zeta_hidden_memory_patch_applied = True

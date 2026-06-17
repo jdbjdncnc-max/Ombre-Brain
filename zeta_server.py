@@ -63,6 +63,34 @@ async def gateway_recall(request):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
 
+@server.mcp.custom_route("/gateway/active_recall", methods=["POST"])
+async def gateway_active_recall(request):
+    auth_error = zeta_gateway.require_auth(request)
+    if auth_error is not None:
+        return auth_error
+    try:
+        body = await request.json()
+        result = await zeta_gateway.active_recall(body)
+        return JSONResponse(result)
+    except Exception as e:
+        server.logger.warning(f"Zeta gateway active recall failed: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+@server.mcp.custom_route("/gateway/private_diary", methods=["POST"])
+async def gateway_private_diary(request):
+    auth_error = zeta_gateway.require_auth(request)
+    if auth_error is not None:
+        return auth_error
+    try:
+        body = await request.json()
+        result = await zeta_gateway.save_private_diary(body)
+        return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+    except Exception as e:
+        server.logger.warning(f"Zeta gateway private diary failed: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
 @server.mcp.custom_route("/gateway/raw/lookup", methods=["GET", "POST"])
 async def gateway_lookup_raw(request):
     auth_error = zeta_gateway.require_auth(request)

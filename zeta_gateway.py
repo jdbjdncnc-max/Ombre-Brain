@@ -2,7 +2,7 @@ import json
 import os
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +19,7 @@ class ZetaMemoryGateway:
         self.base_dir = Path(config["buckets_dir"]) / "gateway"
         self.raw_dir = self.base_dir / "raw"
         self.memory_index_path = self.base_dir / "memories.jsonl"
+        self.private_diary_path = self.base_dir / "private_diary.jsonl"
         self.include_legacy = os.environ.get("OMBRE_RECALL_INCLUDE_LEGACY", "true").strip().lower() not in {
             "0",
             "false",
@@ -70,6 +71,7 @@ class ZetaMemoryGateway:
             "gateway": "zeta",
             "raw_dir": str(self.raw_dir),
             "memory_index": str(self.memory_index_path),
+            "private_diary": str(self.private_diary_path),
             "auth": "token" if os.environ.get("OMBRE_GATEWAY_TOKEN", "").strip() else "open",
             "embedding": bool(self.embedding_engine and self.embedding_engine.enabled),
             "include_legacy": self.include_legacy,
@@ -146,6 +148,88 @@ class ZetaMemoryGateway:
         self._append_jsonl(self.memory_index_path, [record])
         return {"ok": True, "memory_id": record["memory_id"], "bucket_id": bucket_id, "memory": record}
 
+    async def save_private_diary(self, body: dict[str, Any]) -> dict[str, Any]:
+        content = str(body.get("content") or "").strip()
+        if not content:
+            return {"ok": False, "error": "content is required"}
+
+        created = str(body.get("created") or body.get("created_at") or _now_iso()).strip()
+        diary_id = self._safe_id(body.get("id") or body.get("diary_id") or f"pdiary_{uuid.uuid4().hex[:12]}")
+        summary = str(body.get("summary_text") or body.get("summary") or "").strip()
+        if not summary:
+            summary = self._compact_text(content, 160)
+        title = str(body.get("title") or "").strip() or self._compact_text(summary, 48)
+        raw_ref = str(body.get("raw_ref") or "").strip() or f"zeta-diary://private/{diary_id}"
+        tags = self._normalize_tags(body.get("tags", []))
+        for tag in ("diary", "diary:private", "zeta_private"):
+            if tag not in tags:
+                tags.append(tag)
+
+        record = {
+            "diary_id": diary_id,
+            "raw_ref": raw_ref,
+            "visibility": "private",
+            "session_id": str(body.get("session_id") or "").strip(),
+            "created": created,
+            "title": title,
+            "summary_text": summary,
+            "content": content,
+            "mood": str(body.get("mood") or "").strip(),
+            "tags": tags,
+        }
+        self._append_jsonl(self.private_diary_path, [record])
+
+        if self._truthy(body.get("index_to_memory", True)):
+            try:
+                importance = self._bounded_int(body.get("importance", 6), 1, 10)
+                await self.write_memory({
+                    "summary_text": f"Private diary: {summary}",
+                    "tags": tags,
+                    "importance": importance,
+                    "raw_ref": raw_ref,
+                    "feel_text": str(body.get("feel_text") or "").strip(),
+                    "valence": body.get("valence"),
+                    "arousal": body.get("arousal"),
+                })
+            except Exception:
+                pass
+
+        return {
+            "ok": True,
+            "diary_id": diary_id,
+            "raw_ref": raw_ref,
+            "created": created,
+            "title": title,
+            "summary_text": summary,
+            "visibility": "private",
+            "content_stored": True,
+        }
+
+    async def active_recall(self, body: dict[str, Any]) -> dict[str, Any]:
+        query = self._clean_recall_text(body.get("query") or body.get("current_text") or "")
+        session_id = self._safe_id(body.get("session_id") or "")
+        max_turns = self._bounded_int(body.get("max_turns", 8), 1, 16)
+        max_memories = self._bounded_int(body.get("max_memories", 6), 1, 12)
+        max_diaries = self._bounded_int(body.get("max_diaries", 3), 0, 8)
+        label, start, end = self._active_recall_window(query, body)
+
+        raw_turns = self._raw_turns_in_window(session_id, start, end, max_turns)
+        memories = await self._memories_in_window(start, end, max_memories)
+        private_diaries = self._private_diaries_in_window(start, end, max_diaries)
+        injection_text = self._active_recall_text(label, start, end, raw_turns, memories, private_diaries)
+        return {
+            "ok": True,
+            "mode": "active_recall",
+            "query": query,
+            "label": label,
+            "start": start.isoformat(timespec="seconds"),
+            "end": end.isoformat(timespec="seconds"),
+            "raw_turns": raw_turns,
+            "memories": memories,
+            "private_diaries": private_diaries,
+            "injection_text": injection_text,
+        }
+
     async def recall(self, body: dict[str, Any]) -> dict[str, Any]:
         query = self._build_query(body)
         max_results = self._bounded_int(body.get("max_results", 5), 1, 8)
@@ -192,6 +276,152 @@ class ZetaMemoryGateway:
                 if record.get("turn_id") == turn_id:
                     records.append(record)
         return {"ok": bool(records), "raw_ref": raw_ref, "records": records}
+
+    def _active_recall_window(self, query: str, body: dict[str, Any]) -> tuple[str, datetime, datetime]:
+        explicit_start = str(body.get("start") or "").strip()
+        explicit_end = str(body.get("end") or "").strip()
+        if explicit_start or explicit_end:
+            start = self._parse_time(explicit_start) or (datetime.now() - timedelta(days=3))
+            end = self._parse_time(explicit_end) or (datetime.now() + timedelta(hours=1))
+            return "explicit range", start, end
+
+        now = datetime.now()
+        today = datetime(now.year, now.month, now.day)
+        text = str(query or "").lower()
+        if any(word in text for word in ("昨晚", "昨天晚上", "昨夜")):
+            return "last night", today - timedelta(days=1) + timedelta(hours=18), today + timedelta(hours=6)
+        if "前天" in text:
+            return "the day before yesterday", today - timedelta(days=2), today - timedelta(days=1)
+        if "昨天" in text:
+            return "yesterday", today - timedelta(days=1), today
+        if any(word in text for word in ("今晚", "今天晚上")):
+            return "tonight", today + timedelta(hours=18), now + timedelta(hours=2)
+        if "今天" in text:
+            return "today", today, now + timedelta(hours=1)
+        if any(word in text for word in ("刚刚", "刚才", "前面")):
+            return "recent hours", now - timedelta(hours=4), now + timedelta(hours=1)
+        if any(word in text for word in ("最近", "这几天", "这两天")):
+            return "recent days", now - timedelta(days=3), now + timedelta(hours=1)
+        if "上周" in text:
+            return "last week", now - timedelta(days=10), now + timedelta(hours=1)
+        return "recent week", now - timedelta(days=7), now + timedelta(hours=1)
+
+    def _raw_turns_in_window(
+        self,
+        session_id: str,
+        start: datetime,
+        end: datetime,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        paths = []
+        if session_id:
+            path = self._raw_path(session_id)
+            if path.exists():
+                paths = [path]
+        else:
+            paths = sorted(self.raw_dir.glob("*.jsonl")) if self.raw_dir.exists() else []
+
+        turns: list[dict[str, Any]] = []
+        for path in paths:
+            with path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    timestamp = self._parse_time(record.get("timestamp"))
+                    if not timestamp or timestamp < start or timestamp > end:
+                        continue
+                    turns.append({
+                        "raw_ref": record.get("raw_ref", ""),
+                        "timestamp": record.get("timestamp", ""),
+                        "speaker": record.get("speaker", ""),
+                        "content": self._compact_text(record.get("content", ""), 520),
+                    })
+        turns.sort(key=lambda item: str(item.get("timestamp") or ""))
+        return turns[-limit:]
+
+    async def _memories_in_window(self, start: datetime, end: datetime, limit: int) -> list[dict[str, Any]]:
+        index = self._load_memory_index()
+        candidates = []
+        for bucket in await self.bucket_mgr.list_all(include_archive=False):
+            meta = bucket.get("metadata", {})
+            record = index.get(bucket["id"], {})
+            created = self._parse_time(record.get("created")) or self._parse_time(meta.get("created"))
+            if not created or created < start or created > end:
+                continue
+            bucket = dict(bucket)
+            bucket["gateway_source"] = "active_time"
+            bucket["gateway_reason"] = "created in active recall window"
+            formatted = self._format_memory(bucket, index)
+            if formatted:
+                candidates.append(formatted)
+        candidates.sort(key=lambda item: str(item.get("created") or ""), reverse=True)
+        return candidates[:limit]
+
+    def _private_diaries_in_window(self, start: datetime, end: datetime, limit: int) -> list[dict[str, Any]]:
+        if limit <= 0 or not self.private_diary_path.exists():
+            return []
+        diaries = []
+        with self.private_diary_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                created = self._parse_time(record.get("created"))
+                if not created or created < start or created > end:
+                    continue
+                diaries.append({
+                    "diary_id": record.get("diary_id", ""),
+                    "raw_ref": record.get("raw_ref", ""),
+                    "created": record.get("created", ""),
+                    "title": record.get("title", ""),
+                    "summary_text": record.get("summary_text", ""),
+                    "mood": record.get("mood", ""),
+                    "tags": record.get("tags", []),
+                })
+        diaries.sort(key=lambda item: str(item.get("created") or ""), reverse=True)
+        return diaries[:limit]
+
+    def _active_recall_text(
+        self,
+        label: str,
+        start: datetime,
+        end: datetime,
+        raw_turns: list[dict[str, Any]],
+        memories: list[dict[str, Any]],
+        private_diaries: list[dict[str, Any]],
+    ) -> str:
+        if not raw_turns and not memories and not private_diaries:
+            return ""
+        parts = [
+            "[Zeta active recall]",
+            f"time window: {label} ({start.isoformat(timespec='seconds')} to {end.isoformat(timespec='seconds')})",
+            "Use this only to answer explicit recall/timeline questions. Do not quote private diary text; only use its title/summary as a private orientation.",
+        ]
+        if raw_turns:
+            parts.append("conversation turns:")
+            for turn in raw_turns:
+                parts.append(
+                    f"- [{turn.get('timestamp', '')}] {turn.get('speaker', '')}: "
+                    f"{turn.get('content', '')} ({turn.get('raw_ref', '')})"
+                )
+        if memories:
+            parts.append("memories created in this window:")
+            for memory in memories:
+                parts.append(
+                    f"- [{memory.get('created', '')}] {memory.get('summary_text', '')} "
+                    f"tags={', '.join(memory.get('tags') or [])} raw_ref={memory.get('raw_ref', '')}"
+                )
+        if private_diaries:
+            parts.append("private diary indexes in this window:")
+            for diary in private_diaries:
+                parts.append(
+                    f"- [{diary.get('created', '')}] {diary.get('title', '')}: "
+                    f"{diary.get('summary_text', '')} raw_ref={diary.get('raw_ref', '')}"
+                )
+        return "\n".join(parts)
 
     async def _recall_buckets(self, query: str, keyword_limit: int, semantic_limit: int, max_results: int) -> list[dict]:
         seen = set()
@@ -544,6 +774,8 @@ class ZetaMemoryGateway:
             result["valence"] = meta.get("valence")
         if meta.get("arousal") is not None:
             result["arousal"] = meta.get("arousal")
+        if meta.get("created") is not None:
+            result["created"] = meta.get("created")
         if meta.get("useCount") is not None:
             result["useCount"] = meta.get("useCount")
         if meta.get("lastUsedAt") is not None:
@@ -657,6 +889,7 @@ class ZetaMemoryGateway:
                 f"{idx}. {memory.get('summary_text', '')}\n"
                 f"   tags: {', '.join(memory.get('tags') or [])}\n"
                 f"   importance: {memory.get('importance')}\n"
+                f"   created: {memory.get('created', '')}\n"
                 f"   reason: {memory.get('reason') or memory.get('source', '')}\n"
                 f"   raw_ref: {memory.get('raw_ref', '')}"
             )
@@ -955,6 +1188,18 @@ class ZetaMemoryGateway:
         if not match:
             return None
         return self._safe_id(match.group(1)), self._safe_id(match.group(2))
+
+    def _parse_time(self, value: Any) -> datetime | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is not None:
+            return parsed.astimezone().replace(tzinfo=None)
+        return parsed
 
     def _raw_path(self, session_id: str) -> Path:
         return self.raw_dir / f"{self._safe_id(session_id)}.jsonl"

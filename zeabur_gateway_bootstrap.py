@@ -497,6 +497,47 @@ try:
             logger.warning("Gateway dashboard recall failed: %s", exc)
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
+    async def gateway_active_recall(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"ok": False, "error": zeta_openai_gateway.startup_error}, status_code=503)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "error": "Request body must be an object"}, status_code=400)
+        try:
+            result = await gateway.memory_gateway.active_recall(body)
+            return JSONResponse(result)
+        except Exception as exc:
+            logger.warning("Gateway active recall failed: %s", exc)
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    async def gateway_private_diary(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"ok": False, "error": zeta_openai_gateway.startup_error}, status_code=503)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "error": "Request body must be an object"}, status_code=400)
+        try:
+            result = await gateway.memory_gateway.save_private_diary(body)
+            status = 200 if result.get("ok") else 400
+            return JSONResponse(result, status_code=status)
+        except Exception as exc:
+            logger.warning("Gateway private diary write failed: %s", exc)
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
     async def gateway_raw_lookup(request: Request) -> JSONResponse:
         err = _dashboard_auth_error(request)
         if err is not None:
@@ -759,6 +800,8 @@ try:
     app.router.routes.append(Route("/gateway/diary/lookup", gateway_diary_lookup, methods=["GET", "POST"]))
     app.router.routes.append(Route("/gateway/status", gateway_status, methods=["GET"]))
     app.router.routes.append(Route("/gateway/recall", gateway_recall, methods=["POST"]))
+    app.router.routes.append(Route("/gateway/active_recall", gateway_active_recall, methods=["POST"]))
+    app.router.routes.append(Route("/gateway/private_diary", gateway_private_diary, methods=["POST"]))
     app.router.routes.append(Route("/gateway/raw/lookup", gateway_raw_lookup, methods=["GET", "POST"]))
     app.router.routes.append(Route("/", dashboard_page, methods=["GET"]))
     app.router.routes.append(Route("/dashboard", dashboard_page, methods=["GET"]))

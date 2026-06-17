@@ -119,6 +119,28 @@ When `zeta` mode is enabled, the gateway privately instructs Zeta to append this
 
 The block is removed before the reply reaches Operit. Streaming replies are buffered safely so the hidden block is not shown; this may make the first streamed token arrive later than before.
 
+## Private Diary Safety
+
+Private diary text should not be sent through visible Operit tools, ToolPkg, MCP, or plugin calls, because the client may display tool arguments and results. When hidden Zeta mode is active, the gateway privately instructs Zeta to use:
+
+```text
+<zeta_private_diary>
+{"entries":[{"content":"...","title":"optional","mood":"optional","tags":["diary"],"summary_text":"short summary","importance":6,"index_to_memory":true}]}
+</zeta_private_diary>
+```
+
+The gateway strips this block before Operit sees it and stores the full private diary under `<buckets_dir>/gateway/private_diary.jsonl`. The OpenAI gateway also removes visible `write_diary`, `read_diary`, and `private_diary` tools from the forwarded tool list so private diary content does not travel through visible tool calls.
+
+## Active Recall
+
+For questions such as "what did we talk about last night?", keyword recall can be too weak. The gateway now detects time-oriented recall questions and injects an active timeline recall from raw conversation logs, memories created in that time window, and private diary summaries. It can also be called directly:
+
+```text
+POST /gateway/active_recall
+```
+
+Each injected memory includes `created` so Zeta can distinguish recent memories from older ones.
+
 Optional separate reflection model, only used by `reflection`, `both`, or `zeta_or_reflection` modes:
 
 ```text
@@ -149,6 +171,7 @@ The gateway currently supports OpenAI-compatible chat completions. It supports n
 {
   "memory_write_mode": "zeta",
   "hidden_memory_request_enabled": true,
+  "private_diary_hidden_write_enabled": true,
   "reasoning_configured": true
 }
 ```
@@ -160,6 +183,7 @@ The gateway uses the same `OMBRE_BUCKETS_DIR`. Existing Ombre buckets remain in 
 ```text
 <buckets_dir>/gateway/raw/*.jsonl
 <buckets_dir>/gateway/memories.jsonl
+<buckets_dir>/gateway/private_diary.jsonl
 ```
 
 Structured Zeta memories are also written as normal Ombre buckets under the `zeta_gateway` domain, so Ombre search and embeddings can find them.
