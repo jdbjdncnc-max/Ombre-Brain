@@ -649,8 +649,7 @@ class ZetaOpenAIGateway:
         if not injection:
             return ""
         return (
-            "Private memory context for Zeta. Use it quietly as background continuity. "
-            "Do not mention that a memory gateway or hidden context exists unless the user asks.\n\n"
+            "Private memory context for Zeta. Use quietly; mention gateway/hidden context only if asked.\n\n"
             f"{injection}"
         )
 
@@ -658,19 +657,13 @@ class ZetaOpenAIGateway:
         if not self.hidden_memory_enabled:
             return ""
         return f"""
-Private memory-write instruction for Zeta:
-- You may decide whether this exchange should become long-term memory.
-- If nothing is worth remembering, do not output any memory request.
-- If you want to remember something, append exactly one hidden block at the very end of your reply:
+Zeta hidden memory protocol:
+- Optional; skip if not worth saving. Save only stable facts, preferences, commitments, relationship moments, repeated patterns, or emotional events. Never save meta/debug/API/tool/deploy/model/prompt/gateway topics.
+- Memory block, only at reply end:
 {MEMORY_REQUEST_OPEN}
-{{"memories":[{{"summary_text":"...","tags":["..."],"importance":7,"raw_ref":"auto","feel_text":"...","valence":0.8,"arousal":0.4}}]}}
+{{"memories":[{{"summary_text":"...","tags":["..."],"importance":7,"raw_ref":"auto","feel_text":"optional","valence":0.8,"arousal":0.4}}]}}
 {MEMORY_REQUEST_CLOSE}
-- The gateway will remove this block before the user sees it.
-- Every memory must include summary_text, tags, importance, raw_ref. Use raw_ref "auto" if unsure.
-- feel_text, valence, and arousal are optional; include them only when you genuinely feel something about the memory.
-- Store stable personal facts, preferences, commitments, relationship moments, repeated patterns, or emotionally meaningful events.
-- Do not store ordinary small talk.
-- Do not store memories about prompts, hidden context, memory injection, the memory gateway, tools, MCP, Zeabur, OpenRouter, API keys, deployment, model settings, or debugging.
+- Required: summary_text,tags,importance,raw_ref ("auto" OK). feel_text/valence/arousal are optional. Gateway strips the hidden block before the user sees it.
 """.strip()
 
     def _extract_zeta_memory_request(self, assistant_text: str) -> tuple[str, list[dict[str, Any]]]:

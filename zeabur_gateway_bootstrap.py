@@ -451,11 +451,28 @@ try:
         if arousal is not None:
             memory["arousal"] = arousal
 
+        stored_diary = None
+        if content:
+            stored_diary = await zeta_openai_gateway.gateway.memory_gateway.save_diary({
+                "id": diary_id,
+                "visibility": visibility,
+                "title": title,
+                "content": content,
+                "summary_text": summary_text,
+                "mood": mood,
+                "tags": tags,
+                "created": created_at,
+                "raw_ref": raw_ref,
+                "importance": memory["importance"],
+                "index_to_memory": False,
+            })
+
         result = await zeta_openai_gateway.gateway.memory_gateway.write_memory(memory)
         return JSONResponse({
             "ok": True,
             "diary_ref": raw_ref,
             "visibility": visibility,
+            "diary": stored_diary,
             "memory": result,
         })
 
@@ -536,6 +553,26 @@ try:
             return JSONResponse(result, status_code=status)
         except Exception as exc:
             logger.warning("Gateway private diary write failed: %s", exc)
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    async def gateway_diaries(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"ok": False, "error": zeta_openai_gateway.startup_error}, status_code=503)
+        try:
+            if request.method == "POST":
+                body = await request.json()
+                if not isinstance(body, dict):
+                    body = {}
+            else:
+                body = dict(request.query_params)
+            result = gateway.memory_gateway.list_diaries(body)
+            return JSONResponse(result)
+        except Exception as exc:
+            logger.warning("Gateway diary list failed: %s", exc)
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
     async def gateway_raw_lookup(request: Request) -> JSONResponse:
@@ -788,6 +825,9 @@ try:
             "buckets_dir": gateway.config.get("buckets_dir", ""),
         })
 
+    async def api_diaries(request: Request) -> JSONResponse:
+        return await gateway_diaries(request)
+
     async def api_not_enabled(request: Request) -> JSONResponse:
         err = _dashboard_auth_error(request)
         if err is not None:
@@ -802,6 +842,7 @@ try:
     app.router.routes.append(Route("/gateway/recall", gateway_recall, methods=["POST"]))
     app.router.routes.append(Route("/gateway/active_recall", gateway_active_recall, methods=["POST"]))
     app.router.routes.append(Route("/gateway/private_diary", gateway_private_diary, methods=["POST"]))
+    app.router.routes.append(Route("/gateway/diaries", gateway_diaries, methods=["GET", "POST"]))
     app.router.routes.append(Route("/gateway/raw/lookup", gateway_raw_lookup, methods=["GET", "POST"]))
     app.router.routes.append(Route("/", dashboard_page, methods=["GET"]))
     app.router.routes.append(Route("/dashboard", dashboard_page, methods=["GET"]))
@@ -819,6 +860,7 @@ try:
     app.router.routes.append(Route("/api/network", api_network, methods=["GET"]))
     app.router.routes.append(Route("/api/export", api_export, methods=["GET"]))
     app.router.routes.append(Route("/api/config", api_config_get, methods=["GET"]))
+    app.router.routes.append(Route("/api/diaries", api_diaries, methods=["GET"]))
     app.router.routes.append(Route("/api/config", api_not_enabled, methods=["POST"]))
     app.router.routes.append(Route("/api/breath-debug", api_not_enabled, methods=["GET"]))
     app.router.routes.append(Route("/api/import/upload", api_not_enabled, methods=["POST"]))

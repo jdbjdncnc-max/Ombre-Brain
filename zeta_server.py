@@ -91,6 +91,25 @@ async def gateway_private_diary(request):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
 
+@server.mcp.custom_route("/gateway/diaries", methods=["GET", "POST"])
+async def gateway_diaries(request):
+    auth_error = zeta_gateway.require_auth(request)
+    if auth_error is not None:
+        return auth_error
+    try:
+        if request.method == "POST":
+            body = await request.json()
+            if not isinstance(body, dict):
+                body = {}
+        else:
+            body = dict(request.query_params)
+        result = zeta_gateway.list_diaries(body)
+        return JSONResponse(result)
+    except Exception as e:
+        server.logger.warning(f"Zeta gateway diary list failed: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
 @server.mcp.custom_route("/gateway/raw/lookup", methods=["GET", "POST"])
 async def gateway_lookup_raw(request):
     auth_error = zeta_gateway.require_auth(request)

@@ -135,25 +135,18 @@ def _hidden_memory_instruction(self: Any) -> str:
     if not getattr(self, "hidden_memory_enabled", False):
         return ""
     return f"""
-Private memory and diary instruction for Zeta:
-- You may decide whether this exchange should become long-term memory.
-- If nothing is worth remembering, do not output any memory request.
-- If you want to remember something, append exactly one hidden block at the very end of your reply:
+Zeta hidden memory/diary protocol:
+- Optional; skip if not worth saving. Save only stable facts, preferences, commitments, relationship moments, repeated patterns, or emotional events. Never save meta/debug/API/tool/deploy/model/prompt/gateway topics.
+- Memory block, only at reply end:
 {MEMORY_REQUEST_OPEN}
-{{"memories":[{{"summary_text":"...","tags":["..."],"importance":7,"raw_ref":"auto","feel_text":"...","valence":0.8,"arousal":0.4}}]}}
+{{"memories":[{{"summary_text":"...","tags":["..."],"importance":7,"raw_ref":"auto","feel_text":"optional","valence":0.8,"arousal":0.4}}]}}
 {MEMORY_REQUEST_CLOSE}
-- The gateway will remove this block before the user sees it.
-- Every memory must include summary_text, tags, importance, raw_ref. Use raw_ref "auto" if unsure.
-- feel_text, valence, and arousal are optional; include them only when you genuinely feel something about the memory.
-- Store stable personal facts, preferences, commitments, relationship moments, repeated patterns, or emotionally meaningful events.
-- Do not store ordinary small talk.
-- Do not store memories about prompts, hidden context, memory injection, the memory gateway, tools, MCP, Zeabur, OpenRouter, API keys, deployment, model settings, or debugging.
-- Private diary rule: never send private diary content through visible tools, ToolPkg, MCP, or plugin calls, because the client may show tool arguments/results to the user.
-- If you want to write a private diary for your own later reflection, append this separate hidden block at the very end of your reply:
+- Required: summary_text,tags,importance,raw_ref ("auto" OK). feel_text/valence/arousal are optional.
+- Private diary: never put private diary text in visible tools, ToolPkg, MCP, or plugin calls. Use this block at reply end:
 {PRIVATE_DIARY_OPEN}
-{{"entries":[{{"content":"first-person private diary text","title":"optional title","mood":"optional mood","tags":["diary"],"summary_text":"short non-sensitive summary","importance":6,"index_to_memory":true}}]}}
+{{"entries":[{{"content":"private first-person diary","title":"optional","mood":"optional","tags":["diary"],"summary_text":"short safe summary","importance":6,"index_to_memory":true}}]}}
 {PRIVATE_DIARY_CLOSE}
-- The gateway will remove the private diary block before the user sees it and store the full diary server-side. Ordinary public diary entries may still use public diary tools when the user expects to see them.
+- Gateway strips hidden blocks before the user sees them and stores them server-side. Public diary tools are OK when visibly expected.
 """.strip()
 
 

@@ -19,6 +19,7 @@ class ZetaMemoryGateway:
         self.base_dir = Path(config["buckets_dir"]) / "gateway"
         self.raw_dir = self.base_dir / "raw"
         self.memory_index_path = self.base_dir / "memories.jsonl"
+        self.public_diary_path = self.base_dir / "public_diary.jsonl"
         self.private_diary_path = self.base_dir / "private_diary.jsonl"
         self.include_legacy = os.environ.get("OMBRE_RECALL_INCLUDE_LEGACY", "true").strip().lower() not in {
             "0",
@@ -71,6 +72,7 @@ class ZetaMemoryGateway:
             "gateway": "zeta",
             "raw_dir": str(self.raw_dir),
             "memory_index": str(self.memory_index_path),
+            "public_diary": str(self.public_diary_path),
             "private_diary": str(self.private_diary_path),
             "auth": "token" if os.environ.get("OMBRE_GATEWAY_TOKEN", "").strip() else "open",
             "embedding": bool(self.embedding_engine and self.embedding_engine.enabled),
@@ -148,27 +150,33 @@ class ZetaMemoryGateway:
         self._append_jsonl(self.memory_index_path, [record])
         return {"ok": True, "memory_id": record["memory_id"], "bucket_id": bucket_id, "memory": record}
 
-    async def save_private_diary(self, body: dict[str, Any]) -> dict[str, Any]:
+    async def save_diary(self, body: dict[str, Any]) -> dict[str, Any]:
         content = str(body.get("content") or "").strip()
         if not content:
             return {"ok": False, "error": "content is required"}
 
+        visibility = str(body.get("visibility") or "private").strip().lower()
+        visibility = "public" if visibility == "public" else "private"
         created = str(body.get("created") or body.get("created_at") or _now_iso()).strip()
-        diary_id = self._safe_id(body.get("id") or body.get("diary_id") or f"pdiary_{uuid.uuid4().hex[:12]}")
+        prefix = "diary" if visibility == "public" else "pdiary"
+        diary_id = self._safe_id(body.get("id") or body.get("diary_id") or f"{prefix}_{uuid.uuid4().hex[:12]}")
         summary = str(body.get("summary_text") or body.get("summary") or "").strip()
         if not summary:
             summary = self._compact_text(content, 160)
         title = str(body.get("title") or "").strip() or self._compact_text(summary, 48)
-        raw_ref = str(body.get("raw_ref") or "").strip() or f"zeta-diary://private/{diary_id}"
+        raw_ref = str(body.get("raw_ref") or "").strip() or f"zeta-diary://{visibility}/{diary_id}"
         tags = self._normalize_tags(body.get("tags", []))
-        for tag in ("diary", "diary:private", "zeta_private"):
+        base_tags = ["diary", f"diary:{visibility}"]
+        if visibility == "private":
+            base_tags.append("zeta_private")
+        for tag in base_tags:
             if tag not in tags:
                 tags.append(tag)
 
         record = {
             "diary_id": diary_id,
             "raw_ref": raw_ref,
-            "visibility": "private",
+            "visibility": visibility,
             "session_id": str(body.get("session_id") or "").strip(),
             "created": created,
             "title": title,
@@ -177,13 +185,14 @@ class ZetaMemoryGateway:
             "mood": str(body.get("mood") or "").strip(),
             "tags": tags,
         }
-        self._append_jsonl(self.private_diary_path, [record])
+        self._append_jsonl(self._diary_path(visibility), [record])
 
         if self._truthy(body.get("index_to_memory", True)):
             try:
                 importance = self._bounded_int(body.get("importance", 6), 1, 10)
+                label = "Public diary" if visibility == "public" else "Private diary"
                 await self.write_memory({
-                    "summary_text": f"Private diary: {summary}",
+                    "summary_text": f"{label}: {summary}",
                     "tags": tags,
                     "importance": importance,
                     "raw_ref": raw_ref,
@@ -201,9 +210,37 @@ class ZetaMemoryGateway:
             "created": created,
             "title": title,
             "summary_text": summary,
-            "visibility": "private",
+            "visibility": visibility,
             "content_stored": True,
         }
+
+    async def save_private_diary(self, body: dict[str, Any]) -> dict[str, Any]:
+        body = dict(body)
+        body["visibility"] = "private"
+        return await self.save_diary(body)
+
+    def list_diaries(self, body: dict[str, Any] | None = None) -> dict[str, Any]:
+        body = body or {}
+        visibility = str(body.get("visibility") or "all").strip().lower()
+        limit = self._bounded_int(body.get("limit", 100), 1, 1000)
+        include_content = self._truthy(body.get("include_content", True))
+
+        selected = []
+        if visibility in {"public", "all", ""}:
+            selected.append("public")
+        if visibility in {"private", "all", ""}:
+            selected.append("private")
+
+        result = {"public": [], "private": []}
+        for item_visibility in selected:
+            result[item_visibility] = self._load_diaries(item_visibility, limit, include_content)
+
+        counts = {
+            "public": self._count_diaries("public"),
+            "private": self._count_diaries("private"),
+        }
+        counts["total"] = counts["public"] + counts["private"]
+        return {"ok": True, "counts": counts, **result}
 
     async def active_recall(self, body: dict[str, Any]) -> dict[str, Any]:
         query = self._clean_recall_text(body.get("query") or body.get("current_text") or "")
@@ -360,10 +397,22 @@ class ZetaMemoryGateway:
         return candidates[:limit]
 
     def _private_diaries_in_window(self, start: datetime, end: datetime, limit: int) -> list[dict[str, Any]]:
-        if limit <= 0 or not self.private_diary_path.exists():
+        return self._diaries_in_window("private", start, end, limit, include_content=False)
+
+    def _diaries_in_window(
+        self,
+        visibility: str,
+        start: datetime,
+        end: datetime,
+        limit: int,
+        *,
+        include_content: bool,
+    ) -> list[dict[str, Any]]:
+        path = self._diary_path(visibility)
+        if limit <= 0 or not path.exists():
             return []
         diaries = []
-        with self.private_diary_path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8") as f:
             for line in f:
                 try:
                     record = json.loads(line)
@@ -381,6 +430,38 @@ class ZetaMemoryGateway:
                     "mood": record.get("mood", ""),
                     "tags": record.get("tags", []),
                 })
+                if include_content:
+                    diaries[-1]["content"] = record.get("content", "")
+        diaries.sort(key=lambda item: str(item.get("created") or ""), reverse=True)
+        return diaries[:limit]
+
+    def _load_diaries(self, visibility: str, limit: int, include_content: bool) -> list[dict[str, Any]]:
+        path = self._diary_path(visibility)
+        if not path.exists():
+            return []
+        latest_by_id: dict[str, dict[str, Any]] = {}
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                diary_id = str(record.get("diary_id") or record.get("raw_ref") or uuid.uuid4().hex)
+                item = {
+                    "diary_id": record.get("diary_id", ""),
+                    "raw_ref": record.get("raw_ref", ""),
+                    "visibility": record.get("visibility", visibility),
+                    "session_id": record.get("session_id", ""),
+                    "created": record.get("created", ""),
+                    "title": record.get("title", ""),
+                    "summary_text": record.get("summary_text", ""),
+                    "mood": record.get("mood", ""),
+                    "tags": record.get("tags", []),
+                }
+                if include_content:
+                    item["content"] = record.get("content", "")
+                latest_by_id[diary_id] = item
+        diaries = list(latest_by_id.values())
         diaries.sort(key=lambda item: str(item.get("created") or ""), reverse=True)
         return diaries[:limit]
 
@@ -1203,6 +1284,23 @@ class ZetaMemoryGateway:
 
     def _raw_path(self, session_id: str) -> Path:
         return self.raw_dir / f"{self._safe_id(session_id)}.jsonl"
+
+    def _diary_path(self, visibility: str) -> Path:
+        return self.public_diary_path if visibility == "public" else self.private_diary_path
+
+    def _count_diaries(self, visibility: str) -> int:
+        path = self._diary_path(visibility)
+        if not path.exists():
+            return 0
+        ids = set()
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ids.add(str(record.get("diary_id") or record.get("raw_ref") or line))
+        return len(ids)
 
     def _next_turn_number(self, session_id: str) -> int:
         path = self._raw_path(session_id)

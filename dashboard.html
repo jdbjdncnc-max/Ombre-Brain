@@ -576,6 +576,79 @@
   .flow-step.active { border-color: var(--accent); color: var(--accent); }
   .flow-arrow { color: var(--text-light); font-size: 16px; }
 
+  .diary-dashboard {
+    max-width: 1040px;
+    margin: 0 auto;
+    display: grid;
+    gap: 16px;
+  }
+  .diary-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .diary-stat {
+    padding: 18px 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: 5px 5px 12px var(--shadow-dark-subtle), -5px -5px 12px var(--shadow-light);
+  }
+  .diary-stat label {
+    display: block;
+    color: var(--text-dim);
+    font-size: 12px;
+    margin-bottom: 6px;
+  }
+  .diary-stat strong {
+    color: var(--accent);
+    font-size: 24px;
+    font-weight: 600;
+  }
+  .diary-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .diary-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 18px;
+    box-shadow: 5px 5px 12px var(--shadow-dark-subtle), -5px -5px 12px var(--shadow-light);
+    min-width: 0;
+  }
+  .diary-section h3 {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 17px;
+    color: var(--accent);
+    margin-bottom: 12px;
+  }
+  .diary-entry {
+    padding: 14px;
+    margin-bottom: 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.28);
+  }
+  .diary-entry h4 {
+    font-size: 14px;
+    color: var(--text);
+    margin-bottom: 6px;
+  }
+  .diary-meta {
+    color: var(--text-dim);
+    font-size: 12px;
+    margin-bottom: 8px;
+  }
+  .diary-content {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 13px;
+    line-height: 1.75;
+    color: var(--text);
+  }
+
   @media (max-width: 768px) {
     .header { padding: 20px; flex-wrap: wrap; }
     .header h1 { font-size: 22px; }
@@ -596,6 +669,8 @@
     .config-row { flex-wrap: wrap; }
     .config-row label { width: 100%; }
     .breath-flow { display: none; }
+    .diary-stats,
+    .diary-columns { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -613,6 +688,7 @@
 
 <div class="tabs">
   <div class="tab" data-tab="gateway">Zeta Gateway</div>
+  <div class="tab" data-tab="diaries">&#26085;&#35760;</div>
   <div class="tab active" data-tab="list">记忆桶</div>
   <div class="tab" data-tab="breath">Breath 模拟</div>
   <div class="tab" data-tab="network">记忆网络</div>
@@ -626,6 +702,30 @@
   <div class="filters" id="filters"></div>
   <div class="bucket-list" id="bucket-list">
     <div class="loading">加载中…</div>
+  </div>
+</div>
+
+<div class="content" id="diaries-view" style="display:none">
+  <div class="diary-dashboard">
+    <div class="diary-stats">
+      <div class="diary-stat"><label>&#20844;&#24320;&#26085;&#35760;</label><strong id="diary-public-count">0</strong> &#31687;</div>
+      <div class="diary-stat"><label>&#31169;&#23494;&#26085;&#35760;</label><strong id="diary-private-count">0</strong> &#31687;</div>
+      <div class="diary-stat"><label>&#20840;&#37096;&#26085;&#35760;</label><strong id="diary-total-count">0</strong> &#31687;</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;">
+      <div style="font-size:12px;color:var(--text-dim);">&#31169;&#23494;&#26085;&#35760;&#21482;&#20174;&#32593;&#20851;&#38544;&#34255;&#22359;&#21644;&#21463;&#20445;&#25252;&#30340; dashboard &#35835;&#21462;&#12290;</div>
+      <button class="btn-secondary" onclick="loadDiaries(true)">&#21047;&#26032;</button>
+    </div>
+    <div class="diary-columns">
+      <section class="diary-section">
+        <h3>&#20844;&#24320;&#26085;&#35760;</h3>
+        <div id="diary-public-list"><div class="loading">&#21152;&#36733;&#20013;...</div></div>
+      </section>
+      <section class="diary-section">
+        <h3>&#31169;&#23494;&#26085;&#35760;</h3>
+        <div id="diary-private-list"><div class="loading">&#21152;&#36733;&#20013;...</div></div>
+      </section>
+    </div>
   </div>
 </div>
 
@@ -1141,6 +1241,7 @@ let allBuckets = [];
 let currentFilter = 'all';
 let currentDetailId = null;
 let logsOffset = 0;
+let diariesLoaded = false;
 
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -1148,6 +1249,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.add('active');
     const target = tab.dataset.tab;
     document.getElementById('list-view').style.display = target === 'list' ? '' : 'none';
+    document.getElementById('diaries-view').style.display = target === 'diaries' ? '' : 'none';
     document.getElementById('breath-view').style.display = target === 'breath' ? '' : 'none';
     document.getElementById('gateway-view').style.display = target === 'gateway' ? '' : 'none';
     document.getElementById('network-view').style.display = target === 'network' ? '' : 'none';
@@ -1157,6 +1259,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById('settings-view').style.display = target === 'settings' ? '' : 'none';
     if (target === 'network') loadNetwork();
     if (target === 'gateway') loadGatewayStatus();
+    if (target === 'diaries') loadDiaries(false);
     if (target === 'config') loadConfig();
     if (target === 'import') { pollImportStatus(); loadImportResults(); }
     if (target === 'logs') loadMemoryLogs(true);
@@ -1222,7 +1325,9 @@ async function loadGatewayStatus() {
       'legacy_keyword_limit: <strong>' + esc(data.legacy_keyword_limit) + '</strong><br>' +
       'natural_limit: <strong>' + esc(data.natural_limit) + '</strong><br>' +
       'raw_dir: <code>' + esc(data.raw_dir || '') + '</code><br>' +
-      'memory_index: <code>' + esc(data.memory_index || '') + '</code>';
+      'memory_index: <code>' + esc(data.memory_index || '') + '</code><br>' +
+      'public_diary: <code>' + esc(data.public_diary || '') + '</code><br>' +
+      'private_diary: <code>' + esc(data.private_diary || '') + '</code>';
   } catch (e) {
     el.innerHTML = '<span style="color:var(--negative)">Gateway status failed: ' + esc(e.message) + '</span>';
   }
@@ -1234,6 +1339,7 @@ function showGatewayBuckets() {
   const listTab = document.querySelector('.tab[data-tab="list"]');
   if (listTab) listTab.classList.add('active');
   document.getElementById('list-view').style.display = '';
+  document.getElementById('diaries-view').style.display = 'none';
   document.getElementById('breath-view').style.display = 'none';
   document.getElementById('gateway-view').style.display = 'none';
   document.getElementById('network-view').style.display = 'none';
@@ -1242,6 +1348,59 @@ function showGatewayBuckets() {
   document.getElementById('logs-view').style.display = 'none';
   document.getElementById('settings-view').style.display = 'none';
   renderBuckets(filterBuckets(allBuckets));
+}
+
+async function loadDiaries(force) {
+  if (diariesLoaded && !force) return;
+  const publicList = document.getElementById('diary-public-list');
+  const privateList = document.getElementById('diary-private-list');
+  if (!publicList || !privateList) return;
+  publicList.innerHTML = '<div class="loading">Loading diaries...</div>';
+  privateList.innerHTML = '<div class="loading">Loading diaries...</div>';
+  try {
+    const resp = await authFetch('/api/diaries?limit=200&include_content=1');
+    if (!resp) return;
+    const data = await resp.json();
+    if (!resp.ok || data.ok === false) throw new Error(data.error || resp.statusText);
+    diariesLoaded = true;
+    const counts = data.counts || {};
+    document.getElementById('diary-public-count').textContent = String(counts.public || 0);
+    document.getElementById('diary-private-count').textContent = String(counts.private || 0);
+    document.getElementById('diary-total-count').textContent = String(counts.total || 0);
+    publicList.innerHTML = renderDiaryEntries(data.public || [], 'public');
+    privateList.innerHTML = renderDiaryEntries(data.private || [], 'private');
+  } catch (e) {
+    const message = '<div class="loading">Diary load failed: ' + esc(e.message) + '</div>';
+    publicList.innerHTML = message;
+    privateList.innerHTML = message;
+  }
+}
+
+function renderDiaryEntries(entries, visibility) {
+  if (!entries.length) {
+    return '<div class="loading">' + (visibility === 'private' ? 'No private diary entries yet' : 'No public diary entries yet') + '</div>';
+  }
+  return entries.map(function(entry) {
+    const title = entry.title || entry.summary_text || entry.diary_id || 'Untitled';
+    const tags = (entry.tags || []).join(', ');
+    const content = entry.content || entry.summary_text || '';
+    const metaText = formatDiaryTime(entry.created) +
+      (entry.mood ? ' | mood: ' + entry.mood : '') +
+      (entry.raw_ref ? ' | ' + entry.raw_ref : '');
+    return '<article class="diary-entry">' +
+      '<h4>' + esc(title) + '</h4>' +
+      '<div class="diary-meta">' + esc(metaText) + '</div>' +
+      (tags ? '<div class="diary-meta">tags: ' + esc(tags) + '</div>' : '') +
+      '<div class="diary-content">' + esc(content) + '</div>' +
+    '</article>';
+  }).join('');
+}
+
+function formatDiaryTime(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
 }
 
 async function runGatewayRecall() {
