@@ -611,23 +611,28 @@ async def _hidden_stream_upstream(
         if tail:
             assistant_parts.append(tail)
             emitted.append(content_chunk(tail))
-            visible_text = "".join(assistant_parts).strip()
-            assistant_raw_refs = await self._save_turn(session_id, "zeta", visible_text)
+        visible_text = "".join(assistant_parts).strip()
+        hidden_entries = stream_filter.entries[:3]
+        hidden_diaries = stream_filter.diaries[:3]
+        if visible_text or hidden_entries or hidden_diaries:
+            assistant_raw_refs = []
+            if visible_text:
+                assistant_raw_refs = await self._save_turn(session_id, "zeta", visible_text)
             diary_written = await self._write_zeta_private_diary_requests(
                 session_id=session_id,
-                entries=stream_filter.diaries[:3],
+                entries=hidden_diaries,
                 default_raw_ref=assistant_raw_refs[0] if assistant_raw_refs else (
                     user_raw_refs[0] if user_raw_refs else ""
                 ),
             )
             zeta_written = await self._write_zeta_memory_requests(
                 session_id=session_id,
-                entries=stream_filter.entries[:3],
+                entries=hidden_entries,
                 default_raw_ref=user_raw_refs[0] if user_raw_refs else (
                     assistant_raw_refs[0] if assistant_raw_refs else ""
                 ),
             )
-            self._augment_memory_headers(memory_headers, stream_filter.entries[:3], zeta_written, diary_written)
+            self._augment_memory_headers(memory_headers, hidden_entries, zeta_written, diary_written)
             if self._should_run_reflection(zeta_written):
                 self._schedule_reflection(
                     session_id=session_id,
