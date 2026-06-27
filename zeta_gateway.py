@@ -152,9 +152,6 @@ class ZetaMemoryGateway:
 
     async def save_diary(self, body: dict[str, Any]) -> dict[str, Any]:
         content = str(body.get("content") or "").strip()
-        if not content:
-            return {"ok": False, "error": "content is required"}
-
         visibility = str(body.get("visibility") or "private").strip().lower()
         visibility = "public" if visibility == "public" else "private"
         created = str(body.get("created") or body.get("created_at") or _now_iso()).strip()
@@ -162,8 +159,13 @@ class ZetaMemoryGateway:
         diary_id = self._safe_id(body.get("id") or body.get("diary_id") or f"{prefix}_{uuid.uuid4().hex[:12]}")
         summary = str(body.get("summary_text") or body.get("summary") or "").strip()
         if not summary:
-            summary = self._compact_text(content, 160)
-        title = str(body.get("title") or "").strip() or self._compact_text(summary, 48)
+            summary = self._compact_text(content, 160) if content else ""
+        title = str(body.get("title") or "").strip()
+        if not content and not summary and not title:
+            return {"ok": False, "error": "content, summary_text, or title is required"}
+        if not summary:
+            summary = title
+        title = title or self._compact_text(summary, 48)
         raw_ref = str(body.get("raw_ref") or "").strip() or f"zeta-diary://{visibility}/{diary_id}"
         tags = self._normalize_tags(body.get("tags", []))
         base_tags = ["diary", f"diary:{visibility}"]
@@ -211,10 +213,12 @@ class ZetaMemoryGateway:
             "title": title,
             "summary_text": summary,
             "visibility": visibility,
-            "content_stored": True,
+            "content_stored": bool(content),
         }
 
     async def save_private_diary(self, body: dict[str, Any]) -> dict[str, Any]:
+        if not str(body.get("content") or "").strip():
+            return {"ok": False, "error": "content is required"}
         body = dict(body)
         body["visibility"] = "private"
         return await self.save_diary(body)
@@ -233,7 +237,7 @@ class ZetaMemoryGateway:
 
         result = {"public": [], "private": []}
         for item_visibility in selected:
-            result[item_visibility] = self._load_diaries(item_visibility, limit, include_content)
+            result[item_visibility] = self._merged_diaries(item_visibility, limit, include_content)
 
         counts = {
             "public": self._count_diaries("public"),
@@ -464,6 +468,47 @@ class ZetaMemoryGateway:
         diaries = list(latest_by_id.values())
         diaries.sort(key=lambda item: str(item.get("created") or ""), reverse=True)
         return diaries[:limit]
+
+    def _merged_diaries(self, visibility: str, limit: int, include_content: bool) -> list[dict[str, Any]]:
+        by_key: dict[str, dict[str, Any]] = {}
+        for item in self._indexed_diaries(visibility, include_content):
+            by_key[self._diary_entry_key(item)] = item
+        for item in self._load_diaries(visibility, max(limit, 1000), include_content):
+            key = self._diary_entry_key(item)
+            existing = by_key.get(key, {})
+            merged = {**existing, **item}
+            if include_content and not merged.get("content") and existing.get("content"):
+                merged["content"] = existing["content"]
+            merged["source"] = "diary_store" if item.get("content") else existing.get("source", "diary_store")
+            by_key[key] = merged
+        diaries = list(by_key.values())
+        diaries.sort(key=lambda item: str(item.get("created") or ""), reverse=True)
+        return diaries[:limit]
+
+    def _indexed_diaries(self, visibility: str, include_content: bool) -> list[dict[str, Any]]:
+        diaries = []
+        for record in self._load_memory_index().values():
+            if not self._is_diary_memory(record, visibility):
+                continue
+            raw_ref = str(record.get("raw_ref") or "").strip()
+            summary = str(record.get("summary_text") or "").strip()
+            item = {
+                "diary_id": self._diary_id_from_ref(raw_ref) or str(record.get("memory_id") or record.get("bucket_id") or ""),
+                "raw_ref": raw_ref,
+                "visibility": visibility,
+                "session_id": "",
+                "created": record.get("created", ""),
+                "title": self._diary_title_from_summary(summary),
+                "summary_text": summary,
+                "mood": "",
+                "tags": record.get("tags", []),
+                "source": "memory_index",
+            }
+            if include_content:
+                item["content"] = summary
+            diaries.append(item)
+        diaries.sort(key=lambda item: str(item.get("created") or ""), reverse=True)
+        return diaries
 
     def _active_recall_text(
         self,
@@ -1289,18 +1334,41 @@ class ZetaMemoryGateway:
         return self.public_diary_path if visibility == "public" else self.private_diary_path
 
     def _count_diaries(self, visibility: str) -> int:
-        path = self._diary_path(visibility)
-        if not path.exists():
-            return 0
-        ids = set()
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                ids.add(str(record.get("diary_id") or record.get("raw_ref") or line))
-        return len(ids)
+        return len(self._merged_diaries(visibility, 100000, include_content=False))
+
+    def _is_diary_memory(self, record: dict[str, Any], visibility: str) -> bool:
+        tags = {str(tag).lower() for tag in self._normalize_tags(record.get("tags", []))}
+        raw_ref = str(record.get("raw_ref") or "").strip().lower()
+        return (
+            f"diary:{visibility}" in tags
+            or raw_ref.startswith(f"diary://{visibility}/")
+            or raw_ref.startswith(f"zeta-diary://{visibility}/")
+        )
+
+    @staticmethod
+    def _diary_entry_key(item: dict[str, Any]) -> str:
+        raw_ref = str(item.get("raw_ref") or "").strip()
+        if raw_ref:
+            return raw_ref
+        visibility = str(item.get("visibility") or "").strip()
+        diary_id = str(item.get("diary_id") or "").strip()
+        return f"{visibility}:{diary_id or uuid.uuid4().hex}"
+
+    @staticmethod
+    def _diary_id_from_ref(raw_ref: str) -> str:
+        text = str(raw_ref or "").strip().rstrip("/")
+        if not text or "/" not in text:
+            return ""
+        return text.rsplit("/", 1)[-1]
+
+    @staticmethod
+    def _diary_title_from_summary(summary: str) -> str:
+        text = str(summary or "").strip()
+        for prefix in ("Public diary:", "Private diary:", "Diary note:"):
+            if text.lower().startswith(prefix.lower()):
+                text = text[len(prefix):].strip()
+                break
+        return text[:48] or "Diary"
 
     def _next_turn_number(self, session_id: str) -> int:
         path = self._raw_path(session_id)

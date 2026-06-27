@@ -408,6 +408,8 @@ try:
         visibility = str(body.get("visibility") or "private").strip().lower()
         visibility = "public" if visibility == "public" else "private"
         diary_id = str(body.get("id") or body.get("diary_id") or "").strip()
+        if not diary_id:
+            diary_id = f"diary_{secrets.token_hex(6)}"
         title = str(body.get("title") or "").strip()
         mood = str(body.get("mood") or "").strip()
         source = str(body.get("source") or "diary").strip() or "diary"
@@ -451,21 +453,19 @@ try:
         if arousal is not None:
             memory["arousal"] = arousal
 
-        stored_diary = None
-        if content:
-            stored_diary = await zeta_openai_gateway.gateway.memory_gateway.save_diary({
-                "id": diary_id,
-                "visibility": visibility,
-                "title": title,
-                "content": content,
-                "summary_text": summary_text,
-                "mood": mood,
-                "tags": tags,
-                "created": created_at,
-                "raw_ref": raw_ref,
-                "importance": memory["importance"],
-                "index_to_memory": False,
-            })
+        stored_diary = await zeta_openai_gateway.gateway.memory_gateway.save_diary({
+            "id": diary_id,
+            "visibility": visibility,
+            "title": title,
+            "content": content,
+            "summary_text": summary_text,
+            "mood": mood,
+            "tags": tags,
+            "created": created_at,
+            "raw_ref": raw_ref,
+            "importance": memory["importance"],
+            "index_to_memory": False,
+        })
 
         result = await zeta_openai_gateway.gateway.memory_gateway.write_memory(memory)
         return JSONResponse({
