@@ -152,8 +152,7 @@ class ZetaMemoryGateway:
 
     async def save_diary(self, body: dict[str, Any]) -> dict[str, Any]:
         content = str(body.get("content") or "").strip()
-        visibility = str(body.get("visibility") or "private").strip().lower()
-        visibility = "public" if visibility == "public" else "private"
+        visibility = self._normalize_diary_visibility(body)
         created = str(body.get("created") or body.get("created_at") or _now_iso()).strip()
         prefix = "diary" if visibility == "public" else "pdiary"
         diary_id = self._safe_id(body.get("id") or body.get("diary_id") or f"{prefix}_{uuid.uuid4().hex[:12]}")
@@ -237,7 +236,10 @@ class ZetaMemoryGateway:
 
         result = {"public": [], "private": []}
         for item_visibility in selected:
-            result[item_visibility] = self._merged_diaries(item_visibility, limit, include_content)
+            if item_visibility == "private":
+                result[item_visibility] = []
+            else:
+                result[item_visibility] = self._merged_diaries(item_visibility, limit, include_content)
 
         counts = {
             "public": self._count_diaries("public"),
@@ -1332,6 +1334,38 @@ class ZetaMemoryGateway:
 
     def _diary_path(self, visibility: str) -> Path:
         return self.public_diary_path if visibility == "public" else self.private_diary_path
+
+    def _normalize_diary_visibility(self, body: dict[str, Any]) -> str:
+        raw = str(
+            body.get("visibility")
+            or body.get("privacy")
+            or body.get("access")
+            or body.get("scope")
+            or body.get("type")
+            or body.get("kind")
+            or body.get("source")
+            or ""
+        ).strip().lower()
+        if raw in {"public", "open", "shared", "share", "visible", "public_diary", "diary_public"}:
+            return "public"
+        if raw in {"private", "secret", "hidden", "personal", "private_diary", "diary_private"}:
+            return "private"
+
+        for key in ("public", "is_public", "isPublic", "share_public", "sharePublic", "public_diary", "publicDiary"):
+            value = str(body.get(key) or "").strip().lower()
+            if self._truthy(body.get(key)) or value in {"public", "open", "shared"}:
+                return "public"
+        for key in ("private", "is_private", "isPrivate", "private_diary", "privateDiary"):
+            value = str(body.get(key) or "").strip().lower()
+            if self._truthy(body.get(key)) or value in {"private", "secret", "hidden"}:
+                return "private"
+
+        raw_ref = str(body.get("raw_ref") or "").strip().lower()
+        if raw_ref.startswith(("diary://public/", "zeta-diary://public/")):
+            return "public"
+        if raw_ref.startswith(("diary://private/", "zeta-diary://private/")):
+            return "private"
+        return "private"
 
     def _count_diaries(self, visibility: str) -> int:
         return len(self._merged_diaries(visibility, 100000, include_content=False))

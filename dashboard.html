@@ -713,7 +713,7 @@
       <div class="diary-stat"><label>&#20840;&#37096;&#26085;&#35760;</label><strong id="diary-total-count">0</strong> &#31687;</div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;">
-      <div style="font-size:12px;color:var(--text-dim);">&#31169;&#23494;&#26085;&#35760;&#21482;&#20174;&#32593;&#20851;&#38544;&#34255;&#22359;&#21644;&#21463;&#20445;&#25252;&#30340; dashboard &#35835;&#21462;&#12290;</div>
+      <div style="font-size:12px;color:var(--text-dim);">&#31169;&#23494;&#26085;&#35760;&#21482;&#26174;&#31034;&#31687;&#25968;&#65292;dashboard &#19981;&#36820;&#22238;&#27491;&#25991;&#25110;&#25688;&#35201;&#12290;</div>
       <button class="btn-secondary" onclick="loadDiaries(true)">&#21047;&#26032;</button>
     </div>
     <div class="diary-columns">
@@ -1356,7 +1356,7 @@ async function loadDiaries(force) {
   const privateList = document.getElementById('diary-private-list');
   if (!publicList || !privateList) return;
   publicList.innerHTML = '<div class="loading">Loading diaries...</div>';
-  privateList.innerHTML = '<div class="loading">Loading diaries...</div>';
+  privateList.innerHTML = renderPrivateDiaryNotice(0);
   try {
     const resp = await authFetch('/api/diaries?limit=200&include_content=1');
     if (!resp) return;
@@ -1368,15 +1368,21 @@ async function loadDiaries(force) {
     document.getElementById('diary-private-count').textContent = String(counts.private || 0);
     document.getElementById('diary-total-count').textContent = String(counts.total || 0);
     publicList.innerHTML = renderDiaryEntries(data.public || [], 'public');
-    privateList.innerHTML = renderDiaryEntries(data.private || [], 'private');
+    privateList.innerHTML = renderPrivateDiaryNotice(counts.private || 0);
   } catch (e) {
     const message = '<div class="loading">Diary load failed: ' + esc(e.message) + '</div>';
     publicList.innerHTML = message;
-    privateList.innerHTML = message;
+    privateList.innerHTML = renderPrivateDiaryNotice(0);
   }
 }
 
+function renderPrivateDiaryNotice(count) {
+  return '<div class="loading">&#31169;&#23494;&#26085;&#35760;&#20869;&#23481;&#24050;&#38544;&#34255;&#65307;&#20165;&#26174;&#31034;&#31687;&#25968;&#65306;' + esc(count) + '</div>';
+}
 function renderDiaryEntries(entries, visibility) {
+  if (visibility === 'private') {
+    return renderPrivateDiaryNotice(entries.length);
+  }
   if (!entries.length) {
     return '<div class="loading">' + (visibility === 'private' ? 'No private diary entries yet' : 'No public diary entries yet') + '</div>';
   }

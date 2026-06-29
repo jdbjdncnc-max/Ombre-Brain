@@ -164,6 +164,43 @@ def _diary_ref(visibility: str, diary_id: str) -> str:
     return f"diary://{safe_visibility}/{safe_id or 'unknown'}"
 
 
+
+def _truthy_flag(value) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _diary_visibility(body: dict) -> str:
+    raw = str(
+        body.get("visibility")
+        or body.get("privacy")
+        or body.get("access")
+        or body.get("scope")
+        or body.get("type")
+        or body.get("kind")
+        or body.get("source")
+        or ""
+    ).strip().lower()
+    if raw in {"public", "open", "shared", "share", "visible", "public_diary", "diary_public"}:
+        return "public"
+    if raw in {"private", "secret", "hidden", "personal", "private_diary", "diary_private"}:
+        return "private"
+
+    for key in ("public", "is_public", "isPublic", "share_public", "sharePublic", "public_diary", "publicDiary"):
+        value = str(body.get(key) or "").strip().lower()
+        if _truthy_flag(body.get(key)) or value in {"public", "open", "shared"}:
+            return "public"
+    for key in ("private", "is_private", "isPrivate", "private_diary", "privateDiary"):
+        value = str(body.get(key) or "").strip().lower()
+        if _truthy_flag(body.get(key)) or value in {"private", "secret", "hidden"}:
+            return "private"
+
+    raw_ref = str(body.get("raw_ref") or "").strip().lower()
+    if raw_ref.startswith(("diary://public/", "zeta-diary://public/")):
+        return "public"
+    if raw_ref.startswith(("diary://private/", "zeta-diary://private/")):
+        return "private"
+    return "private"
+
 def _recall_debug_page() -> str:
     return """
 <!doctype html>
@@ -405,8 +442,7 @@ try:
         if not isinstance(body, dict):
             return JSONResponse({"ok": False, "error": "Request body must be an object"}, status_code=400)
 
-        visibility = str(body.get("visibility") or "private").strip().lower()
-        visibility = "public" if visibility == "public" else "private"
+        visibility = _diary_visibility(body)
         diary_id = str(body.get("id") or body.get("diary_id") or "").strip()
         if not diary_id:
             diary_id = f"diary_{secrets.token_hex(6)}"
