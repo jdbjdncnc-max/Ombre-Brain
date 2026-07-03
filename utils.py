@@ -83,8 +83,9 @@ def load_config(config_path: str = None) -> dict:
     # --- Environment variable overrides (highest priority) ---
     # --- 环境变量覆盖敏感/运行时配置（优先级最高）---
     env_api_key = os.environ.get("OMBRE_API_KEY", "")
-    if env_api_key:
-        config.setdefault("dehydration", {})["api_key"] = env_api_key
+    env_dehy_api_key = os.environ.get("OMBRE_DEHYDRATION_API_KEY", "") or env_api_key
+    if env_dehy_api_key:
+        config.setdefault("dehydration", {})["api_key"] = env_dehy_api_key
 
     env_base_url = os.environ.get("OMBRE_BASE_URL", "")
     if env_base_url:
@@ -113,10 +114,24 @@ def load_config(config_path: str = None) -> dict:
     if env_embed_model:
         config.setdefault("embedding", {})["model"] = env_embed_model
 
+    # OMBRE_EMBEDDING_API_KEY lets embeddings use a separate provider/key.
+    env_embed_api_key = os.environ.get("OMBRE_EMBEDDING_API_KEY", "")
+    if env_embed_api_key:
+        config.setdefault("embedding", {})["api_key"] = env_embed_api_key
+
     # OMBRE_EMBEDDING_BASE_URL overrides embedding.base_url
     env_embed_base_url = os.environ.get("OMBRE_EMBEDDING_BASE_URL", "")
     if env_embed_base_url:
         config.setdefault("embedding", {})["base_url"] = env_embed_base_url
+
+    env_embed_enabled = os.environ.get("OMBRE_EMBEDDING_ENABLED", "")
+    if env_embed_enabled:
+        config.setdefault("embedding", {})["enabled"] = env_embed_enabled.strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
 
     # --- Ensure bucket storage directories exist ---
     # --- 确保记忆桶存储目录存在 ---

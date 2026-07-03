@@ -34,6 +34,44 @@
 
 请求体结构（JSON）：
 
+## Zeta gateway Zeabur variables
+
+Use these for the OpenAI-compatible memory gateway service:
+
+```text
+OMBRE_GATEWAY_TOKEN=long-random-token
+OMBRE_UPSTREAM_BASE_URL=https://openrouter.ai/api/v1
+OMBRE_UPSTREAM_API_KEY=your-openrouter-key
+OMBRE_UPSTREAM_MODEL=openrouter-model-slug
+OMBRE_OPENROUTER_SITE_URL=https://your-zeabur-domain
+OMBRE_OPENROUTER_APP_NAME=Zeta Memory Gateway
+OMBRE_PUBLIC_MODEL=zeta-gateway
+OMBRE_BUCKETS_DIR=/app/buckets
+OMBRE_DASHBOARD_PASSWORD=your-dashboard-password
+```
+
+Use these for memory quality. `OMBRE_API_KEY` still works as a legacy shared key, but the split variables are clearer:
+
+```text
+OMBRE_DEHYDRATION_API_KEY=key-for-tagging-and-memory-reflection
+OMBRE_DEHYDRATION_BASE_URL=https://openrouter.ai/api/v1
+OMBRE_DEHYDRATION_MODEL=openrouter-model-slug
+OMBRE_EMBEDDING_ENABLED=true
+OMBRE_EMBEDDING_API_KEY=key-for-embedding
+OMBRE_EMBEDDING_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+OMBRE_EMBEDDING_MODEL=gemini-embedding-001
+```
+
+Recommended recall defaults after the hybrid recall update:
+
+```text
+OMBRE_RECALL_STRATEGY=hybrid
+OMBRE_RECALL_MAX_RESULTS=5
+OMBRE_RECALL_KEYWORD_LIMIT=2
+OMBRE_RECALL_SEMANTIC_LIMIT=4
+OMBRE_RECALL_INCLUDE_LEGACY=true
+```
+
 ```json
 {
   "event": "breath",

@@ -215,6 +215,12 @@ class ZetaOpenAIGateway:
             "model": self.public_model,
             "reflection_enabled": self.reflection_enabled,
             "reflection_chat_url": self.reflection_chat_url if self.reflection_enabled else "",
+            "recall": {
+                "max_results": self.recall_max_results,
+                "keyword_limit": self.keyword_limit,
+                "semantic_limit": self.semantic_limit,
+                "strategy": self.memory_gateway.recall_strategy,
+            },
             "memory_write_mode": self.memory_write_mode,
             "hidden_memory_request_enabled": self.hidden_memory_enabled,
             "openrouter_headers_configured": bool(self.openrouter_site_url or self.openrouter_app_name),
@@ -661,9 +667,9 @@ Zeta hidden memory protocol:
 - Optional; skip if not worth saving. Save only stable facts, preferences, commitments, relationship moments, repeated patterns, or emotional events. Never save meta/debug/API/tool/deploy/model/prompt/gateway topics.
 - Memory block, only at reply end:
 {MEMORY_REQUEST_OPEN}
-{{"memories":[{{"summary_text":"...","tags":["..."],"importance":7,"raw_ref":"auto","feel_text":"optional","valence":0.8,"arousal":0.4}}]}}
+{{"memories":[{{"summary_text":"...","tags":["..."],"domains":["..."],"importance":7,"raw_ref":"auto","feel_text":"optional","valence":0.8,"arousal":0.4}}]}}
 {MEMORY_REQUEST_CLOSE}
-- Required: summary_text,tags,importance,raw_ref ("auto" OK). feel_text/valence/arousal are optional. Gateway strips the hidden block before the user sees it.
+- Required: summary_text,tags,importance,raw_ref ("auto" OK). domains/feel_text/valence/arousal are optional. Gateway strips the hidden block before the user sees it.
 """.strip()
 
     def _extract_zeta_memory_request(self, assistant_text: str) -> tuple[str, list[dict[str, Any]]]:
@@ -726,6 +732,7 @@ Zeta hidden memory protocol:
         entry: dict[str, Any] = {
             "summary_text": summary,
             "tags": item.get("tags", []),
+            "domains": item.get("domains", item.get("domain", [])),
             "importance": importance,
             "raw_ref": raw_ref,
         }
@@ -908,12 +915,13 @@ Rules:
 - If the exchange is mainly testing or debugging memory behavior, return {{"memories":[]}} unless the user explicitly asks Zeta to remember a personal fact or preference.
 - Every memory must include summary_text, tags, importance, raw_ref.
 - tags may be a JSON array or comma-separated string.
+- domains is optional; use a JSON array of broad topic domains when clear.
 - importance must be 1-10.
 - Only include feel_text, valence, arousal when Zeta has a real emotional reaction or importance >= 5.
 - valence and arousal must be 0-1.
 
 Return strict JSON with this shape:
-{{"memories":[{{"summary_text":"...","tags":["..."],"importance":7,"raw_ref":"{raw_ref}","feel_text":"...","valence":0.8,"arousal":0.4}}]}}
+{{"memories":[{{"summary_text":"...","tags":["..."],"domains":["..."],"importance":7,"raw_ref":"{raw_ref}","feel_text":"...","valence":0.8,"arousal":0.4}}]}}
 """.strip()
 
     def _parse_reflection_entries(self, text: str) -> list[dict[str, Any]]:
@@ -947,6 +955,7 @@ Return strict JSON with this shape:
             entry = {
                 "summary_text": summary,
                 "tags": item.get("tags", []),
+                "domains": item.get("domains", item.get("domain", [])),
                 "importance": item.get("importance", 5),
                 "raw_ref": raw_ref,
             }

@@ -54,6 +54,7 @@ class EmbeddingEngine:
             )
         else:
             self.client = None
+        self.last_error = ""
 
         # --- Initialize SQLite ---
         self._init_db()
@@ -72,6 +73,30 @@ class EmbeddingEngine:
         conn.commit()
         conn.close()
 
+    def status(self) -> dict:
+        """Return non-secret embedding runtime status for health/debug pages."""
+        return {
+            "enabled": bool(self.enabled),
+            "configured": bool(self.api_key),
+            "model": self.model,
+            "base_url": self.base_url,
+            "db_path": self.db_path,
+            "vector_count": self.count_embeddings(),
+            "last_error": self.last_error,
+        }
+
+    def count_embeddings(self) -> int:
+        try:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                row = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()
+                return int(row[0] if row else 0)
+            finally:
+                conn.close()
+        except Exception as e:
+            self.last_error = str(e)
+            return 0
+
     async def generate_and_store(self, bucket_id: str, content: str) -> bool:
         """
         Generate embedding for content and store in SQLite.
@@ -86,8 +111,10 @@ class EmbeddingEngine:
             if not embedding:
                 return False
             self._store_embedding(bucket_id, embedding)
+            self.last_error = ""
             return True
         except Exception as e:
+            self.last_error = str(e)
             logger.warning(f"Embedding generation failed for {bucket_id}: {e}")
             return False
 
@@ -104,6 +131,7 @@ class EmbeddingEngine:
                 return response.data[0].embedding
             return []
         except Exception as e:
+            self.last_error = str(e)
             logger.warning(f"Embedding API call failed: {e}")
             return []
 
@@ -153,6 +181,7 @@ class EmbeddingEngine:
             if not query_embedding:
                 return []
         except Exception as e:
+            self.last_error = str(e)
             logger.warning(f"Query embedding failed: {e}")
             return []
 

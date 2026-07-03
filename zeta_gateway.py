@@ -47,6 +47,7 @@ class ZetaMemoryGateway:
             1,
             10,
         )
+        self.recall_strategy = os.environ.get("OMBRE_RECALL_STRATEGY", "hybrid").strip().lower() or "hybrid"
         self.raw_dir.mkdir(parents=True, exist_ok=True)
 
     def require_auth(self, request):
@@ -76,6 +77,8 @@ class ZetaMemoryGateway:
             "private_diary": str(self.private_diary_path),
             "auth": "token" if os.environ.get("OMBRE_GATEWAY_TOKEN", "").strip() else "open",
             "embedding": bool(self.embedding_engine and self.embedding_engine.enabled),
+            "embedding_status": self.embedding_engine.status() if self.embedding_engine else {"enabled": False},
+            "recall_strategy": self.recall_strategy,
             "include_legacy": self.include_legacy,
             "legacy_keyword_limit": self.legacy_keyword_limit,
             "natural_limit": self.natural_limit,
@@ -132,7 +135,7 @@ class ZetaMemoryGateway:
             content=content,
             tags=entry["tags"],
             importance=entry["importance"],
-            domain=[GATEWAY_DOMAIN],
+            domain=self._memory_domains(entry),
             valence=entry.get("valence", 0.5) if entry.get("valence") is not None else 0.5,
             arousal=entry.get("arousal", 0.3) if entry.get("arousal") is not None else 0.3,
             name=entry["summary_text"][:48],
@@ -552,6 +555,9 @@ class ZetaMemoryGateway:
         return "\n".join(parts)
 
     async def _recall_buckets(self, query: str, keyword_limit: int, semantic_limit: int, max_results: int) -> list[dict]:
+        if self.recall_strategy != "slots":
+            return await self._hybrid_recall_buckets(query, keyword_limit, semantic_limit, max_results)
+
         seen = set()
         buckets = []
         keyword_terms = self._keyword_terms(query)
@@ -645,6 +651,100 @@ class ZetaMemoryGateway:
                     break
 
         return buckets[:max_results]
+
+    async def _hybrid_recall_buckets(
+        self,
+        query: str,
+        keyword_limit: int,
+        semantic_limit: int,
+        max_results: int,
+    ) -> list[dict]:
+        keyword_terms = self._keyword_terms(query)
+        candidates: dict[str, dict[str, Any]] = {}
+
+        def allowed(bucket: dict[str, Any]) -> bool:
+            return self._is_gateway_memory(bucket) or (self.include_legacy and self._is_legacy_memory(bucket))
+
+        def remember(bucket: dict[str, Any], source: str, reason: str, score: float) -> None:
+            if not bucket or not allowed(bucket):
+                return
+            bucket_id = bucket.get("id")
+            if not bucket_id:
+                return
+            current = candidates.get(bucket_id)
+            if current is None:
+                copy = dict(bucket)
+                copy["_hybrid_scores"] = {}
+                copy["_hybrid_sources"] = []
+                copy["_hybrid_reasons"] = []
+                candidates[bucket_id] = copy
+                current = copy
+            current["_hybrid_scores"][source] = max(
+                float(current["_hybrid_scores"].get(source, 0.0)),
+                float(score or 0.0),
+            )
+            if source not in current["_hybrid_sources"]:
+                current["_hybrid_sources"].append(source)
+            if reason and reason not in current["_hybrid_reasons"]:
+                current["_hybrid_reasons"].append(reason)
+
+        if semantic_limit and self.embedding_engine and self.embedding_engine.enabled and query.strip():
+            semantic_top_k = max(max_results * 8, semantic_limit * 10, 20)
+            semantic_hits = await self.embedding_engine.search_similar(query, top_k=semantic_top_k)
+            for bucket_id, semantic_score in semantic_hits:
+                bucket = await self.bucket_mgr.get(bucket_id)
+                if not bucket:
+                    continue
+                source = "semantic" if self._is_gateway_memory(bucket) else "legacy_semantic"
+                remember(bucket, source, "semantic similarity", float(semantic_score) * 100.0)
+
+        if keyword_limit and keyword_terms:
+            keyword_hits = await self._keyword_search(
+                keyword_terms,
+                limit=max(max_results * 8, keyword_limit * 8, 20),
+            )
+            for bucket in keyword_hits:
+                source = "keyword" if self._is_gateway_memory(bucket) else "legacy_keyword"
+                remember(bucket, source, "keyword/fuzzy match", float(bucket.get("score") or 0.0))
+
+        natural_target = max(self.natural_limit, max_results if not candidates else self.natural_limit)
+        if natural_target:
+            natural_hits = await self._natural_float(set(), min(max_results * 2, max(natural_target, 1)))
+            for bucket in natural_hits:
+                natural_score = float(bucket.get("natural_score") or self._natural_score(bucket.get("metadata", {})))
+                remember(bucket, "natural", "recent/emotional/important memory", natural_score * 100.0)
+
+        if not candidates and keyword_terms:
+            fill_hits = await self._keyword_search(keyword_terms, limit=max_results * 8, domain_filter=[GATEWAY_DOMAIN])
+            for bucket in fill_hits:
+                remember(bucket, "fill", "gateway keyword fallback", float(bucket.get("score") or 0.0))
+
+        ranked = list(candidates.values())
+        ranked.sort(key=self._hybrid_ranking_score, reverse=True)
+        for bucket in ranked:
+            scores = bucket.pop("_hybrid_scores", {})
+            sources = bucket.pop("_hybrid_sources", [])
+            reasons = bucket.pop("_hybrid_reasons", [])
+            bucket["score"] = round(self._hybrid_ranking_score_from_scores(bucket, scores), 2)
+            bucket["gateway_source"] = "+".join(sources) if sources else "hybrid"
+            bucket["gateway_reason"] = "; ".join(reasons[:3])
+            bucket["gateway_scores"] = {k: round(float(v), 2) for k, v in scores.items()}
+        return ranked[:max_results]
+
+    def _hybrid_ranking_score(self, bucket: dict[str, Any]) -> float:
+        return self._hybrid_ranking_score_from_scores(bucket, bucket.get("_hybrid_scores", {}))
+
+    def _hybrid_ranking_score_from_scores(self, bucket: dict[str, Any], scores: dict[str, float]) -> float:
+        values = [float(v or 0.0) for v in scores.values()]
+        if values:
+            base = max(values)
+            spread = sum(v for v in values if v != base) * 0.22
+        else:
+            base = 0.0
+            spread = 0.0
+        semantic_presence = 6.0 if any("semantic" in str(key) for key in scores) else 0.0
+        multi_source_bonus = min(8.0, max(0, len(scores) - 1) * 3.0)
+        return base + spread + semantic_presence + multi_source_bonus + self._importance_bonus(bucket)
 
     async def _keyword_search(self, terms: list[str], limit: int, domain_filter: list[str] | None = None) -> list[dict]:
         merged = {}
@@ -785,10 +885,12 @@ class ZetaMemoryGateway:
             raise ValueError("raw_ref is required")
 
         tags = self._normalize_tags(body.get("tags"))
+        domains = self._normalize_tags(body.get("domains") or body.get("domain"))
         importance = self._bounded_int(body.get("importance", 5), 1, 10)
         entry = {
             "summary_text": summary_text,
             "tags": tags,
+            "domains": domains,
             "importance": importance,
             "raw_ref": raw_ref,
             "useCount": self._bounded_int(body.get("useCount", 0), 0, 1000000),
@@ -808,11 +910,19 @@ class ZetaMemoryGateway:
                 entry[field] = value
         return entry
 
+    def _memory_domains(self, entry: dict[str, Any]) -> list[str]:
+        domains = [GATEWAY_DOMAIN]
+        for domain in self._normalize_tags(entry.get("domains", [])):
+            if domain and domain not in domains:
+                domains.append(domain)
+        return domains
+
     def _memory_content(self, entry: dict[str, Any]) -> str:
         lines = [
             MEMORY_MARKER,
             f"summary_text: {entry['summary_text']}",
             f"tags: {', '.join(entry['tags'])}",
+            f"domains: {', '.join(entry.get('domains') or [])}",
             f"importance: {entry['importance']}",
             f"useCount: {entry.get('useCount', 0)}",
             f"raw_ref: {entry['raw_ref']}",
@@ -842,6 +952,7 @@ class ZetaMemoryGateway:
             "reason": bucket.get("gateway_reason", ""),
             "summary_text": record.get("summary_text", ""),
             "tags": record.get("tags", []),
+            "domains": record.get("domains", []),
             "importance": record.get("importance"),
             "raw_ref": record.get("raw_ref", ""),
         }
@@ -868,6 +979,8 @@ class ZetaMemoryGateway:
             value = value.strip()
             if key == "tags":
                 record[key] = self._normalize_tags(value)
+            elif key in {"domain", "domains"}:
+                record["domains"] = self._normalize_tags(value)
             elif key == "importance":
                 record[key] = self._bounded_int(value, 1, 10)
             elif key == "useCount":
@@ -908,6 +1021,8 @@ class ZetaMemoryGateway:
             result["useCount"] = meta.get("useCount")
         if meta.get("lastUsedAt") is not None:
             result["lastUsedAt"] = meta.get("lastUsedAt")
+        if meta.get("domain") is not None:
+            result["domains"] = self._normalize_tags(meta.get("domain", []))
         return result
 
     async def _track_recalled_usage(
@@ -990,6 +1105,7 @@ class ZetaMemoryGateway:
             "created",
             "summary_text",
             "tags",
+            "domains",
             "importance",
             "raw_ref",
             "feel_text",
@@ -1006,6 +1122,8 @@ class ZetaMemoryGateway:
             merged["created"] = now
         if not isinstance(merged.get("tags"), list):
             merged["tags"] = self._normalize_tags(merged.get("tags", []))
+        if not isinstance(merged.get("domains"), list):
+            merged["domains"] = self._normalize_tags(merged.get("domains", []))
         return merged
 
     def _injection_text(self, memories: list[dict[str, Any]]) -> str:
@@ -1016,6 +1134,7 @@ class ZetaMemoryGateway:
             parts.append(
                 f"{idx}. {memory.get('summary_text', '')}\n"
                 f"   tags: {', '.join(memory.get('tags') or [])}\n"
+                f"   domains: {', '.join(memory.get('domains') or [])}\n"
                 f"   importance: {memory.get('importance')}\n"
                 f"   created: {memory.get('created', '')}\n"
                 f"   reason: {memory.get('reason') or memory.get('source', '')}\n"

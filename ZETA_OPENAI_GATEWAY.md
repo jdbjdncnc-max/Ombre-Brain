@@ -89,9 +89,22 @@ Recommended:
 OMBRE_PUBLIC_MODEL=zeta-gateway
 OMBRE_GATEWAY_DEFAULT_SESSION_ID=zeta-main
 OMBRE_RECALL_MAX_RESULTS=5
-OMBRE_RECALL_KEYWORD_LIMIT=4
-OMBRE_RECALL_SEMANTIC_LIMIT=1
+OMBRE_RECALL_STRATEGY=hybrid
+OMBRE_RECALL_KEYWORD_LIMIT=2
+OMBRE_RECALL_SEMANTIC_LIMIT=4
 OMBRE_MEMORY_WRITE_MODE=zeta
+```
+
+Memory quality variables:
+
+```text
+OMBRE_DEHYDRATION_API_KEY=key-for-tagging-and-memory-reflection
+OMBRE_DEHYDRATION_BASE_URL=https://openrouter.ai/api/v1
+OMBRE_DEHYDRATION_MODEL=openrouter-model-slug
+OMBRE_EMBEDDING_ENABLED=true
+OMBRE_EMBEDDING_API_KEY=key-for-embedding
+OMBRE_EMBEDDING_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+OMBRE_EMBEDDING_MODEL=gemini-embedding-001
 ```
 
 ## Memory Write Mode
@@ -172,7 +185,18 @@ The gateway currently supports OpenAI-compatible chat completions. It supports n
   "memory_write_mode": "zeta",
   "hidden_memory_request_enabled": true,
   "private_diary_hidden_write_enabled": true,
-  "reasoning_configured": true
+  "reasoning_configured": true,
+  "recall": {
+    "strategy": "hybrid",
+    "keyword_limit": 2,
+    "semantic_limit": 4
+  },
+  "memory": {
+    "embedding_status": {
+      "enabled": true,
+      "vector_count": 123
+    }
+  }
 }
 ```
 
