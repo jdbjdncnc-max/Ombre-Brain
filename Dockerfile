@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY *.py .
 COPY dashboard.html .
+COPY companion_frontend ./companion_frontend
 COPY config.example.yaml ./config.yaml
 
 RUN mkdir -p /app/buckets && chmod -R 777 /app/buckets
