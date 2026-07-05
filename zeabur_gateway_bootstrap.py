@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -868,6 +869,89 @@ try:
             "buckets_dir": gateway.config.get("buckets_dir", ""),
         })
 
+    def _profile_path(gateway) -> Path:
+        base_dir = getattr(gateway.memory_gateway, "base_dir", None)
+        if base_dir is None:
+            base_dir = Path(gateway.config.get("buckets_dir", "buckets")) / "gateway"
+        base_dir = Path(base_dir)
+        base_dir.mkdir(parents=True, exist_ok=True)
+        return base_dir / "profile.json"
+
+    def _empty_profile() -> dict:
+        return {
+            "ok": True,
+            "version": 1,
+            "user": "",
+            "ai": "",
+            "updated_at": "",
+            "updated_by": "",
+            "history": [],
+        }
+
+    def _read_profile(gateway) -> dict:
+        path = _profile_path(gateway)
+        if not path.exists():
+            return _empty_profile()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        profile = _empty_profile()
+        if isinstance(data, dict):
+            profile.update({
+                "version": int(data.get("version", 1) or 1),
+                "user": str(data.get("user") or "")[:6000],
+                "ai": str(data.get("ai") or "")[:6000],
+                "updated_at": str(data.get("updated_at") or ""),
+                "updated_by": str(data.get("updated_by") or ""),
+                "history": data.get("history", []) if isinstance(data.get("history"), list) else [],
+            })
+        return profile
+
+    def _profile_text(value) -> str:
+        return str(value or "").strip()[:6000]
+
+    async def api_profile_get(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"ok": False, "error": zeta_openai_gateway.startup_error}, status_code=503)
+        return JSONResponse(_read_profile(gateway))
+
+    async def api_profile_post(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"ok": False, "error": zeta_openai_gateway.startup_error}, status_code=503)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "error": "Request body must be an object"}, status_code=400)
+        profile = _read_profile(gateway)
+        updated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        profile["user"] = _profile_text(body.get("user", profile.get("user", "")))
+        profile["ai"] = _profile_text(body.get("ai", profile.get("ai", "")))
+        profile["updated_at"] = updated_at
+        profile["updated_by"] = str(body.get("source") or "frontend")[:80]
+        history = profile.get("history", [])
+        if not isinstance(history, list):
+            history = []
+        history.append({
+            "at": updated_at,
+            "source": profile["updated_by"],
+            "user_length": len(profile["user"]),
+            "ai_length": len(profile["ai"]),
+        })
+        profile["history"] = history[-30:]
+        path = _profile_path(gateway)
+        path.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
+        return JSONResponse(profile)
     async def api_diaries(request: Request) -> JSONResponse:
         return await gateway_diaries(request)
 
@@ -906,6 +990,8 @@ try:
     app.router.routes.append(Route("/api/network", api_network, methods=["GET"]))
     app.router.routes.append(Route("/api/export", api_export, methods=["GET"]))
     app.router.routes.append(Route("/api/config", api_config_get, methods=["GET"]))
+    app.router.routes.append(Route("/api/profile", api_profile_get, methods=["GET"]))
+    app.router.routes.append(Route("/api/profile", api_profile_post, methods=["POST"]))
     app.router.routes.append(Route("/api/diaries", api_diaries, methods=["GET"]))
     app.router.routes.append(Route("/api/config", api_not_enabled, methods=["POST"]))
     app.router.routes.append(Route("/api/breath-debug", api_not_enabled, methods=["GET"]))
