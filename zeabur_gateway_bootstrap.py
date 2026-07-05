@@ -9,8 +9,9 @@ import uvicorn
 from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse
-from starlette.routing import Route
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
 
 logging.basicConfig(
@@ -20,6 +21,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ombre_brain.zeabur_bootstrap")
 dashboard_sessions: dict[str, float] = {}
+companion_frontend_dir = Path(__file__).with_name("companion_frontend")
 
 
 def _port() -> int:
@@ -630,6 +632,11 @@ try:
             logger.warning("Gateway dashboard raw lookup failed: %s", exc)
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
+    async def companion_page(request: Request):
+        index_path = companion_frontend_dir / "index.html"
+        if not index_path.exists():
+            return HTMLResponse("<h1>companion frontend not found</h1>", status_code=404)
+        return FileResponse(index_path)
     async def dashboard_page(request: Request) -> HTMLResponse:
         dashboard_path = Path(__file__).with_name("dashboard.html")
         if not dashboard_path.exists():
@@ -880,7 +887,10 @@ try:
     app.router.routes.append(Route("/gateway/private_diary", gateway_private_diary, methods=["POST"]))
     app.router.routes.append(Route("/gateway/diaries", gateway_diaries, methods=["GET", "POST"]))
     app.router.routes.append(Route("/gateway/raw/lookup", gateway_raw_lookup, methods=["GET", "POST"]))
-    app.router.routes.append(Route("/", dashboard_page, methods=["GET"]))
+    if companion_frontend_dir.exists():
+        app.router.routes.append(Mount("/frontend", StaticFiles(directory=str(companion_frontend_dir)), name="companion_frontend"))
+    app.router.routes.append(Route("/", companion_page, methods=["GET"]))
+    app.router.routes.append(Route("/app", companion_page, methods=["GET"]))
     app.router.routes.append(Route("/dashboard", dashboard_page, methods=["GET"]))
     app.router.routes.append(Route("/auth/status", auth_status, methods=["GET"]))
     app.router.routes.append(Route("/auth/login", auth_login, methods=["POST"]))

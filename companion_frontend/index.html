@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Companion 1.0</title>
+  <link rel="stylesheet" href="/frontend/styles.css">
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <section class="phone-shell" aria-label="Companion app">
+      <header class="top-bar">
+        <span id="clock" class="clock">09:41</span>
+        <span id="serverStatus" class="server-status">连接中</span>
+      </header>
+
+      <main class="screen">
+        <section id="chatView" class="view view-active" aria-label="对话">
+          <div class="chat-header">
+            <div>
+              <p class="eyebrow">Companion</p>
+              <h1>对话</h1>
+            </div>
+            <button id="newChatButton" class="icon-button" type="button" title="新对话" aria-label="新对话">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 5v14M5 12h14"/>
+              </svg>
+            </button>
+          </div>
+
+          <div id="messageList" class="message-list" aria-live="polite"></div>
+
+          <form id="composer" class="composer">
+            <textarea id="messageInput" rows="1" placeholder="说点什么" autocomplete="off"></textarea>
+            <button id="sendButton" class="send-button" type="submit" title="发送" aria-label="发送">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 12h13M13 6l6 6-6 6"/>
+              </svg>
+            </button>
+          </form>
+        </section>
+
+        <section id="settingsView" class="view" aria-label="设置">
+          <div class="settings-header">
+            <p class="eyebrow">Companion</p>
+            <h1>设置</h1>
+          </div>
+
+          <div class="settings-list">
+            <label class="field">
+              <span>后端地址</span>
+              <input id="backendUrl" type="url" inputmode="url">
+            </label>
+
+            <label class="field">
+              <span>网关令牌</span>
+              <input id="gatewayToken" type="password" autocomplete="current-password" placeholder="OMBRE_GATEWAY_TOKEN">
+            </label>
+
+            <label class="field">
+              <span>模型</span>
+              <input id="modelName" type="text" spellcheck="false">
+            </label>
+
+            <label class="field">
+              <span>温度</span>
+              <div class="range-row">
+                <input id="temperature" type="range" min="0" max="2" step="0.1">
+                <output id="temperatureValue">0.7</output>
+              </div>
+            </label>
+
+            <label class="field">
+              <span>系统提示词</span>
+              <textarea id="systemPrompt" rows="5" spellcheck="false"></textarea>
+            </label>
+
+            <label class="field">
+              <span>背景图片</span>
+              <input id="backgroundUrl" type="url" inputmode="url" placeholder="https://...">
+            </label>
+
+            <div class="button-row">
+              <button id="chooseBackgroundButton" class="secondary-button" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 6h16v12H4z"/>
+                  <path d="M7 15l3-3 2 2 3-4 2 5"/>
+                  <path d="M8 9h.01"/>
+                </svg>
+                <span>选择图片</span>
+              </button>
+              <button id="resetBackgroundButton" class="secondary-button" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 7h16"/>
+                  <path d="M10 11v6M14 11v6"/>
+                  <path d="M6 7l1 14h10l1-14"/>
+                  <path d="M9 7V4h6v3"/>
+                </svg>
+                <span>重置</span>
+              </button>
+              <input id="backgroundFile" type="file" accept="image/*" hidden>
+            </div>
+
+            <label class="field">
+              <span>界面透明度</span>
+              <div class="range-row">
+                <input id="glassOpacity" type="range" min="0.38" max="0.9" step="0.02">
+                <output id="glassOpacityValue">68%</output>
+              </div>
+            </label>
+
+            <label class="field">
+              <span>主题色</span>
+              <input id="accentColor" type="color">
+            </label>
+
+            <div class="button-row">
+              <button id="saveSettingsButton" class="primary-button" type="button">保存</button>
+              <button id="clearChatButton" class="secondary-button" type="button">清空对话</button>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <nav class="bottom-tabs" aria-label="底部导航">
+        <button class="tab-button tab-active" type="button" data-tab="chat">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 5h16v11H8l-4 4z"/>
+          </svg>
+          <span>对话</span>
+        </button>
+        <button class="tab-button" type="button" data-tab="settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/>
+            <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.04.04-2 3.46-.05-.02a1.7 1.7 0 0 0-1.9.32 1.7 1.7 0 0 0-.48 1.32H8.65a1.7 1.7 0 0 0-.48-1.32 1.7 1.7 0 0 0-1.9-.32l-.05.02-2-3.46.04-.04A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.16-1.56H3.4V10.56h.04A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.04-.04 2-3.46.05.02a1.7 1.7 0 0 0 1.9-.32A1.7 1.7 0 0 0 8.65 2h6.7a1.7 1.7 0 0 0 .48 1.32 1.7 1.7 0 0 0 1.9.32l.05-.02 2 3.46-.04.04A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.16 1.56h.04v2.88h-.04A1.7 1.7 0 0 0 19.4 15z"/>
+          </svg>
+          <span>设置</span>
+        </button>
+      </nav>
+    </section>
+  </div>
+
+  <script src="/frontend/app.js" type="module"></script>
+</body>
+</html>
