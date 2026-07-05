@@ -19,3 +19,18 @@ data/
 tests/integration/
 tests/regression/
 tests/unit/
+
+# Generated package/export artifacts
+*.toolpkg
+zeta_memory_gateway_v*.zip
+zeta_probe_*.zip
+
+# Local generated worktrees and scratch folders
+github_*_worktree*/
+*_push_worktree*/
+reasoning_push_worktree_*/
+yinglianchun_gateway_worktree/
+diary_style_probe_toolpkg/
+probe_toolpkg/
+toolpkg/
+_tmp_*/
