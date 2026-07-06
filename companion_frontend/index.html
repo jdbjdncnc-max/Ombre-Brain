@@ -101,6 +101,84 @@
           </div>
         </section>
 
+        <section id="scheduleView" class="view" aria-label="日程">
+          <div class="schedule-header">
+            <div>
+              <p class="eyebrow">Companion</p>
+              <h1>日程</h1>
+            </div>
+            <button id="scheduleNotifyButton" class="icon-button" type="button" title="提醒" aria-label="提醒">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7"/>
+                <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+              </svg>
+            </button>
+          </div>
+
+          <div class="schedule-dashboard">
+            <div class="schedule-next">
+              <span id="scheduleTodayCount">今日 0 项</span>
+              <strong id="scheduleNextTitle">今天清爽</strong>
+              <small id="scheduleNextMeta">没有临近日程</small>
+            </div>
+            <div id="scheduleSyncStatus" class="schedule-status">本地日程</div>
+          </div>
+
+          <section class="schedule-section">
+            <div class="section-title-row">
+              <strong>今日待办</strong>
+              <span id="todoCaptureStatus" class="inline-status"></span>
+            </div>
+            <form id="todoForm" class="schedule-form">
+              <label class="compact-field">
+                <span>日期</span>
+                <input id="todoDate" type="date">
+              </label>
+              <label class="compact-field">
+                <span>时间</span>
+                <input id="todoTime" type="time">
+              </label>
+              <label class="compact-field task-field">
+                <span>任务</span>
+                <input id="todoTitle" type="text" placeholder="写完实验报告">
+              </label>
+              <button class="small-icon-button" type="submit" title="加入" aria-label="加入">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 5v14M5 12h14"/>
+                </svg>
+              </button>
+            </form>
+          </section>
+
+          <section class="schedule-section">
+            <div class="section-title-row">
+              <strong>课表</strong>
+              <span id="courseImportStatus" class="inline-status"></span>
+            </div>
+            <textarea id="courseImportText" class="course-import" rows="4" placeholder="2026-09-02 08:00-09:40 分子生物学 @A101"></textarea>
+            <div class="button-row">
+              <button id="importCoursesButton" class="primary-button" type="button">导入课表</button>
+              <button id="clearCourseImportButton" class="secondary-button" type="button">清空</button>
+            </div>
+          </section>
+
+          <section class="schedule-section timeline-section">
+            <div class="section-title-row">
+              <strong>今天</strong>
+              <button id="clearDoneButton" class="text-button" type="button">清除已完成</button>
+            </div>
+            <div id="scheduleTimeline" class="item-list"></div>
+          </section>
+
+          <section class="schedule-section timeline-section">
+            <div class="section-title-row">
+              <strong>接下来</strong>
+              <span id="upcomingSummary" class="inline-status"></span>
+            </div>
+            <div id="upcomingScheduleList" class="item-list"></div>
+          </section>
+        </section>
+
         <section id="settingsView" class="view" aria-label="设置">
           <div class="settings-header">
             <p class="eyebrow">Companion</p>
@@ -196,6 +274,15 @@
             <path d="M9 8h5M9 12h6M9 16h4"/>
           </svg>
           <span>记忆</span>
+        </button>
+        <button class="tab-button" type="button" data-tab="schedule">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M8 2v4M16 2v4"/>
+            <path d="M3 10h18"/>
+            <path d="M5 4h14a2 2 0 0 1 2 2v14H3V6a2 2 0 0 1 2-2z"/>
+            <path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/>
+          </svg>
+          <span>日程</span>
         </button>
         <button class="tab-button" type="button" data-tab="settings">
           <svg viewBox="0 0 24 24" aria-hidden="true">

@@ -954,6 +954,106 @@ try:
         path = _profile_path(gateway)
         path.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
         return JSONResponse(profile)
+    def _schedule_path(gateway) -> Path:
+        base_dir = getattr(gateway.memory_gateway, "base_dir", None)
+        if base_dir is None:
+            base_dir = Path(gateway.config.get("buckets_dir", "buckets")) / "gateway"
+        base_dir = Path(base_dir)
+        base_dir.mkdir(parents=True, exist_ok=True)
+        return base_dir / "schedule.json"
+
+    def _empty_schedule() -> dict:
+        return {
+            "ok": True,
+            "version": 1,
+            "updatedAt": "",
+            "items": [],
+        }
+
+    def _schedule_text(value, limit: int = 160) -> str:
+        return str(value or "").strip()[:limit]
+
+    def _schedule_item(value) -> dict | None:
+        if not isinstance(value, dict):
+            return None
+        date = _schedule_text(value.get("date"), 16)
+        start = _schedule_text(value.get("start"), 8)
+        title = _schedule_text(value.get("title"), 120)
+        if not date or not start or not title:
+            return None
+        kind = _schedule_text(value.get("type"), 16)
+        return {
+            "id": _schedule_text(value.get("id"), 80) or f"schedule-{int(time.time() * 1000)}",
+            "type": "course" if kind == "course" else "todo",
+            "date": date,
+            "start": start,
+            "end": _schedule_text(value.get("end"), 8),
+            "title": title,
+            "location": _schedule_text(value.get("location"), 120),
+            "note": _schedule_text(value.get("note"), 240),
+            "done": bool(value.get("done")),
+            "source": _schedule_text(value.get("source"), 40) or "frontend",
+            "createdAt": _schedule_text(value.get("createdAt") or value.get("created_at"), 40),
+        }
+
+    def _read_schedule(gateway) -> dict:
+        path = _schedule_path(gateway)
+        if not path.exists():
+            return _empty_schedule()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        schedule = _empty_schedule()
+        if isinstance(data, dict):
+            items = data.get("items", [])
+            schedule["version"] = int(data.get("version", 1) or 1)
+            schedule["updatedAt"] = _schedule_text(data.get("updatedAt") or data.get("updated_at"), 40)
+        elif isinstance(data, list):
+            items = data
+        else:
+            items = []
+        if isinstance(items, list):
+            schedule["items"] = [item for item in (_schedule_item(raw) for raw in items[:1000]) if item]
+        return schedule
+
+    def _write_schedule(gateway, body: dict) -> dict:
+        items = body.get("items", []) if isinstance(body, dict) else []
+        if not isinstance(items, list):
+            items = []
+        schedule = {
+            "ok": True,
+            "version": 1,
+            "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "items": [item for item in (_schedule_item(raw) for raw in items[:1000]) if item],
+        }
+        path = _schedule_path(gateway)
+        path.write_text(json.dumps(schedule, ensure_ascii=False, indent=2), encoding="utf-8")
+        return schedule
+
+    async def api_schedule_get(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"ok": False, "error": zeta_openai_gateway.startup_error}, status_code=503)
+        return JSONResponse(_read_schedule(gateway))
+
+    async def api_schedule_post(request: Request) -> JSONResponse:
+        err = _dashboard_auth_error(request)
+        if err is not None:
+            return err
+        gateway = require_dashboard_gateway()
+        if gateway is None:
+            return JSONResponse({"ok": False, "error": zeta_openai_gateway.startup_error}, status_code=503)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "error": "Request body must be an object"}, status_code=400)
+        return JSONResponse(_write_schedule(gateway, body))
     async def api_diaries(request: Request) -> JSONResponse:
         return await gateway_diaries(request)
 
@@ -994,6 +1094,8 @@ try:
     app.router.routes.append(Route("/api/config", api_config_get, methods=["GET"]))
     app.router.routes.append(Route("/api/profile", api_profile_get, methods=["GET"]))
     app.router.routes.append(Route("/api/profile", api_profile_post, methods=["POST"]))
+    app.router.routes.append(Route("/api/schedule", api_schedule_get, methods=["GET"]))
+    app.router.routes.append(Route("/api/schedule", api_schedule_post, methods=["POST"]))
     app.router.routes.append(Route("/api/diaries", api_diaries, methods=["GET"]))
     app.router.routes.append(Route("/api/config", api_not_enabled, methods=["POST"]))
     app.router.routes.append(Route("/api/breath-debug", api_not_enabled, methods=["GET"]))
