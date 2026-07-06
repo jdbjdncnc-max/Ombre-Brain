@@ -526,6 +526,12 @@ output {
   cursor: default;
 }
 
+.load-more-row {
+  display: grid;
+  place-items: center;
+  padding: 4px 0 12px;
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

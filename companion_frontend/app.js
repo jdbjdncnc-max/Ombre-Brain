@@ -21,6 +21,9 @@ const state = {
   settings: { ...defaultSettings, ...loadJson(storageKeys.settings, {}) },
   activeTab: "chat",
   memoryPanel: "memories",
+  memoryItems: [],
+  memoryQuery: "",
+  memoryVisibleCount: 80,
   busy: false,
   sessionId: localStorage.getItem(storageKeys.sessionId) || crypto.randomUUID(),
   loadedMemoryPanels: new Set()
@@ -331,25 +334,31 @@ async function loadMemories(query = "", force = false) {
   if (force) {
     state.loadedMemoryPanels.delete("memories");
   }
+  state.memoryQuery = query;
+  state.memoryVisibleCount = 80;
   els.memorySummary.textContent = "载入中";
   els.memoryList.replaceChildren();
-  const path = query ? `/api/search?q=${encodeURIComponent(query)}` : "/api/buckets";
-  const items = await gatewayFetch(path);
-  const visible = Array.isArray(items) ? items.slice(0, 60) : [];
-  els.memorySummary.textContent = query
-    ? `找到 ${visible.length} 条`
-    : `共 ${visible.length} 条`;
-  renderMemoryList(visible);
+  const items = await gatewayFetch("/api/buckets");
+  const allItems = Array.isArray(items) ? items : [];
+  state.memoryItems = query ? allItems.filter((item) => memoryMatches(item, query)) : allItems;
+  renderMemoryList();
 }
 
-function renderMemoryList(items) {
+function renderMemoryList() {
   els.memoryList.replaceChildren();
+  const items = state.memoryItems;
   if (!items.length) {
     els.memoryList.append(emptyNode("还没有可显示的记忆。"));
+    els.memorySummary.textContent = state.memoryQuery ? "找到 0 条" : "共 0 条";
     return;
   }
 
-  for (const item of items) {
+  const visibleItems = items.slice(0, state.memoryVisibleCount);
+  els.memorySummary.textContent = state.memoryQuery
+    ? `找到 ${items.length} 条，已显示 ${visibleItems.length} 条`
+    : `共 ${items.length} 条，已显示 ${visibleItems.length} 条`;
+
+  for (const item of visibleItems) {
     const card = document.createElement("article");
     card.className = "memory-item";
 
@@ -380,6 +389,43 @@ function renderMemoryList(items) {
     card.append(title, preview, meta, detailButton);
     els.memoryList.append(card);
   }
+
+  if (visibleItems.length < items.length) {
+    const row = document.createElement("div");
+    row.className = "load-more-row";
+    const button = document.createElement("button");
+    button.className = "text-button";
+    button.type = "button";
+    button.textContent = `加载更多 ${Math.min(80, items.length - visibleItems.length)} 条`;
+    button.addEventListener("click", () => {
+      state.memoryVisibleCount += 80;
+      renderMemoryList();
+    });
+    row.append(button);
+    els.memoryList.append(row);
+  }
+}
+
+function memoryMatches(item, query) {
+  const terms = String(query || "")
+    .toLowerCase()
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter(Boolean);
+  if (!terms.length) {
+    return true;
+  }
+  const text = [
+    item.id,
+    item.name,
+    item.type,
+    item.content_preview,
+    item.summary_text,
+    item.summary,
+    arrayLabel(item.tags),
+    arrayLabel(item.domain)
+  ].join(" ").toLowerCase();
+  return terms.every((term) => text.includes(term));
 }
 
 async function loadMemoryDetail(id, target, button) {
