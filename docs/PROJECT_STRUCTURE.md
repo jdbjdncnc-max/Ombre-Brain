@@ -28,3 +28,9 @@ This repo currently has two jobs:
 ## Merge direction
 
 For the future combined project, keep the memory gateway API in this repo and move the custom frontend in as a static/app layer served from `/`. The API routes should remain compatible with both Operit and the new frontend.
+## Companion Frontend Merge
+
+- `/` serves the custom companion frontend under the same Zeabur domain, while `/dashboard` remains available for the older dashboard.
+- `/v1/*` stays compatible with Operit and other OpenAI-compatible clients.
+- `companion_frontend/` contains the static UI assets.
+- `ombre_internal_tools_patch.py` adds the hidden internal tool protocol for memory search, diary search, profile read/patch, and structured memory/diary writes.

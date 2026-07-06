@@ -391,8 +391,10 @@ def _dashboard_cleanup_script() -> str:
 try:
     import zeta_openai_gateway
     from zeta_hidden_memory_patch import apply_hidden_memory_patch
+    from ombre_internal_tools_patch import apply_ombre_internal_tools_patch
 
     apply_hidden_memory_patch(zeta_openai_gateway)
+    apply_ombre_internal_tools_patch(zeta_openai_gateway)
     app = zeta_openai_gateway.app
 
     async def debug_recall_page(request: Request) -> HTMLResponse:
