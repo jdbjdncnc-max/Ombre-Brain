@@ -155,11 +155,43 @@
               <strong>课表</strong>
               <span id="courseImportStatus" class="inline-status"></span>
             </div>
-            <textarea id="courseImportText" class="course-import" rows="4" placeholder="2026-09-02 08:00-09:40 分子生物学 @A101"></textarea>
+            <form id="termForm" class="term-form">
+              <label class="compact-field">
+                <span>开学周一</span>
+                <input id="termStartDate" type="date">
+              </label>
+              <label class="compact-field">
+                <span>总周数</span>
+                <input id="termWeekCount" type="number" min="1" max="30" step="1">
+              </label>
+              <button id="saveTermButton" class="secondary-button" type="submit">保存</button>
+            </form>
+            <textarea id="courseImportText" class="course-import" rows="5" placeholder="周一 3-4 细胞生物学 @八410 第1-16周&#10;周三 1-8 分子生物学实验 @生地楼312 第2-17周&#10;周五 5-8 遗传学实验 @生地楼508 单周"></textarea>
             <div class="button-row">
               <button id="importCoursesButton" class="primary-button" type="button">导入课表</button>
               <button id="clearCourseImportButton" class="secondary-button" type="button">清空</button>
             </div>
+          </section>
+
+          <section class="schedule-section week-section">
+            <div class="week-toolbar">
+              <button id="previousWeekButton" class="small-icon-button" type="button" title="上一周" aria-label="上一周">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M15 18l-6-6 6-6"/>
+                </svg>
+              </button>
+              <div class="week-heading">
+                <strong id="weekTitle">本周</strong>
+                <span id="weekRange">--</span>
+              </div>
+              <button id="nextWeekButton" class="small-icon-button" type="button" title="下一周" aria-label="下一周">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M9 18l6-6-6-6"/>
+                </svg>
+              </button>
+              <button id="currentWeekButton" class="text-button" type="button">本周</button>
+            </div>
+            <div id="weekGrid" class="week-grid" aria-label="周课表"></div>
           </section>
 
           <section class="schedule-section timeline-section">

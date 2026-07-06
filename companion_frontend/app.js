@@ -3,6 +3,7 @@ const storageKeys = {
   settings: "companion.settings.v1",
   sessionId: "companion.sessionId.v1",
   schedule: "companion.schedule.v1",
+  scheduleSettings: "companion.scheduleSettings.v1",
   scheduleNudges: "companion.scheduleNudges.v1"
 };
 
@@ -18,6 +19,36 @@ const defaultSettings = {
   accentColor: "#17a897"
 };
 
+const COURSE_PERIODS = [
+  { index: 1, start: "08:00", end: "08:45" },
+  { index: 2, start: "08:55", end: "09:40" },
+  { index: 3, start: "10:00", end: "10:45" },
+  { index: 4, start: "10:55", end: "11:40" },
+  { index: 5, start: "13:30", end: "14:15" },
+  { index: 6, start: "14:25", end: "15:10" },
+  { index: 7, start: "15:30", end: "16:15" },
+  { index: 8, start: "16:25", end: "17:10" },
+  { index: 9, start: "18:00", end: "18:45" },
+  { index: 10, start: "18:55", end: "19:40" },
+  { index: 11, start: "19:50", end: "20:35" },
+  { index: 12, start: "20:45", end: "21:30" }
+];
+
+const COURSE_COLORS = [
+  "#73a8ef",
+  "#d9bd86",
+  "#8fd2c5",
+  "#63c9da",
+  "#d96d93",
+  "#78a97f",
+  "#b4c875",
+  "#afa9dc",
+  "#9fcfad",
+  "#d39abf"
+];
+
+const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
+
 const state = {
   messages: loadJson(storageKeys.messages, []),
   settings: { ...defaultSettings, ...loadJson(storageKeys.settings, {}) },
@@ -27,6 +58,8 @@ const state = {
   memoryQuery: "",
   memoryVisibleCount: 80,
   scheduleItems: normalizeScheduleItems(loadJson(storageKeys.schedule, [])),
+  scheduleSettings: normalizeScheduleSettings(loadJson(storageKeys.scheduleSettings, {})),
+  visibleWeekStart: dateKey(startOfWeek(new Date())),
   scheduleNudges: loadJson(storageKeys.scheduleNudges, {}),
   scheduleSyncStatus: "本地日程",
   busy: false,
@@ -69,10 +102,20 @@ const els = {
   todoDate: document.querySelector("#todoDate"),
   todoTime: document.querySelector("#todoTime"),
   todoTitle: document.querySelector("#todoTitle"),
+  termForm: document.querySelector("#termForm"),
+  termStartDate: document.querySelector("#termStartDate"),
+  termWeekCount: document.querySelector("#termWeekCount"),
+  saveTermButton: document.querySelector("#saveTermButton"),
   courseImportText: document.querySelector("#courseImportText"),
   courseImportStatus: document.querySelector("#courseImportStatus"),
   importCoursesButton: document.querySelector("#importCoursesButton"),
   clearCourseImportButton: document.querySelector("#clearCourseImportButton"),
+  previousWeekButton: document.querySelector("#previousWeekButton"),
+  nextWeekButton: document.querySelector("#nextWeekButton"),
+  currentWeekButton: document.querySelector("#currentWeekButton"),
+  weekTitle: document.querySelector("#weekTitle"),
+  weekRange: document.querySelector("#weekRange"),
+  weekGrid: document.querySelector("#weekGrid"),
   clearDoneButton: document.querySelector("#clearDoneButton"),
   scheduleTimeline: document.querySelector("#scheduleTimeline"),
   upcomingSummary: document.querySelector("#upcomingSummary"),
@@ -153,12 +196,21 @@ function bindEvents() {
     addTodoFromForm();
   });
 
+  els.termForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveTermSettings();
+  });
+
   els.importCoursesButton.addEventListener("click", importCourses);
 
   els.clearCourseImportButton.addEventListener("click", () => {
     els.courseImportText.value = "";
     els.courseImportStatus.textContent = "";
   });
+
+  els.previousWeekButton.addEventListener("click", () => shiftVisibleWeek(-1));
+  els.nextWeekButton.addEventListener("click", () => shiftVisibleWeek(1));
+  els.currentWeekButton.addEventListener("click", () => focusCurrentScheduleWeek());
 
   els.clearDoneButton.addEventListener("click", clearDoneTodos);
 
@@ -597,6 +649,8 @@ function renderProfileError(error) {
 function initSchedule() {
   els.todoDate.value = todayDateKey();
   els.todoTime.value = nextQuarterHour();
+  hydrateTermForm();
+  focusCurrentScheduleWeek(false);
   updateNotificationButton();
 }
 
@@ -605,7 +659,10 @@ async function loadSchedule() {
     const data = await gatewayFetch("/api/schedule");
     const items = Array.isArray(data) ? data : data.items;
     state.scheduleItems = normalizeScheduleItems(items);
+    state.scheduleSettings = normalizeScheduleSettings(data?.settings || state.scheduleSettings);
+    hydrateTermForm();
     saveScheduleLocal();
+    saveScheduleSettingsLocal();
     setScheduleSyncStatus("已同步", "online");
     renderSchedule();
   } catch (error) {
@@ -652,7 +709,7 @@ function importCourses() {
     return;
   }
   const result = addScheduleItems(parsed);
-  els.courseImportStatus.textContent = `导入 ${result.added} 项`;
+  els.courseImportStatus.textContent = `导入 ${result.added} 条规则`;
   clearInlineStatusLater(els.courseImportStatus);
 }
 
@@ -684,7 +741,9 @@ function clearDoneTodos() {
 function renderSchedule() {
   const today = todayDateKey();
   const now = new Date();
-  const todayItems = sortScheduleItems(state.scheduleItems.filter((item) => item.date === today));
+  const visibleWeekStart = parseDateKey(state.visibleWeekStart) || startOfWeek(now);
+  const visibleWeekEnd = addDays(visibleWeekStart, 6);
+  const todayItems = sortScheduleItems(expandedScheduleItemsForRange(startOfDay(now), endOfDay(now)));
   const activeItems = todayItems.filter((item) => !item.done);
   const upcoming = nextScheduleItems(now, 8);
   const nextItem = upcoming[0] || activeItems[0];
@@ -694,6 +753,8 @@ function renderSchedule() {
   els.scheduleNextMeta.textContent = nextItem ? scheduleMetaLine(nextItem, now) : "没有临近日程";
   els.upcomingSummary.textContent = upcoming.length ? `${upcoming.length} 项` : "";
   els.scheduleSyncStatus.textContent = state.scheduleSyncStatus;
+  renderWeekHeader(visibleWeekStart, visibleWeekEnd);
+  renderWeekGrid(visibleWeekStart, visibleWeekEnd);
 
   els.scheduleTimeline.replaceChildren();
   if (!todayItems.length) {
@@ -713,6 +774,135 @@ function renderSchedule() {
       els.upcomingScheduleList.append(renderScheduleItem(item, today));
     }
   }
+}
+
+function renderWeekHeader(weekStart, weekEnd) {
+  const weekIndex = weekIndexForDate(weekStart);
+  const termStart = parseDateKey(state.scheduleSettings.termStartDate);
+  if (!termStart) {
+    els.weekTitle.textContent = "周课表";
+  } else if (weekIndex < 1) {
+    els.weekTitle.textContent = "未开学";
+  } else if (weekIndex > state.scheduleSettings.termWeekCount) {
+    els.weekTitle.textContent = "已结课";
+  } else {
+    els.weekTitle.textContent = `第 ${weekIndex} 周`;
+  }
+  els.weekRange.textContent = `${formatScheduleDate(dateKey(weekStart))} - ${formatScheduleDate(dateKey(weekEnd))}`;
+}
+
+function renderWeekGrid(weekStart) {
+  const weekEndExclusive = addDays(weekStart, 7);
+  const items = expandedScheduleItemsForRange(weekStart, weekEndExclusive)
+    .filter((item) => item.type === "course");
+  els.weekGrid.replaceChildren();
+  els.weekGrid.style.setProperty("--period-count", COURSE_PERIODS.length);
+
+  const corner = document.createElement("div");
+  corner.className = "week-corner";
+  corner.textContent = "节";
+  els.weekGrid.append(corner);
+
+  for (let index = 0; index < 7; index += 1) {
+    const date = addDays(weekStart, index);
+    const header = document.createElement("div");
+    header.className = "week-day";
+    if (dateKey(date) === todayDateKey()) {
+      header.classList.add("is-today");
+    }
+    header.style.gridColumn = String(index + 2);
+    header.style.gridRow = "1";
+    header.innerHTML = `<strong>${WEEKDAY_LABELS[index]}</strong><span>${formatShortDate(date)}</span>`;
+    els.weekGrid.append(header);
+  }
+
+  for (const period of COURSE_PERIODS) {
+    const label = document.createElement("div");
+    label.className = "period-label";
+    label.style.gridColumn = "1";
+    label.style.gridRow = String(period.index + 1);
+    label.innerHTML = `<strong>${period.index}</strong><span>${period.start}</span><span>${period.end}</span>`;
+    els.weekGrid.append(label);
+
+    for (let day = 1; day <= 7; day += 1) {
+      const cell = document.createElement("div");
+      cell.className = "period-cell";
+      cell.style.gridColumn = String(day + 1);
+      cell.style.gridRow = String(period.index + 1);
+      els.weekGrid.append(cell);
+    }
+  }
+
+  for (const item of items) {
+    const card = document.createElement("article");
+    card.className = "week-course";
+    if (isScheduleItemNow(item)) {
+      card.classList.add("is-now");
+    }
+    card.style.gridColumn = String(item.weekday + 1);
+    card.style.gridRow = `${item.startPeriod + 1} / ${item.endPeriod + 2}`;
+    card.style.setProperty("--course-bg", courseColor(item));
+    card.title = compactParts([item.title, timeRangeLabel(item), item.location]).join(" · ");
+
+    const title = document.createElement("strong");
+    title.textContent = item.title;
+    const meta = document.createElement("span");
+    meta.textContent = compactParts([
+      item.location ? `@${item.location}` : "",
+      weekRuleLabel(item)
+    ]).join(" ");
+    card.append(title, meta);
+    els.weekGrid.append(card);
+  }
+
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "week-empty";
+    empty.textContent = "这一周没有课程。";
+    els.weekGrid.append(empty);
+  }
+}
+
+function expandedScheduleItemsForRange(startDate, endDate) {
+  const start = startOfDay(startDate);
+  const end = new Date(endDate);
+  const result = [];
+  for (const item of state.scheduleItems) {
+    if (item.recurrence === "weekly") {
+      for (let date = new Date(start); date < end; date = addDays(date, 1)) {
+        if (weekdayFromDate(date) !== item.weekday || !courseOccursOnDate(item, date)) {
+          continue;
+        }
+        result.push({
+          ...item,
+          date: dateKey(date),
+          done: false,
+          occurrenceId: `${item.id}:${dateKey(date)}`
+        });
+      }
+      continue;
+    }
+    const itemDate = parseDateKey(item.date);
+    if (itemDate && itemDate >= start && itemDate < end) {
+      result.push(item);
+    }
+  }
+  return sortScheduleItems(result);
+}
+
+function courseOccursOnDate(item, date) {
+  const weekIndex = weekIndexForDate(date);
+  const effectiveWeek = weekIndex || 1;
+  if (effectiveWeek < item.weekStart || effectiveWeek > item.weekEnd) {
+    return false;
+  }
+  if (item.weekParity === "odd" && effectiveWeek % 2 === 0) {
+    return false;
+  }
+  if (item.weekParity === "even" && effectiveWeek % 2 !== 0) {
+    return false;
+  }
+  return true;
 }
 
 function renderScheduleItem(item, today) {
@@ -799,6 +989,35 @@ function saveScheduleLocal() {
   localStorage.setItem(storageKeys.schedule, JSON.stringify(state.scheduleItems));
 }
 
+function saveScheduleSettingsLocal() {
+  localStorage.setItem(storageKeys.scheduleSettings, JSON.stringify(state.scheduleSettings));
+}
+
+function hydrateTermForm() {
+  els.termStartDate.value = state.scheduleSettings.termStartDate || "";
+  els.termWeekCount.value = state.scheduleSettings.termWeekCount;
+}
+
+function saveTermSettings() {
+  const termStartDate = normalizeDateValue(els.termStartDate.value);
+  const termWeekCount = clampInteger(els.termWeekCount.value, 1, 30, 18);
+  state.scheduleSettings = normalizeScheduleSettings({
+    termStartDate,
+    termWeekCount
+  });
+  hydrateTermForm();
+  saveScheduleSettingsLocal();
+  if (termStartDate) {
+    focusCurrentScheduleWeek(false);
+  }
+  renderSchedule();
+  syncSchedule().catch(() => {
+    setScheduleSyncStatus("本地日程", "offline");
+  });
+  els.courseImportStatus.textContent = "学期设置已保存";
+  clearInlineStatusLater(els.courseImportStatus);
+}
+
 async function syncSchedule() {
   await gatewayFetch("/api/schedule", {
     method: "POST",
@@ -806,6 +1025,7 @@ async function syncSchedule() {
     body: JSON.stringify({
       version: 1,
       updatedAt: new Date().toISOString(),
+      settings: state.scheduleSettings,
       items: state.scheduleItems
     })
   });
@@ -886,8 +1106,9 @@ function extractTodoFromMessage(text) {
 function buildScheduleInjection() {
   const now = new Date();
   const today = todayDateKey(now);
-  const current = state.scheduleItems.filter((item) => !item.done && isScheduleItemNow(item, now));
-  const todayRemaining = sortScheduleItems(state.scheduleItems)
+  const futureWindow = expandedScheduleItemsForRange(startOfDay(now), addDays(startOfDay(now), 7));
+  const current = futureWindow.filter((item) => !item.done && isScheduleItemNow(item, now));
+  const todayRemaining = sortScheduleItems(futureWindow)
     .filter((item) => item.date === today && !item.done && (itemDateTime(item)?.getTime() || 0) >= now.getTime() - 10 * 60000)
     .slice(0, 8);
   const soon = nextScheduleItems(now, 5).filter((item) => item.date !== today).slice(0, 4);
@@ -913,7 +1134,8 @@ function buildScheduleInjection() {
 
 function checkScheduleNudges() {
   const now = Date.now();
-  for (const item of state.scheduleItems) {
+  const today = startOfDay(new Date());
+  for (const item of expandedScheduleItemsForRange(today, addDays(today, 1))) {
     if (item.done) {
       continue;
     }
@@ -1000,6 +1222,191 @@ function saveScheduleNudges() {
   localStorage.setItem(storageKeys.scheduleNudges, JSON.stringify(state.scheduleNudges));
 }
 
+function normalizeScheduleSettings(value) {
+  const settings = value && typeof value === "object" ? value : {};
+  return {
+    termStartDate: normalizeDateValue(settings.termStartDate || settings.term_start_date || ""),
+    termWeekCount: clampInteger(settings.termWeekCount || settings.term_week_count, 1, 30, 18)
+  };
+}
+
+function shiftVisibleWeek(delta) {
+  const current = parseDateKey(state.visibleWeekStart) || startOfWeek(new Date());
+  state.visibleWeekStart = dateKey(addDays(current, delta * 7));
+  renderSchedule();
+}
+
+function focusCurrentScheduleWeek(shouldRender = true) {
+  const today = startOfWeek(new Date());
+  const termStart = parseDateKey(state.scheduleSettings.termStartDate);
+  if (termStart && today < termStart) {
+    state.visibleWeekStart = dateKey(termStart);
+  } else {
+    state.visibleWeekStart = dateKey(today);
+  }
+  if (shouldRender) {
+    renderSchedule();
+  }
+}
+
+function parseWeekday(value) {
+  const text = String(value || "").trim().replace(/^周/, "");
+  const map = {
+    一: 1,
+    二: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    日: 7,
+    天: 7
+  };
+  if (map[text]) {
+    return map[text];
+  }
+  const number = Number(text);
+  return number >= 1 && number <= 7 ? number : 0;
+}
+
+function parsePeriodRange(value) {
+  const match = String(value || "").trim().match(/^(\d{1,2})(?:\s*(?:-|~|—|–|至|到)\s*(\d{1,2}))?$/);
+  if (!match) {
+    return null;
+  }
+  const startPeriod = clampInteger(match[1], 1, COURSE_PERIODS.length, 1);
+  const endPeriod = clampInteger(match[2] || match[1], startPeriod, COURSE_PERIODS.length, startPeriod);
+  return { startPeriod, endPeriod };
+}
+
+function parseWeekRange(value) {
+  const text = String(value || "");
+  const range = text.match(/第?\s*(\d{1,2})\s*(?:-|~|—|–|至|到)\s*(\d{1,2})\s*周/);
+  const single = text.match(/第?\s*(\d{1,2})\s*周/);
+  let weekStart = 1;
+  let weekEnd = state?.scheduleSettings?.termWeekCount || 18;
+  if (range) {
+    weekStart = clampInteger(range[1], 1, 30, 1);
+    weekEnd = clampInteger(range[2], weekStart, 30, weekEnd);
+  } else if (single) {
+    weekStart = clampInteger(single[1], 1, 30, 1);
+    weekEnd = weekStart;
+  }
+  let weekParity = "all";
+  if (/单周/.test(text)) {
+    weekParity = "odd";
+  } else if (/双周/.test(text)) {
+    weekParity = "even";
+  }
+  return { weekStart, weekEnd, weekParity };
+}
+
+function periodForStart(value) {
+  const index = COURSE_PERIODS.find((period) => period.start === value)?.index;
+  return index || 1;
+}
+
+function periodForEnd(value, startPeriod) {
+  const index = COURSE_PERIODS.find((period) => period.end === value)?.index;
+  return index || startPeriod;
+}
+
+function weekdayFromDate(date) {
+  const day = date.getDay();
+  return day === 0 ? 7 : day;
+}
+
+function weekdayFromDateKey(value) {
+  const date = parseDateKey(value);
+  return date ? weekdayFromDate(date) : 1;
+}
+
+function weekIndexForDate(dateValue) {
+  const termStart = parseDateKey(state.scheduleSettings.termStartDate);
+  if (!termStart) {
+    return 0;
+  }
+  const weekStart = startOfWeek(dateValue);
+  const diff = weekStart.getTime() - termStart.getTime();
+  return Math.floor(diff / (7 * 24 * 60 * 60000)) + 1;
+}
+
+function startOfWeek(value) {
+  const date = startOfDay(value);
+  const offset = weekdayFromDate(date) - 1;
+  date.setDate(date.getDate() - offset);
+  return date;
+}
+
+function startOfDay(value) {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+function endOfDay(value) {
+  const date = startOfDay(value);
+  date.setHours(23, 59, 59, 999);
+  return date;
+}
+
+function addDays(value, days) {
+  const date = new Date(value);
+  date.setDate(date.getDate() + days);
+  return date;
+}
+
+function parseDateKey(value) {
+  const key = normalizeDateValue(value);
+  if (!key) {
+    return null;
+  }
+  const date = new Date(`${key}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatShortDate(date) {
+  return `${pad2(date.getMonth() + 1)}/${pad2(date.getDate())}`;
+}
+
+function courseColor(item) {
+  const key = Number.parseInt(String(item.colorKey || "").replace(/\D/g, ""), 10);
+  if (Number.isFinite(key)) {
+    return COURSE_COLORS[key % COURSE_COLORS.length];
+  }
+  return COURSE_COLORS[hashText(item.title) % COURSE_COLORS.length];
+}
+
+function colorKeyForCourse(title) {
+  return `course-${hashText(title) % COURSE_COLORS.length}`;
+}
+
+function hashText(value) {
+  let hash = 0;
+  for (const char of String(value || "")) {
+    hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  }
+  return hash;
+}
+
+function weekRuleLabel(item) {
+  if (item.recurrence !== "weekly") {
+    return "";
+  }
+  const range = item.weekStart === item.weekEnd
+    ? `第${item.weekStart}周`
+    : `${item.weekStart}-${item.weekEnd}周`;
+  const parity = item.weekParity === "odd" ? "单周" : item.weekParity === "even" ? "双周" : "";
+  return compactParts([range, parity]).join(" ");
+}
+
+function clampInteger(value, low, high, fallback) {
+  const number = Number.parseInt(value, 10);
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+  return Math.max(low, Math.min(high, number));
+}
+
 function parseCourseLine(line) {
   const text = String(line || "").trim();
   if (!text) {
@@ -1007,10 +1414,23 @@ function parseCourseLine(line) {
   }
 
   const cells = text.split(/[,，\t|]/).map((cell) => cell.trim()).filter(Boolean);
-  if (cells.length >= 4) {
+  if (cells.length >= 3) {
+    const weekday = parseWeekday(cells[0]);
+    const periods = parsePeriodRange(cells[1]);
+    if (weekday && periods) {
+      return makeWeeklyCourseItem({
+        weekday,
+        startPeriod: periods.startPeriod,
+        endPeriod: periods.endPeriod,
+        title: cells[2],
+        location: cells[3] || "",
+        weekText: cells.slice(4).join(" ")
+      });
+    }
+
     const firstDate = normalizeDateValue(cells[0]);
     const secondDate = normalizeDateValue(cells[1]);
-    if (firstDate) {
+    if (firstDate && cells.length >= 4) {
       return makeCourseItem({
         date: firstDate,
         start: cells[1],
@@ -1019,7 +1439,7 @@ function parseCourseLine(line) {
         location: cells.slice(4).join(" ")
       });
     }
-    if (secondDate) {
+    if (secondDate && cells.length >= 5) {
       return makeCourseItem({
         title: cells[0],
         date: secondDate,
@@ -1028,6 +1448,24 @@ function parseCourseLine(line) {
         location: cells.slice(4).join(" ")
       });
     }
+  }
+
+  const weeklyMatch = text.match(/^(?:周)?([一二三四五六日天1-7])\s+(\d{1,2})(?:\s*(?:-|~|—|–|至|到)\s*(\d{1,2}))?\s+(.+)$/);
+  if (weeklyMatch) {
+    const weekday = parseWeekday(weeklyMatch[1]);
+    const startPeriod = Number(weeklyMatch[2]);
+    const endPeriod = Number(weeklyMatch[3] || weeklyMatch[2]);
+    const weekText = text.match(/第?\s*\d{1,2}\s*(?:-|~|—|–|至|到)\s*\d{1,2}\s*周|第?\s*\d{1,2}\s*周|单周|双周|单双周/)?.[0] || "";
+    const withoutWeekText = weekText ? weeklyMatch[4].replace(weekText, "").trim() : weeklyMatch[4];
+    const titleAndLocation = splitTitleLocation(withoutWeekText);
+    return makeWeeklyCourseItem({
+      weekday,
+      startPeriod,
+      endPeriod,
+      title: titleAndLocation.title,
+      location: titleAndLocation.location,
+      weekText
+    });
   }
 
   const match = text.match(/^(\d{4}[/-]\d{1,2}[/-]\d{1,2})\s+(\d{1,2}[:：]\d{2})\s*(?:(?:-|~|—|–|至|到)\s*(\d{1,2}[:：]\d{2}))?\s+(.+)$/);
@@ -1042,6 +1480,40 @@ function parseCourseLine(line) {
     title: titleAndLocation.title,
     location: titleAndLocation.location
   });
+}
+
+function makeWeeklyCourseItem(raw) {
+  const weekday = clampInteger(raw.weekday, 1, 7, 1);
+  const startPeriod = clampInteger(raw.startPeriod, 1, COURSE_PERIODS.length, 1);
+  const endPeriod = clampInteger(raw.endPeriod, startPeriod, COURSE_PERIODS.length, startPeriod);
+  const title = String(raw.title || "").trim();
+  if (!title) {
+    return null;
+  }
+  const weeks = parseWeekRange(raw.weekText);
+  const start = COURSE_PERIODS[startPeriod - 1]?.start || "08:00";
+  const end = COURSE_PERIODS[endPeriod - 1]?.end || "";
+  return {
+    id: crypto.randomUUID(),
+    type: "course",
+    recurrence: "weekly",
+    weekday,
+    weekStart: weeks.weekStart,
+    weekEnd: weeks.weekEnd,
+    weekParity: weeks.weekParity,
+    startPeriod,
+    endPeriod,
+    date: "",
+    start,
+    end,
+    title,
+    location: String(raw.location || "").trim(),
+    note: "",
+    done: false,
+    source: "weekly",
+    colorKey: colorKeyForCourse(title),
+    createdAt: new Date().toISOString()
+  };
 }
 
 function makeCourseItem(raw) {
@@ -1063,6 +1535,7 @@ function makeCourseItem(raw) {
     note: "",
     done: false,
     source: "import",
+    colorKey: colorKeyForCourse(title),
     createdAt: new Date().toISOString()
   };
 }
@@ -1082,15 +1555,34 @@ function splitTitleLocation(value) {
 function normalizeScheduleItems(items) {
   const list = Array.isArray(items) ? items : Array.isArray(items?.items) ? items.items : [];
   return sortScheduleItems(list.map((item) => {
-    const date = normalizeDateValue(item?.date);
     const start = normalizeTimeValue(item?.start);
     const title = String(item?.title || "").trim();
-    if (!date || !start || !title) {
+    if (!start || !title) {
       return null;
     }
+    const recurrence = item?.recurrence === "weekly" ? "weekly" : "";
+    const date = recurrence ? "" : normalizeDateValue(item?.date);
+    if (!recurrence && !date) {
+      return null;
+    }
+    const startPeriod = item?.startPeriod ? clampInteger(item.startPeriod, 1, COURSE_PERIODS.length, 1) : periodForStart(start);
+    const endPeriod = item?.endPeriod ? clampInteger(item.endPeriod, startPeriod, COURSE_PERIODS.length, startPeriod) : periodForEnd(normalizeTimeValue(item.end), startPeriod);
+    const weekday = recurrence
+      ? clampInteger(item.weekday, 1, 7, 1)
+      : weekdayFromDateKey(date);
+    const weekStart = clampInteger(item.weekStart, 1, 30, 1);
+    const weekEnd = clampInteger(item.weekEnd, weekStart, 30, 18);
+    const weekParity = ["odd", "even"].includes(item.weekParity) ? item.weekParity : "all";
     return {
       id: String(item.id || crypto.randomUUID()),
       type: item.type === "course" ? "course" : "todo",
+      recurrence,
+      weekday,
+      weekStart,
+      weekEnd,
+      weekParity,
+      startPeriod,
+      endPeriod,
       date,
       start,
       end: normalizeTimeValue(item.end),
@@ -1099,6 +1591,7 @@ function normalizeScheduleItems(items) {
       note: String(item.note || "").trim().slice(0, 200),
       done: Boolean(item.done),
       source: String(item.source || "manual").slice(0, 40),
+      colorKey: String(item.colorKey || colorKeyForCourse(title)).slice(0, 24),
       createdAt: item.createdAt || item.created_at || new Date().toISOString()
     };
   }).filter(Boolean));
@@ -1106,26 +1599,43 @@ function normalizeScheduleItems(items) {
 
 function sortScheduleItems(items) {
   return [...items].sort((a, b) => {
-    const left = `${a.date}T${a.start}`;
-    const right = `${b.date}T${b.start}`;
+    const left = a.recurrence === "weekly"
+      ? `W${a.weekday}-${a.startPeriod}-${a.start}`
+      : `${a.date}T${a.start}`;
+    const right = b.recurrence === "weekly"
+      ? `W${b.weekday}-${b.startPeriod}-${b.start}`
+      : `${b.date}T${b.start}`;
     return left.localeCompare(right) || a.title.localeCompare(b.title);
   });
 }
 
 function nextScheduleItems(now = new Date(), limit = 8) {
-  const maxTime = now.getTime() + 7 * 24 * 60 * 60000;
-  return sortScheduleItems(state.scheduleItems)
+  const maxDate = addDays(startOfDay(now), 7);
+  return sortScheduleItems(expandedScheduleItemsForRange(startOfDay(now), maxDate))
     .filter((item) => {
       if (item.done) {
         return false;
       }
       const start = itemDateTime(item);
-      return start && start.getTime() >= now.getTime() - 10 * 60000 && start.getTime() <= maxTime;
+      return start && start.getTime() >= now.getTime() - 10 * 60000;
     })
     .slice(0, limit);
 }
 
 function scheduleKey(item) {
+  if (item.recurrence === "weekly") {
+    return [
+      item.type,
+      item.recurrence,
+      item.weekday,
+      item.startPeriod,
+      item.endPeriod,
+      item.weekStart,
+      item.weekEnd,
+      item.weekParity,
+      item.title
+    ].join("|").toLowerCase();
+  }
   return [item.type, item.date, item.start, item.end, item.title].join("|").toLowerCase();
 }
 

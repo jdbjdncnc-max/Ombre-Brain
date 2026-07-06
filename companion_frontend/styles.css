@@ -678,6 +678,13 @@ output {
   gap: 8px;
 }
 
+.term-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px auto;
+  align-items: end;
+  gap: 8px;
+}
+
 .compact-field {
   display: grid;
   min-width: 0;
@@ -711,10 +718,182 @@ output {
   justify-self: end;
 }
 
+.term-form .secondary-button {
+  min-height: 39px;
+  padding: 9px 11px;
+}
+
 .course-import {
   resize: vertical;
   min-height: 96px;
   line-height: 1.5;
+}
+
+.week-section {
+  padding: 10px;
+}
+
+.week-toolbar {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.week-heading {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  text-align: center;
+}
+
+.week-heading strong {
+  color: rgba(17, 28, 27, 0.92);
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.week-heading span {
+  color: rgba(23, 33, 31, 0.58);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.week-grid {
+  --period-count: 12;
+  position: relative;
+  display: grid;
+  grid-template-columns: 48px repeat(7, minmax(0, 1fr));
+  grid-template-rows: 42px repeat(var(--period-count), 54px);
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.week-corner,
+.week-day,
+.period-label,
+.period-cell {
+  min-width: 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.24);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.week-corner {
+  display: grid;
+  place-items: center;
+  color: rgba(23, 33, 31, 0.48);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.week-day {
+  display: grid;
+  place-items: center;
+  gap: 1px;
+  padding: 4px 2px;
+  color: rgba(23, 33, 31, 0.64);
+  font-size: 12px;
+  font-weight: 850;
+  text-align: center;
+}
+
+.week-day strong {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.week-day span {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.week-day.is-today {
+  color: var(--accent-ink);
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.period-label {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 1px;
+  padding: 3px 2px;
+  color: rgba(23, 33, 31, 0.56);
+  text-align: center;
+}
+
+.period-label strong {
+  color: rgba(17, 28, 27, 0.82);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.period-label span {
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1.05;
+}
+
+.period-cell {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.week-course {
+  z-index: 2;
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  margin: 3px;
+  padding: 7px 6px;
+  border-radius: 7px;
+  color: white;
+  background: var(--course-bg);
+  border: 1px solid rgba(255, 255, 255, 0.48);
+  box-shadow: 0 6px 14px rgba(15, 44, 42, 0.12);
+  overflow: hidden;
+}
+
+.week-course.is-now {
+  outline: 2px solid rgba(255, 255, 255, 0.86);
+}
+
+.week-course strong,
+.week-course span {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  line-height: 1.24;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.12);
+}
+
+.week-course strong {
+  -webkit-line-clamp: 4;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.week-course span {
+  -webkit-line-clamp: 4;
+  font-size: 11px;
+  font-weight: 800;
+  opacity: 0.92;
+}
+
+.week-empty {
+  z-index: 1;
+  grid-column: 2 / -1;
+  grid-row: 2 / 6;
+  display: grid;
+  place-items: center;
+  color: rgba(23, 33, 31, 0.52);
+  font-size: 14px;
+  font-weight: 800;
 }
 
 .timeline-section {
@@ -844,5 +1023,27 @@ output {
 
   .schedule-status {
     justify-self: start;
+  }
+
+  .term-form {
+    grid-template-columns: minmax(0, 1fr) 82px auto;
+  }
+
+  .week-grid {
+    grid-template-columns: 44px repeat(7, minmax(0, 1fr));
+    grid-template-rows: 40px repeat(var(--period-count), 52px);
+  }
+
+  .week-course {
+    margin: 2px;
+    padding: 6px 5px;
+  }
+
+  .week-course strong {
+    font-size: 11px;
+  }
+
+  .week-course span {
+    font-size: 10px;
   }
 }

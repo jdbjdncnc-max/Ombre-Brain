@@ -967,11 +967,30 @@ try:
             "ok": True,
             "version": 1,
             "updatedAt": "",
+            "settings": {
+                "termStartDate": "",
+                "termWeekCount": 18,
+            },
             "items": [],
         }
 
     def _schedule_text(value, limit: int = 160) -> str:
         return str(value or "").strip()[:limit]
+
+    def _schedule_int(value, default: int, low: int, high: int) -> int:
+        try:
+            number = int(value)
+        except Exception:
+            number = default
+        return max(low, min(high, number))
+
+    def _schedule_settings(value) -> dict:
+        if not isinstance(value, dict):
+            value = {}
+        return {
+            "termStartDate": _schedule_text(value.get("termStartDate") or value.get("term_start_date"), 16),
+            "termWeekCount": _schedule_int(value.get("termWeekCount") or value.get("term_week_count"), 18, 1, 30),
+        }
 
     def _schedule_item(value) -> dict | None:
         if not isinstance(value, dict):
@@ -979,12 +998,27 @@ try:
         date = _schedule_text(value.get("date"), 16)
         start = _schedule_text(value.get("start"), 8)
         title = _schedule_text(value.get("title"), 120)
-        if not date or not start or not title:
+        recurrence = _schedule_text(value.get("recurrence"), 16)
+        if recurrence != "weekly":
+            recurrence = ""
+        if not start or not title or (not recurrence and not date):
             return None
         kind = _schedule_text(value.get("type"), 16)
+        week_start = _schedule_int(value.get("weekStart") or value.get("week_start"), 1, 1, 30)
+        week_end = _schedule_int(value.get("weekEnd") or value.get("week_end"), week_start, week_start, 30)
+        week_parity = _schedule_text(value.get("weekParity") or value.get("week_parity"), 16)
+        if week_parity not in {"odd", "even"}:
+            week_parity = "all"
         return {
             "id": _schedule_text(value.get("id"), 80) or f"schedule-{int(time.time() * 1000)}",
             "type": "course" if kind == "course" else "todo",
+            "recurrence": recurrence,
+            "weekday": _schedule_int(value.get("weekday"), 1, 1, 7),
+            "weekStart": week_start,
+            "weekEnd": week_end,
+            "weekParity": week_parity,
+            "startPeriod": _schedule_int(value.get("startPeriod") or value.get("start_period"), 1, 1, 12),
+            "endPeriod": _schedule_int(value.get("endPeriod") or value.get("end_period"), 1, 1, 12),
             "date": date,
             "start": start,
             "end": _schedule_text(value.get("end"), 8),
@@ -993,6 +1027,7 @@ try:
             "note": _schedule_text(value.get("note"), 240),
             "done": bool(value.get("done")),
             "source": _schedule_text(value.get("source"), 40) or "frontend",
+            "colorKey": _schedule_text(value.get("colorKey") or value.get("color_key"), 40),
             "createdAt": _schedule_text(value.get("createdAt") or value.get("created_at"), 40),
         }
 
@@ -1009,6 +1044,7 @@ try:
             items = data.get("items", [])
             schedule["version"] = int(data.get("version", 1) or 1)
             schedule["updatedAt"] = _schedule_text(data.get("updatedAt") or data.get("updated_at"), 40)
+            schedule["settings"] = _schedule_settings(data.get("settings", {}))
         elif isinstance(data, list):
             items = data
         else:
@@ -1025,6 +1061,7 @@ try:
             "ok": True,
             "version": 1,
             "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "settings": _schedule_settings(body.get("settings", {}) if isinstance(body, dict) else {}),
             "items": [item for item in (_schedule_item(raw) for raw in items[:1000]) if item],
         }
         path = _schedule_path(gateway)
