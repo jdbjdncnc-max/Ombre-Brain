@@ -1,3 +1,5 @@
+import { platform } from "./platform.js";
+
 const storageKeys = {
   messages: "companion.messages.v1",
   settings: "companion.settings.v1",
@@ -7,7 +9,7 @@ const storageKeys = {
   scheduleNudges: "companion.scheduleNudges.v1"
 };
 
-const defaultBackend = location.protocol === "file:" ? "http://localhost:8000" : location.origin;
+const defaultBackend = platform.getDefaultApiBaseUrl();
 const defaultSettings = {
   backendUrl: defaultBackend,
   gatewayToken: "",
@@ -63,11 +65,11 @@ const state = {
   scheduleNudges: loadJson(storageKeys.scheduleNudges, {}),
   scheduleSyncStatus: "本地日程",
   busy: false,
-  sessionId: localStorage.getItem(storageKeys.sessionId) || crypto.randomUUID(),
+  sessionId: platform.storage.getString(storageKeys.sessionId) || crypto.randomUUID(),
   loadedMemoryPanels: new Set()
 };
 
-localStorage.setItem(storageKeys.sessionId, state.sessionId);
+platform.storage.setString(storageKeys.sessionId, state.sessionId);
 
 const els = {
   clock: document.querySelector("#clock"),
@@ -219,7 +221,7 @@ function bindEvents() {
   els.newChatButton.addEventListener("click", () => {
     state.messages = [];
     state.sessionId = crypto.randomUUID();
-    localStorage.setItem(storageKeys.sessionId, state.sessionId);
+    platform.storage.setString(storageKeys.sessionId, state.sessionId);
     saveMessages();
     renderMessages();
   });
@@ -251,14 +253,17 @@ function bindEvents() {
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      els.backgroundUrl.value = String(reader.result || "");
+    platform.readFileAsDataUrl(file).then((dataUrl) => {
+      els.backgroundUrl.value = dataUrl;
       readSettingsForm();
       saveSettings();
       applySettings();
-    };
-    reader.readAsDataURL(file);
+    }).catch((error) => {
+      els.backgroundUrl.value = "";
+      els.serverStatus.textContent = error instanceof Error ? error.message : String(error);
+      els.serverStatus.classList.add("offline");
+      els.serverStatus.classList.remove("online");
+    });
   });
 
   els.resetBackgroundButton.addEventListener("click", () => {
@@ -327,7 +332,7 @@ async function sendMessage() {
   renderMessages();
 
   try {
-    const response = await fetch(`${cleanBaseUrl(state.settings.backendUrl)}/v1/chat/completions`, {
+    const response = await platform.request(apiUrl("/v1/chat/completions"), {
       method: "POST",
       headers: buildGatewayHeaders(),
       body: JSON.stringify({
@@ -408,7 +413,7 @@ async function gatewayFetch(path, options = {}) {
     ...buildAuthHeaders(),
     ...(options.headers || {})
   };
-  const response = await fetch(`${cleanBaseUrl(state.settings.backendUrl)}${path}`, {
+  const response = await platform.request(apiUrl(path), {
     ...options,
     headers
   });
@@ -986,11 +991,11 @@ function saveSchedule() {
 }
 
 function saveScheduleLocal() {
-  localStorage.setItem(storageKeys.schedule, JSON.stringify(state.scheduleItems));
+  platform.storage.setJson(storageKeys.schedule, state.scheduleItems);
 }
 
 function saveScheduleSettingsLocal() {
-  localStorage.setItem(storageKeys.scheduleSettings, JSON.stringify(state.scheduleSettings));
+  platform.storage.setJson(storageKeys.scheduleSettings, state.scheduleSettings);
 }
 
 function hydrateTermForm() {
@@ -1188,38 +1193,34 @@ function pushLocalReminderMessage(text) {
 }
 
 async function requestScheduleNotifications() {
-  if (!("Notification" in window)) {
+  if (!platform.notifications.isSupported()) {
     els.todoCaptureStatus.textContent = "当前浏览器不支持提醒";
     clearInlineStatusLater(els.todoCaptureStatus);
     return;
   }
-  const permission = await Notification.requestPermission();
+  const permission = await platform.notifications.requestPermission();
   updateNotificationButton();
   els.todoCaptureStatus.textContent = permission === "granted" ? "提醒已开启" : "提醒未开启";
   clearInlineStatusLater(els.todoCaptureStatus);
 }
 
 function updateNotificationButton() {
-  if (!("Notification" in window)) {
+  if (!platform.notifications.isSupported()) {
     els.scheduleNotifyButton.disabled = true;
     return;
   }
-  els.scheduleNotifyButton.classList.toggle("tab-active", Notification.permission === "granted");
+  els.scheduleNotifyButton.classList.toggle("tab-active", platform.notifications.permission() === "granted");
 }
 
 function showBrowserNotification(title, body) {
-  if (!("Notification" in window) || Notification.permission !== "granted") {
-    return;
-  }
-  new Notification(title, {
-    body,
+  platform.notifications.show(title, body, {
     tag: `companion-schedule-${title}-${body}`,
     silent: false
   });
 }
 
 function saveScheduleNudges() {
-  localStorage.setItem(storageKeys.scheduleNudges, JSON.stringify(state.scheduleNudges));
+  platform.storage.setJson(storageKeys.scheduleNudges, state.scheduleNudges);
 }
 
 function normalizeScheduleSettings(value) {
@@ -1947,9 +1948,8 @@ function applySettings() {
 }
 
 async function refreshHealth() {
-  const url = cleanBaseUrl(state.settings.backendUrl);
   try {
-    const response = await fetch(`${url}/health`);
+    const response = await platform.request(apiUrl("/health"));
     const health = await response.json();
     if (!response.ok || health.status === "startup_error") {
       throw new Error(health.error || "启动异常");
@@ -1992,23 +1992,27 @@ function autosizeTextarea(textarea) {
 }
 
 function saveMessages() {
-  localStorage.setItem(storageKeys.messages, JSON.stringify(state.messages.slice(-80)));
+  platform.storage.setJson(storageKeys.messages, state.messages.slice(-80));
 }
 
 function saveSettings() {
-  localStorage.setItem(storageKeys.settings, JSON.stringify(state.settings));
+  platform.storage.setJson(storageKeys.settings, state.settings);
 }
 
 function loadJson(key, fallback) {
-  try {
-    return JSON.parse(localStorage.getItem(key) || "") || fallback;
-  } catch {
-    return fallback;
-  }
+  return platform.storage.getJson(key, fallback);
 }
 
 function cleanBaseUrl(url) {
   return String(url || defaultBackend).replace(/\/+$/, "");
+}
+
+function apiUrl(path) {
+  const baseUrl = cleanBaseUrl(state.settings.backendUrl);
+  if (!baseUrl) {
+    throw new Error("后端地址未配置。请先在设置里填写网关地址；APK 版需要由 Android 原生层注入 getApiBaseUrl。");
+  }
+  return `${baseUrl}${path}`;
 }
 
 function cssUrlEscape(value) {
