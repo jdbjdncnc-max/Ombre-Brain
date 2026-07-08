@@ -763,10 +763,20 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
             yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
             yield b"data: [DONE]\n\n"
 
+        hop_by_hop_or_body_headers = {
+            "content-length",
+            "transfer-encoding",
+            "connection",
+            "content-type",
+            "content-encoding",
+            "content-md5",
+            "accept-ranges",
+            "etag",
+        }
         headers = {
             key: value
             for key, value in upstream_response.headers.items()
-            if key.lower() not in {"content-length", "transfer-encoding", "connection", "content-type"}
+            if key.lower() not in hop_by_hop_or_body_headers
         }
         headers.update({"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
         if extra_headers:

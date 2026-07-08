@@ -1809,7 +1809,13 @@ async function readOpenAiStream(stream, onToken) {
   let buffer = "";
 
   while (true) {
-    const { value, done } = await reader.read();
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch (error) {
+      throw new Error(streamReadErrorMessage(error));
+    }
+    const { value, done } = chunk;
     if (done) {
       break;
     }
@@ -1840,7 +1846,12 @@ function dispatchOpenAiBlock(block, onToken) {
       continue;
     }
 
-    const parsed = JSON.parse(rawData);
+    let parsed;
+    try {
+      parsed = JSON.parse(rawData);
+    } catch {
+      throw new Error(`流式响应格式异常：${rawData.slice(0, 160)}`);
+    }
     if (parsed.error) {
       throw new Error(parsed.error.message || "模型请求失败。");
     }
@@ -1853,6 +1864,16 @@ function dispatchOpenAiBlock(block, onToken) {
       onToken(token);
     }
   }
+}
+
+function streamReadErrorMessage(error) {
+  const detail = error instanceof Error ? error.message : String(error || "");
+  return [
+    "流式响应中断。",
+    "上游模型可能已经完成请求，但浏览器/WebView 读取网关返回流时失败。",
+    "如果 OpenRouter 有请求日志，优先检查网关返回头和 SSE 转发。",
+    detail ? `底层错误：${detail}` : ""
+  ].filter(Boolean).join("\n");
 }
 
 function renderMessages(shouldScroll = true) {
