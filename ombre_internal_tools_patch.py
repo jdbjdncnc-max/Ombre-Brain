@@ -18,8 +18,10 @@ TOOL_RESULT_CLOSE = "</ombre_tool_result>"
 ZETA_MEMORY_REQUEST_OPEN = "<zeta_memory_request>"
 ZETA_MEMORY_REQUEST_CLOSE = "</zeta_memory_request>"
 MAX_TOOL_CALLS = 2
+MAX_INTERNAL_TOOL_ROUNDS = 2
 READ_ACTIONS = {"memory.search", "diary.search", "profile.read"}
 WRITE_ACTIONS = {"memory.write", "profile.patch"}
+EMPTY_STREAM_FALLBACK = "模型没有返回可见内容，请重试一次。"
 
 
 def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
@@ -48,7 +50,6 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
                 (ZETA_MEMORY_REQUEST_OPEN, ZETA_MEMORY_REQUEST_CLOSE, "zeta"),
                 (TOOL_REQUEST_OPEN, TOOL_REQUEST_CLOSE, "ombre"),
             ]
-            self.tail_len = max(len(item[0]) for item in self.open_tags) - 1
 
         def feed(self, text: str) -> str:
             if not self.enabled or not text:
@@ -78,6 +79,19 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
                 idx = lower.find(open_tag.lower())
                 if idx >= 0 and (best is None or idx < best[0]):
                     best = (idx, open_tag, close_tag, kind)
+            return best
+
+        def _pending_open_prefix_len(self) -> int:
+            """Keep only a suffix that could still become an internal opening tag."""
+            lower = self.buffer.lower()
+            best = 0
+            for open_tag, _, _ in self.open_tags:
+                candidate = open_tag.lower()
+                limit = min(len(lower), len(candidate) - 1)
+                for size in range(limit, best, -1):
+                    if lower.endswith(candidate[:size]):
+                        best = size
+                        break
             return best
 
         def _finish_hidden(self) -> None:
@@ -116,8 +130,9 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
                     self.hidden_parts = []
                     continue
 
-                if len(self.buffer) > self.tail_len:
-                    emit_len = len(self.buffer) - self.tail_len
+                pending_len = self._pending_open_prefix_len()
+                emit_len = len(self.buffer) - pending_len
+                if emit_len:
                     output.append(self.buffer[:emit_len])
                     self.buffer = self.buffer[emit_len:]
                 return
@@ -678,6 +693,291 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
         headers["X-Ombre-Tool-Results"] = str(len(results))
         headers["X-Ombre-Tool-Written"] = str(written_count)
 
+    async def _stream_upstream_with_internal_tools(
+        self,
+        payload: dict[str, Any],
+        *,
+        session_id: str,
+        user_text: str,
+        user_raw_refs: list[str],
+        recalled: dict[str, Any],
+        memory_headers: dict[str, str],
+        internal_round: int = 0,
+    ) -> Response:
+        try:
+            first_context = self.http.stream(
+                "POST",
+                self.upstream_chat_url,
+                headers=self._upstream_headers(self.upstream_api_key),
+                json=self._payload_for_upstream(payload),
+            )
+            first_response = await first_context.__aenter__()
+        except httpx.RequestError as exc:
+            return self._upstream_request_error(exc)
+
+        if not 200 <= first_response.status_code < 300:
+            body = await first_response.aread()
+            await first_context.__aexit__(None, None, None)
+            return self._upstream_status_error(
+                first_response.status_code,
+                first_response.headers.get("content-type", ""),
+                body,
+            )
+
+        content_type = first_response.headers.get("content-type", "").lower()
+        if "application/json" in content_type and "text/event-stream" not in content_type:
+            await first_response.aread()
+            await first_context.__aexit__(None, None, None)
+            assistant_text = self._assistant_text_from_response(first_response)
+            visible_text, entries = self._extract_zeta_memory_request(assistant_text)
+            if (
+                entries
+                and self._ombre_has_read_tools(entries)
+                and not visible_text.strip()
+                and internal_round < MAX_INTERNAL_TOOL_ROUNDS
+            ):
+                tool_results, written = await self._ombre_run_tool_entries(
+                    session_id=session_id,
+                    entries=entries,
+                    default_raw_ref=user_raw_refs[0] if user_raw_refs else "",
+                )
+                self._ombre_add_tool_headers(memory_headers, entries, tool_results, written)
+                follow_payload = self._ombre_tool_result_payload(payload, tool_results)
+                follow_payload["stream"] = True
+                return await self._ombre_stream_upstream(
+                    follow_payload,
+                    session_id=session_id,
+                    user_text=user_text,
+                    user_raw_refs=user_raw_refs,
+                    recalled=recalled,
+                    memory_headers=memory_headers,
+                    internal_round=internal_round + 1,
+                )
+            return await self._ombre_finalize_nonstream_response(
+                first_response,
+                session_id=session_id,
+                user_text=user_text,
+                user_raw_refs=user_raw_refs,
+                recalled=recalled,
+                memory_headers=memory_headers,
+                as_stream=True,
+            )
+
+        def encode_chunk(chunk: dict[str, Any]) -> bytes:
+            return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+
+        def content_chunk(last_chunk: dict[str, Any], text: str) -> bytes:
+            base = {
+                key: deepcopy(value)
+                for key, value in last_chunk.items()
+                if key not in {"choices", "usage"}
+            } if last_chunk else {
+                "id": f"chatcmpl-ombre-{int(time.time())}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": getattr(self, "public_model", "ombre"),
+            }
+            base["choices"] = [{
+                "index": 0,
+                "delta": {"content": text},
+                "finish_reason": None,
+            }]
+            return encode_chunk(base)
+
+        def final_chunk(last_chunk: dict[str, Any], finish_reason: str = "stop") -> bytes:
+            base = {
+                key: deepcopy(value)
+                for key, value in last_chunk.items()
+                if key not in {"choices", "usage"}
+            } if last_chunk else {
+                "id": f"chatcmpl-ombre-{int(time.time())}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": getattr(self, "public_model", "ombre"),
+            }
+            base["choices"] = [{"index": 0, "delta": {}, "finish_reason": finish_reason}]
+            return encode_chunk(base)
+
+        def has_client_payload(chunk: dict[str, Any]) -> bool:
+            choices = chunk.get("choices") if isinstance(chunk, dict) else None
+            if not isinstance(choices, list):
+                return True
+            for choice in choices:
+                delta = choice.get("delta") if isinstance(choice, dict) else None
+                if not isinstance(delta, dict):
+                    continue
+                for value in delta.values():
+                    if value not in (None, "", [], {}):
+                        return True
+            return bool(chunk.get("usage"))
+
+        async def stream_body():
+            current_payload = deepcopy(payload)
+            stream_context = first_context
+            upstream_response = first_response
+            tool_round = internal_round
+
+            while True:
+                stream_filter = OmbreHiddenMemoryStreamFilter(
+                    self._parse_zeta_memory_json,
+                    bool(getattr(self, "hidden_memory_enabled", False)),
+                )
+                assistant_parts: list[str] = []
+                terminal_events: list[bytes] = []
+                last_chunk: dict[str, Any] = {}
+                native_tool_seen = False
+
+                try:
+                    async for line in upstream_response.aiter_lines():
+                        if not line:
+                            continue
+                        if not line.startswith("data:"):
+                            yield (line + "\n\n").encode("utf-8")
+                            continue
+                        data = line[5:].strip()
+                        if not data or data == "[DONE]":
+                            continue
+                        try:
+                            chunk = json.loads(data)
+                        except json.JSONDecodeError:
+                            yield (line + "\n\n").encode("utf-8")
+                            continue
+                        if not isinstance(chunk, dict):
+                            yield (line + "\n\n").encode("utf-8")
+                            continue
+
+                        last_chunk = chunk
+                        choices = chunk.get("choices")
+                        has_finish = False
+                        if isinstance(choices, list):
+                            for choice in choices:
+                                if not isinstance(choice, dict):
+                                    continue
+                                if choice.get("finish_reason") is not None:
+                                    has_finish = True
+                                delta = choice.get("delta")
+                                if not isinstance(delta, dict):
+                                    continue
+                                if delta.get("tool_calls") or delta.get("function_call"):
+                                    native_tool_seen = True
+                                content = delta.get("content")
+                                if isinstance(content, str):
+                                    visible = stream_filter.feed(content)
+                                    if visible:
+                                        assistant_parts.append(visible)
+                                    delta["content"] = visible
+
+                        encoded = encode_chunk(chunk)
+                        if has_finish:
+                            terminal_events.append(encoded)
+                        elif has_client_payload(chunk):
+                            yield encoded
+                finally:
+                    await stream_context.__aexit__(None, None, None)
+
+                tail = stream_filter.flush()
+                if tail:
+                    assistant_parts.append(tail)
+                    yield content_chunk(last_chunk, tail)
+
+                visible_text = "".join(assistant_parts).strip()
+                entries = stream_filter.entries[:MAX_TOOL_CALLS]
+                if (
+                    entries
+                    and self._ombre_has_read_tools(entries)
+                    and not visible_text
+                    and tool_round < MAX_INTERNAL_TOOL_ROUNDS
+                ):
+                    tool_results, written = await self._ombre_run_tool_entries(
+                        session_id=session_id,
+                        entries=entries,
+                        default_raw_ref=user_raw_refs[0] if user_raw_refs else "",
+                    )
+                    self._ombre_add_tool_headers(memory_headers, entries, tool_results, written)
+                    current_payload = self._ombre_tool_result_payload(current_payload, tool_results)
+                    current_payload["stream"] = True
+                    tool_round += 1
+                    try:
+                        stream_context = self.http.stream(
+                            "POST",
+                            self.upstream_chat_url,
+                            headers=self._upstream_headers(self.upstream_api_key),
+                            json=self._payload_for_upstream(current_payload),
+                        )
+                        upstream_response = await stream_context.__aenter__()
+                    except httpx.RequestError as exc:
+                        if logger:
+                            logger.warning("Ombre internal tool follow-up failed: %s", exc)
+                        yield content_chunk(last_chunk, EMPTY_STREAM_FALLBACK)
+                        yield final_chunk(last_chunk)
+                        yield b"data: [DONE]\n\n"
+                        return
+                    if not 200 <= upstream_response.status_code < 300:
+                        await upstream_response.aread()
+                        await stream_context.__aexit__(None, None, None)
+                        yield content_chunk(last_chunk, EMPTY_STREAM_FALLBACK)
+                        yield final_chunk(last_chunk)
+                        yield b"data: [DONE]\n\n"
+                        return
+                    continue
+
+                if not visible_text and not native_tool_seen:
+                    visible_text = EMPTY_STREAM_FALLBACK
+                    yield content_chunk(last_chunk, visible_text)
+
+                assistant_raw_refs = await self._save_turn(session_id, "zeta", visible_text)
+                written = await self._write_zeta_memory_requests(
+                    session_id=session_id,
+                    entries=entries,
+                    default_raw_ref=user_raw_refs[0] if user_raw_refs else (
+                        assistant_raw_refs[0] if assistant_raw_refs else ""
+                    ),
+                )
+                self._augment_memory_headers(memory_headers, entries, written)
+                self._ombre_add_tool_headers(memory_headers, entries, [], written)
+                if self._should_run_reflection(written):
+                    self._schedule_reflection(
+                        session_id=session_id,
+                        user_text=user_text,
+                        assistant_text=visible_text,
+                        user_raw_refs=user_raw_refs,
+                        assistant_raw_refs=assistant_raw_refs,
+                        recalled=recalled,
+                    )
+
+                if terminal_events:
+                    for event in terminal_events:
+                        yield event
+                else:
+                    finish_reason = "tool_calls" if native_tool_seen else "stop"
+                    yield final_chunk(last_chunk, finish_reason)
+                yield b"data: [DONE]\n\n"
+                return
+
+        hop_by_hop_or_body_headers = {
+            "content-length",
+            "transfer-encoding",
+            "connection",
+            "content-type",
+            "content-encoding",
+            "content-md5",
+            "accept-ranges",
+            "etag",
+        }
+        headers = {
+            key: value
+            for key, value in first_response.headers.items()
+            if key.lower() not in hop_by_hop_or_body_headers
+        }
+        headers.update({"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        headers.update(memory_headers)
+        return StreamingResponse(
+            stream_body(),
+            status_code=first_response.status_code,
+            media_type="text/event-stream",
+            headers=headers,
+        )
+
     async def _finalize_nonstream_response(
         self,
         upstream_response: httpx.Response,
@@ -732,6 +1032,10 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
         response_id = str(body.get("id") or f"chatcmpl-ombre-{int(time.time())}")
         model = str(body.get("model") or getattr(self, "public_model", "ombre"))
         created = int(body.get("created") or time.time()) if isinstance(body, dict) else int(time.time())
+        choices = body.get("choices") if isinstance(body, dict) else []
+        choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        finish_reason = str(choice.get("finish_reason") or ("tool_calls" if message.get("tool_calls") else "stop"))
 
         async def stream_body():
             role_chunk = {
@@ -742,8 +1046,36 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
             }
             yield f"data: {json.dumps(role_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+            reasoning_delta = {
+                key: deepcopy(message[key])
+                for key in ("reasoning_content", "reasoning", "reasoning_details")
+                if message.get(key) not in (None, "", [], {})
+            }
+            if reasoning_delta:
+                reasoning_chunk = {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model,
+                    "choices": [{"index": 0, "delta": reasoning_delta, "finish_reason": None}],
+                }
+                yield f"data: {json.dumps(reasoning_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+            native_tool_delta = {
+                key: deepcopy(message[key])
+                for key in ("tool_calls", "function_call")
+                if message.get(key) not in (None, "", [], {})
+            }
+            if native_tool_delta:
+                tool_chunk = {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model,
+                    "choices": [{"index": 0, "delta": native_tool_delta, "finish_reason": None}],
+                }
+                yield f"data: {json.dumps(tool_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
             text = assistant_text or ""
-            step = 240
+            step = 64
             for idx in range(0, len(text), step):
                 chunk = {
                     "id": response_id,
@@ -758,7 +1090,7 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": model,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
             }
             yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
             yield b"data: [DONE]\n\n"
@@ -828,12 +1160,18 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
         injected_text = self._build_gateway_system_text(recalled)
         forward_payload = self._prepare_forward_payload(payload, injected_text)
         wants_stream = forward_payload.get("stream") is True
-        first_payload = deepcopy(forward_payload)
         if wants_stream:
-            first_payload["stream"] = False
+            return await self._ombre_stream_upstream(
+                forward_payload,
+                session_id=session_id,
+                user_text=user_text,
+                user_raw_refs=user_raw_refs,
+                recalled=recalled,
+                memory_headers=memory_headers,
+            )
 
         try:
-            first_response = await self._forward_upstream(first_payload)
+            first_response = await self._forward_upstream(forward_payload)
         except httpx.RequestError as exc:
             return self._upstream_request_error(exc)
 
@@ -850,16 +1188,6 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
             )
             self._ombre_add_tool_headers(memory_headers, entries, tool_results, written)
             follow_payload = self._ombre_tool_result_payload(forward_payload, tool_results)
-            if wants_stream:
-                follow_payload["stream"] = True
-                return await self._stream_upstream(
-                    follow_payload,
-                    session_id=session_id,
-                    user_text=user_text,
-                    user_raw_refs=user_raw_refs,
-                    recalled=recalled,
-                    memory_headers=memory_headers,
-                )
             follow_payload["stream"] = False
             try:
                 follow_response = await self._forward_upstream(follow_payload)
@@ -884,7 +1212,7 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
             user_raw_refs=user_raw_refs,
             recalled=recalled,
             memory_headers=memory_headers,
-            as_stream=wants_stream,
+            as_stream=False,
         )
 
     cls = module.ZetaOpenAIGateway
@@ -909,6 +1237,7 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
     cls._ombre_run_tool_entries = _run_ombre_tool_entries
     cls._ombre_tool_result_payload = _tool_result_payload
     cls._ombre_add_tool_headers = _add_ombre_tool_headers
+    cls._ombre_stream_upstream = _stream_upstream_with_internal_tools
     cls._ombre_finalize_nonstream_response = _finalize_nonstream_response
     cls._ombre_synthetic_stream_response = _synthetic_stream_response
     cls.chat_completions = _chat_completions_with_internal_tools
