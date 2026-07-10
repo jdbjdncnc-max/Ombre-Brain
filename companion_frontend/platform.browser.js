@@ -6,6 +6,7 @@ export function createBrowserPlatform() {
     getDefaultApiBaseUrl,
     request,
     readFileAsDataUrl,
+    openExternalUrl,
     lifecycle: {
       onResume() {},
       onPause() {}
@@ -92,6 +93,18 @@ function readFileAsDataUrl(file) {
     reader.onerror = () => reject(new Error("无法读取文件。"));
     reader.readAsDataURL(file);
   });
+}
+
+function openExternalUrl(url) {
+  const target = String(url || "").trim();
+  if (!target) {
+    return false;
+  }
+  const opened = window.open(target, "_blank", "noopener,noreferrer");
+  if (!opened) {
+    window.location.assign(target);
+  }
+  return true;
 }
 
 function networkErrorMessage(url, error) {

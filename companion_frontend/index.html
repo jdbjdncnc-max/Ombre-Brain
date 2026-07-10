@@ -35,7 +35,115 @@
           </form>
         </section>
 
-        <section id="homeView" class="view" aria-label="主页"></section>
+        <section id="homeView" class="view" aria-label="今天">
+          <div class="home-brand" aria-label="Zeta and Sail">
+            <span>Zeta</span><i>&amp;</i><span>Sail</span>
+          </div>
+
+          <div class="home-card-grid">
+            <button class="home-card" type="button" data-home-feature="reading">
+              <span class="home-card-icon" aria-hidden="true">
+                <svg viewBox="0 0 32 32">
+                  <path d="M4 7.5c4.8-1.5 8.7-.6 12 2.1v17C12.7 24 8.8 23.2 4 24.5z"/>
+                  <path d="M28 7.5c-4.8-1.5-8.7-.6-12 2.1v17c3.3-2.6 7.2-3.4 12-2.1z"/>
+                  <path d="M7.5 11.5c2.5-.4 4.5 0 6.2 1.2M24.5 11.5c-2.5-.4-4.5 0-6.2 1.2"/>
+                </svg>
+              </span>
+              <span class="home-card-copy">
+                <strong>共读</strong>
+                <small>继续《尚未选择》 · 上次停在 第 — 章</small>
+              </span>
+            </button>
+
+            <button id="duettoCard" class="home-card" type="button" data-home-feature="music">
+              <span class="home-card-icon" aria-hidden="true">
+                <svg viewBox="0 0 32 32">
+                  <path d="M6 17v-2a10 10 0 0 1 20 0v2"/>
+                  <path d="M6 16h3.5v9H7.8A3.8 3.8 0 0 1 4 21.2v-1.4A3.8 3.8 0 0 1 7.8 16zM26 16h-3.5v9h1.7a3.8 3.8 0 0 0 3.8-3.8v-1.4a3.8 3.8 0 0 0-3.8-3.8z"/>
+                  <path d="M13.2 18.8v5.1M18.8 16.8v5.1M13.2 18.8l5.6-2"/>
+                </svg>
+              </span>
+              <span class="home-card-copy">
+                <strong>一起听歌</strong>
+                <small id="duettoCardSubtitle">继续播放 · 尚未连接 Duetto</small>
+              </span>
+            </button>
+
+            <button class="home-card" type="button" data-home-feature="health">
+              <span class="home-card-icon" aria-hidden="true">
+                <svg viewBox="0 0 32 32">
+                  <path d="M16 26.8S5.5 20.5 5.5 12.8A5.6 5.6 0 0 1 16 10a5.6 5.6 0 0 1 10.5 2.8C26.5 20.5 16 26.8 16 26.8z"/>
+                  <path d="M10.2 16h3.2l1.5-3.1 2.5 6.1 1.6-3h3"/>
+                </svg>
+              </span>
+              <span class="home-card-copy">
+                <strong>今天的身体</strong>
+                <small class="home-card-stats"><span>步数 <b>----</b></span><span>睡眠 <b>—</b> 小时</span></small>
+              </span>
+            </button>
+
+            <button class="home-card" type="button" data-home-feature="zeta">
+              <span class="home-card-icon" aria-hidden="true">
+                <svg viewBox="0 0 32 32">
+                  <path d="M22.5 22.8A10 10 0 0 1 11.2 8.2 9.2 9.2 0 1 0 22.5 22.8z"/>
+                  <path d="M22.5 6v4M20.5 8h4M26 12.5v2.8M24.6 13.9h2.8"/>
+                  <path d="M9.5 23.5c3-4.2 5.9-7.6 12.4-12.7M12.2 20.2c2.1.5 4.2.2 6-.8M14.6 17.4c-1.5-.7-2.4-1.7-2.8-3"/>
+                </svg>
+              </span>
+              <span class="home-card-copy">
+                <strong>Zeta 的今天</strong>
+                <small class="home-card-stats"><span>现在的心情：陪着你</span><span>当前模式：安静在线</span></small>
+              </span>
+            </button>
+          </div>
+
+          <div id="homeNotice" class="home-notice" aria-live="polite"></div>
+
+          <div class="toolbox-strip" aria-label="工具箱">
+            <div class="toolbox-title">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v4M10 5h4M5 10l2 2M17 12l2-2M4 18h16"/></svg>
+              <strong>工具箱</strong>
+            </div>
+            <div class="toolbox-actions">
+              <button type="button" data-tool-page="packages" title="包管理" aria-label="包管理">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6v4a2 2 0 1 1 0 4v4h-4a2 2 0 1 0-4 0H3V9h4a2 2 0 1 0 0-4h2z"/></svg>
+              </button>
+              <button type="button" data-tool-page="workflows" title="工作流" aria-label="工作流">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 6h8M7 8l4 8M17 8l-4 8"/></svg>
+              </button>
+              <button type="button" data-tool-page="tools" title="工具管理" aria-label="工具管理">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h16v11H4zM8 8V5h8v3M4 12h16M10 12v2h4v-2"/></svg>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section id="toolsView" class="view" aria-label="工具管理">
+          <div class="tools-header">
+            <button id="toolsBackButton" class="icon-button" type="button" title="返回今天" aria-label="返回今天">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+            </button>
+            <div>
+              <p class="eyebrow">Toolbox</p>
+              <h1>工具管理</h1>
+            </div>
+          </div>
+          <p id="toolsIntro" class="tools-intro">集中管理扩展包、工作流和可调用工具。</p>
+          <div class="tool-management-grid">
+            <button type="button" data-tool-placeholder="packages">
+              <span class="tool-management-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6v4a2 2 0 1 1 0 4v4h-4a2 2 0 1 0-4 0H3V9h4a2 2 0 1 0 0-4h2z"/></svg></span>
+              <strong>包管理</strong><small>安装、启停与更新扩展包</small><em>待接入</em>
+            </button>
+            <button type="button" data-tool-placeholder="workflows">
+              <span class="tool-management-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 6h8M7 8l4 8M17 8l-4 8"/></svg></span>
+              <strong>工作流</strong><small>编排自动流程和定时动作</small><em>待接入</em>
+            </button>
+            <button type="button" data-tool-placeholder="tools">
+              <span class="tool-management-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h16v11H4zM8 8V5h8v3M4 12h16M10 12v2h4v-2"/></svg></span>
+              <strong>工具</strong><small>查看可用能力与调用状态</small><em>待接入</em>
+            </button>
+          </div>
+        </section>
 
         <section id="memoryView" class="view" aria-label="记忆">
           <div class="memory-header">
@@ -221,6 +329,12 @@
             </label>
 
             <label class="field">
+              <span>Duetto 地址</span>
+              <input id="duettoUrl" type="url" inputmode="url" placeholder="https://music.example.com/pkg/index.html">
+              <small>部署 Duetto 后填完整网页地址，“一起听歌”卡片会从这里打开。</small>
+            </label>
+
+            <label class="field">
               <span>网关令牌</span>
               <input id="gatewayToken" type="password" autocomplete="current-password" placeholder="OMBRE_GATEWAY_TOKEN">
             </label>
@@ -313,12 +427,15 @@
           <span>记忆</span>
         </button>
         <button class="tab-button home-tab-button" type="button" data-tab="home" title="主页" aria-label="主页">
-          <svg class="feather-tab-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path class="feather-outline" d="M4.35 19.2C3.15 16.55 3.95 12.15 6.55 8.1 9.45 3.6 14.2 1.45 20.8 2.55 21.85 8.2 19.35 13.2 15.5 16.25 11.55 19.35 7.45 20.25 4.35 19.2Z"/>
-            <path class="feather-vane" d="M5.4 18.45C4.15 18.35 3.1 17.95 2.35 17.3M6.2 17.55C5.15 17.15 4.35 16.35 3.65 15.35M7.85 15.75C6.25 15.05 5.1 13.95 4.55 12.75M9.5 13.95C7.55 12.9 6.4 11.35 6.15 9.65M11.2 12.2C9.25 10.75 8.25 8.8 8.3 6.35M13.05 10.4C11.25 8.75 10.35 6.25 10.8 4.35M14.95 8.6C13.3 6.7 12.65 4.25 13.3 3"/>
-            <path class="feather-vane" d="M5.4 18.45C4.35 19.25 3.25 19.65 2.5 19.65M6.2 17.55C8.25 18.2 10.4 18.2 12.6 17.8M7.85 15.75C10.65 16.6 13.45 16.1 15.5 15M9.5 13.95C12.85 14.7 16 13.55 17.9 11.75M11.2 12.2C14.9 12.45 18.1 10.5 19.4 8.5M13.05 10.4C16.65 9.9 19.45 7.65 20.45 5.55M14.95 8.6C18 7.7 20.05 5.5 20.8 3.75"/>
-            <path class="feather-shaft" d="M2.1 22.1C6.25 17.15 10.25 12.75 20.8 2.55"/>
-          </svg>
+          <span class="home-tab-icon" aria-hidden="true">
+            <svg class="feather-tab-icon" viewBox="0 0 24 24">
+              <path class="feather-outline" d="M4.35 19.2C3.15 16.55 3.95 12.15 6.55 8.1 9.45 3.6 14.2 1.45 20.8 2.55 21.85 8.2 19.35 13.2 15.5 16.25 11.55 19.35 7.45 20.25 4.35 19.2Z"/>
+              <path class="feather-vane" d="M5.4 18.45C4.15 18.35 3.1 17.95 2.35 17.3M6.2 17.55C5.15 17.15 4.35 16.35 3.65 15.35M7.85 15.75C6.25 15.05 5.1 13.95 4.55 12.75M9.5 13.95C7.55 12.9 6.4 11.35 6.15 9.65M11.2 12.2C9.25 10.75 8.25 8.8 8.3 6.35M13.05 10.4C11.25 8.75 10.35 6.25 10.8 4.35M14.95 8.6C13.3 6.7 12.65 4.25 13.3 3"/>
+              <path class="feather-vane" d="M5.4 18.45C4.35 19.25 3.25 19.65 2.5 19.65M6.2 17.55C8.25 18.2 10.4 18.2 12.6 17.8M7.85 15.75C10.65 16.6 13.45 16.1 15.5 15M9.5 13.95C12.85 14.7 16 13.55 17.9 11.75M11.2 12.2C14.9 12.45 18.1 10.5 19.4 8.5M13.05 10.4C16.65 9.9 19.45 7.65 20.45 5.55M14.95 8.6C18 7.7 20.05 5.5 20.8 3.75"/>
+              <path class="feather-shaft" d="M2.1 22.1C6.25 17.15 10.25 12.75 20.8 2.55"/>
+            </svg>
+          </span>
+          <span>今天</span>
         </button>
         <button class="tab-button" type="button" data-tab="schedule">
           <svg viewBox="0 0 24 24" aria-hidden="true">

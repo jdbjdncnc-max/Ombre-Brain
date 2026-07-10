@@ -19,7 +19,8 @@ const defaultSettings = {
   backgroundUrl: "",
   backgroundTransparency: 0.35,
   backgroundFit: "cover",
-  accentColor: "#17a897"
+  accentColor: "#17a897",
+  duettoUrl: ""
 };
 
 const COURSE_PERIODS = [
@@ -77,6 +78,7 @@ const els = {
   serverStatus: document.querySelector("#serverStatus"),
   chatView: document.querySelector("#chatView"),
   homeView: document.querySelector("#homeView"),
+  toolsView: document.querySelector("#toolsView"),
   memoryView: document.querySelector("#memoryView"),
   scheduleView: document.querySelector("#scheduleView"),
   settingsView: document.querySelector("#settingsView"),
@@ -123,7 +125,16 @@ const els = {
   scheduleTimeline: document.querySelector("#scheduleTimeline"),
   upcomingSummary: document.querySelector("#upcomingSummary"),
   upcomingScheduleList: document.querySelector("#upcomingScheduleList"),
+  homeFeatureCards: [...document.querySelectorAll("[data-home-feature]")],
+  duettoCard: document.querySelector("#duettoCard"),
+  duettoCardSubtitle: document.querySelector("#duettoCardSubtitle"),
+  homeNotice: document.querySelector("#homeNotice"),
+  toolPageButtons: [...document.querySelectorAll("[data-tool-page]")],
+  toolPlaceholderButtons: [...document.querySelectorAll("[data-tool-placeholder]")],
+  toolsBackButton: document.querySelector("#toolsBackButton"),
+  toolsIntro: document.querySelector("#toolsIntro"),
   backendUrl: document.querySelector("#backendUrl"),
+  duettoUrl: document.querySelector("#duettoUrl"),
   gatewayToken: document.querySelector("#gatewayToken"),
   modelName: document.querySelector("#modelName"),
   temperature: document.querySelector("#temperature"),
@@ -178,6 +189,23 @@ function bindEvents() {
   els.tabs.forEach((tab) => {
     tab.addEventListener("click", () => setActiveTab(tab.dataset.tab));
   });
+
+  els.homeFeatureCards.forEach((card) => {
+    card.addEventListener("click", () => handleHomeFeature(card.dataset.homeFeature));
+  });
+
+  els.toolPageButtons.forEach((button) => {
+    button.addEventListener("click", () => openToolsPage(button.dataset.toolPage));
+  });
+
+  els.toolPlaceholderButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const labels = { packages: "包管理", workflows: "工作流", tools: "工具管理" };
+      els.toolsIntro.textContent = `${labels[button.dataset.toolPlaceholder] || "这项功能"}将在后续对话中接入。`;
+    });
+  });
+
+  els.toolsBackButton.addEventListener("click", () => setActiveTab("home"));
 
   els.memorySegments.forEach((button) => {
     button.addEventListener("click", () => setMemoryPanel(button.dataset.memoryPanel));
@@ -269,6 +297,7 @@ function bindEvents() {
 
   for (const input of [
     els.backendUrl,
+    els.duettoUrl,
     els.gatewayToken,
     els.modelName,
     els.temperature,
@@ -1896,15 +1925,75 @@ function renderMessages(shouldScroll = true) {
   }
 }
 
+function handleHomeFeature(feature) {
+  if (feature === "music") {
+    const url = normalizeDuettoUrl(state.settings.duettoUrl);
+    if (!url) {
+      setActiveTab("settings");
+      els.duettoUrl.focus();
+      return;
+    }
+    showHomeNotice("正在打开 Duetto…");
+    platform.openExternalUrl(url);
+    return;
+  }
+
+  const messages = {
+    reading: "共读会在后续对话中接入。",
+    health: "身体数据会在后续对话中接入。",
+    zeta: "Zeta 的今日状态会在后续对话中接入。"
+  };
+  showHomeNotice(messages[feature] || "这项功能会在后续对话中接入。");
+}
+
+function openToolsPage(section) {
+  const descriptions = {
+    packages: "包管理：安装、启停与更新扩展包。",
+    workflows: "工作流：编排自动流程和定时动作。",
+    tools: "工具管理：查看可用能力与调用状态。"
+  };
+  els.toolsIntro.textContent = descriptions[section] || "集中管理扩展包、工作流和可调用工具。";
+  setActiveTab("tools");
+}
+
+function showHomeNotice(message) {
+  els.homeNotice.textContent = message;
+}
+
+function renderHomeState() {
+  const configured = Boolean(normalizeDuettoUrl(state.settings.duettoUrl));
+  els.duettoCard.classList.toggle("feature-ready", configured);
+  els.duettoCardSubtitle.textContent = configured
+    ? "继续播放 · 打开 Duetto"
+    : "继续播放 · 尚未连接 Duetto";
+}
+
+function normalizeDuettoUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      return "";
+    }
+    if (url.pathname === "/") {
+      url.pathname = "/pkg/index.html";
+    }
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
 function setActiveTab(tab) {
   state.activeTab = tab;
   els.chatView.classList.toggle("view-active", tab === "chat");
   els.homeView.classList.toggle("view-active", tab === "home");
+  els.toolsView.classList.toggle("view-active", tab === "tools");
   els.memoryView.classList.toggle("view-active", tab === "memory");
   els.scheduleView.classList.toggle("view-active", tab === "schedule");
   els.settingsView.classList.toggle("view-active", tab === "settings");
+  const navigationTab = tab === "tools" ? "home" : tab;
   els.tabs.forEach((button) => {
-    button.classList.toggle("tab-active", button.dataset.tab === tab);
+    button.classList.toggle("tab-active", button.dataset.tab === navigationTab);
   });
   if (tab === "memory") {
     loadActiveMemoryPanel();
@@ -1928,6 +2017,7 @@ function setMemoryPanel(panel) {
 
 function hydrateSettingsForm() {
   els.backendUrl.value = state.settings.backendUrl;
+  els.duettoUrl.value = state.settings.duettoUrl;
   els.gatewayToken.value = state.settings.gatewayToken;
   els.modelName.value = state.settings.model;
   els.temperature.value = state.settings.temperature;
@@ -1943,6 +2033,7 @@ function hydrateSettingsForm() {
 function readSettingsForm() {
   state.settings = {
     backendUrl: els.backendUrl.value.trim() || defaultBackend,
+    duettoUrl: els.duettoUrl.value.trim(),
     gatewayToken: els.gatewayToken.value.trim(),
     model: els.modelName.value.trim() || defaultSettings.model,
     temperature: Number(els.temperature.value),
@@ -1966,6 +2057,7 @@ function applySettings() {
   } else {
     root.style.setProperty("--bg-image", 'url("/frontend/background.svg")');
   }
+  renderHomeState();
 }
 
 function normalizeSettings(value) {

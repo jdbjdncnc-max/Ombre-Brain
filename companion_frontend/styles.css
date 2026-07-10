@@ -103,7 +103,10 @@ button {
 }
 
 .server-status.online {
-  color: #0e665b;
+  color: var(--accent-ink);
+  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 72%, white);
+  background: rgba(255, 255, 255, 0.78);
 }
 
 .server-status.offline {
@@ -130,6 +133,278 @@ button {
 #chatView {
   flex-direction: column;
   padding: 14px 16px 12px;
+}
+
+#homeView {
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  padding: 2px 14px 10px;
+}
+
+.home-brand {
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: var(--accent-ink);
+  font-size: clamp(24px, 7vw, 31px);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  text-shadow: 0 1px 12px rgba(255, 255, 255, 0.72);
+}
+
+.home-brand i {
+  color: var(--accent);
+  font-size: 0.78em;
+  font-style: normal;
+  font-weight: 500;
+}
+
+.home-card-grid {
+  flex: 1;
+  min-height: 390px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.home-card {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  border: 1px solid var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 48%, white);
+  border-radius: 22px;
+  padding: 14px 12px;
+  color: var(--ink);
+  background: rgba(246, 251, 247, 0.58);
+  box-shadow:
+    0 12px 28px rgba(16, 58, 54, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(18px) saturate(1.18);
+  cursor: pointer;
+  text-align: center;
+  transition: transform 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.home-card:active {
+  transform: scale(0.98);
+  background: rgba(255, 255, 255, 0.68);
+  box-shadow: 0 5px 16px rgba(16, 58, 54, 0.12);
+}
+
+.home-card.feature-ready {
+  border-color: var(--accent);
+}
+
+.home-card-icon {
+  width: 58px;
+  height: 58px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.74);
+  border-radius: 50%;
+  color: var(--accent);
+  background: rgba(255, 255, 255, 0.34);
+  box-shadow: inset 0 0 18px rgba(255, 255, 255, 0.58);
+}
+
+.home-card-icon svg {
+  width: 36px;
+  height: 36px;
+  stroke-width: 1.55;
+}
+
+.home-card-copy {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.home-card-copy strong {
+  color: rgba(20, 31, 29, 0.94);
+  font-size: 20px;
+  font-weight: 780;
+  letter-spacing: 0.02em;
+}
+
+.home-card-copy small {
+  min-height: 34px;
+  color: rgba(23, 33, 31, 0.64);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.home-card-stats {
+  display: grid;
+  gap: 2px;
+}
+
+.home-card-stats b {
+  color: var(--accent-ink);
+}
+
+.home-notice {
+  min-height: 16px;
+  color: var(--accent-ink);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.toolbox-strip {
+  min-height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 42%, white);
+  border-radius: 20px;
+  padding: 7px 9px 7px 14px;
+  background: rgba(246, 251, 247, 0.62);
+  box-shadow: 0 9px 24px rgba(16, 58, 54, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(18px) saturate(1.16);
+}
+
+.toolbox-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.toolbox-title svg {
+  width: 17px;
+  height: 17px;
+  color: var(--accent);
+}
+
+.toolbox-title strong {
+  font-size: 15px;
+}
+
+.toolbox-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.toolbox-actions button {
+  width: 39px;
+  height: 39px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 50%;
+  color: var(--accent-ink);
+  background: rgba(255, 255, 255, 0.48);
+  box-shadow: 0 4px 12px rgba(16, 58, 54, 0.08);
+  cursor: pointer;
+}
+
+.toolbox-actions button:active {
+  color: white;
+  background: var(--accent);
+}
+
+.toolbox-actions svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 1.7;
+}
+
+#toolsView {
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  padding: 14px 16px 18px;
+}
+
+.tools-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.tools-intro {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.46);
+  border-radius: 16px;
+  color: rgba(23, 33, 31, 0.68);
+  background: rgba(255, 255, 255, 0.46);
+  font-size: 13px;
+  line-height: 1.55;
+  backdrop-filter: blur(14px);
+}
+
+.tool-management-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.tool-management-grid > button {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 3px 12px;
+  border: 1px solid var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 42%, white);
+  border-radius: 18px;
+  padding: 13px;
+  color: var(--ink);
+  background: rgba(246, 251, 247, 0.64);
+  text-align: left;
+  cursor: pointer;
+  backdrop-filter: blur(16px);
+}
+
+.tool-management-icon {
+  grid-row: 1 / 3;
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 15px;
+  color: var(--accent);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.tool-management-icon svg {
+  width: 25px;
+  height: 25px;
+}
+
+.tool-management-grid strong {
+  align-self: end;
+  font-size: 15px;
+}
+
+.tool-management-grid small {
+  align-self: start;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tool-management-grid em {
+  grid-column: 3;
+  grid-row: 1 / 3;
+  padding: 4px 7px;
+  border-radius: 999px;
+  color: var(--accent-ink);
+  background: rgba(255, 255, 255, 0.54);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 750;
 }
 
 .chat-header,
@@ -306,7 +581,8 @@ svg {
 
 #memoryView,
 #scheduleView,
-#settingsView {
+#settingsView,
+#toolsView {
   flex-direction: column;
   overflow-y: auto;
   padding-bottom: 12px;
@@ -337,6 +613,12 @@ svg {
   color: rgba(23, 33, 31, 0.72);
   font-size: 13px;
   font-weight: 700;
+}
+
+.field > small {
+  color: rgba(23, 33, 31, 0.54);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .field input:not([type="range"]):not([type="color"]),
@@ -994,9 +1276,12 @@ output {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 5px;
-  padding: 8px 12px max(12px, env(safe-area-inset-bottom));
-  background: rgba(246, 251, 247, calc(var(--panel-alpha) + 0.1));
-  border-top: 1px solid rgba(255, 255, 255, 0.42);
+  margin: 0 10px max(10px, env(safe-area-inset-bottom));
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.64);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 10px 28px rgba(12, 46, 43, 0.16);
   backdrop-filter: blur(20px);
 }
 
@@ -1025,14 +1310,26 @@ output {
 }
 
 .home-tab-button {
-  grid-template-rows: auto;
+  grid-template-rows: 28px 16px;
   padding: 0;
 }
 
-.home-tab-button svg {
-  width: 42px;
-  height: 42px;
-  transform: rotate(-8deg) translateY(-1px);
+.home-tab-icon {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: white;
+  background: var(--accent);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 34%, transparent);
+  transform: translateY(-2px);
+}
+
+.home-tab-icon svg {
+  width: 25px;
+  height: 25px;
+  transform: rotate(-8deg);
 }
 
 .feather-tab-icon .feather-outline {
@@ -1053,6 +1350,10 @@ output {
   color: var(--accent-ink);
 }
 
+.home-tab-button.tab-active .home-tab-icon {
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.72), 0 7px 18px color-mix(in srgb, var(--accent) 42%, transparent);
+}
+
 .tab-active {
   color: var(--accent-ink);
   background: rgba(255, 255, 255, 0.52);
@@ -1060,15 +1361,19 @@ output {
 
 @media (max-width: 560px) {
   .app-shell {
-    padding: 0;
+    padding: 8px;
   }
 
   .phone-shell {
-    width: 100vw;
-    height: 100dvh;
-    min-height: 100dvh;
-    border: 0;
-    border-radius: 0;
+    width: calc(100vw - 16px);
+    height: calc(100dvh - 16px);
+    min-height: calc(100dvh - 16px);
+    border: 1px solid rgba(255, 255, 255, 0.72);
+    border-radius: 24px;
+  }
+
+  .home-card-grid {
+    min-height: 370px;
   }
 
   .schedule-dashboard {

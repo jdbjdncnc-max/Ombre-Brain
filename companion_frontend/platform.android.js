@@ -17,6 +17,16 @@ export function createAndroidPlatform(bridge) {
     readFileAsDataUrl(file) {
       return fallback.readFileAsDataUrl(file);
     },
+    openExternalUrl(url) {
+      const target = String(url || "").trim();
+      if (!target) {
+        return false;
+      }
+      if (callBridgeVoid(bridge, "openExternalUrl", target)) {
+        return true;
+      }
+      return fallback.openExternalUrl(target);
+    },
     lifecycle: {
       onResume(handler) {
         window.CompanionOnResume = handler;
