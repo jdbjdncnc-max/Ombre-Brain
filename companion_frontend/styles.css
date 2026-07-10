@@ -4,8 +4,10 @@
   --ink: #17211f;
   --muted: rgba(23, 33, 31, 0.66);
   --line: rgba(255, 255, 255, 0.36);
-  --panel-alpha: 0.68;
+  --panel-alpha: 0.78;
   --bg-image: url("./background.svg");
+  --bg-opacity: 0.68;
+  --bg-size: cover;
 }
 
 * {
@@ -20,15 +22,31 @@ body {
 }
 
 body {
+  position: relative;
   overflow: hidden;
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--ink);
-  background: #1d2824 var(--bg-image) center / cover fixed no-repeat;
+  background: #1d2824;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-color: #1d2824;
+  background-image: var(--bg-image);
+  background-position: center;
+  background-size: var(--bg-size);
+  background-repeat: no-repeat;
+  opacity: var(--bg-opacity);
+  transform: translateZ(0);
 }
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -37,6 +55,8 @@ button {
 }
 
 .app-shell {
+  position: relative;
+  z-index: 1;
   width: 100vw;
   height: 100dvh;
   display: grid;
@@ -111,6 +131,35 @@ button {
 #chatView {
   flex-direction: column;
   padding: 14px 16px 12px;
+}
+
+#homeView {
+  align-items: center;
+  justify-content: center;
+}
+
+.home-mark {
+  width: 86px;
+  height: 86px;
+  opacity: 0.7;
+}
+
+.home-mark svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.home-mark-petals {
+  fill: rgba(255, 255, 255, 0.76);
+  stroke: rgba(23, 33, 31, 0.12);
+  stroke-width: 1;
+}
+
+.home-mark-center {
+  fill: #efc95c;
+  stroke: rgba(122, 91, 20, 0.22);
+  stroke-width: 1.5;
 }
 
 .chat-header,
@@ -320,7 +369,8 @@ svg {
 }
 
 .field input:not([type="range"]):not([type="color"]),
-.field textarea {
+.field textarea,
+.field select {
   width: 100%;
   border: 0;
   outline: 0;
@@ -970,21 +1020,24 @@ output {
 
 .bottom-tabs {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 7px;
-  padding: 10px 16px max(14px, env(safe-area-inset-bottom));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 5px;
+  padding: 8px 12px max(12px, env(safe-area-inset-bottom));
   background: rgba(246, 251, 247, calc(var(--panel-alpha) + 0.1));
   border-top: 1px solid rgba(255, 255, 255, 0.42);
   backdrop-filter: blur(20px);
 }
 
 .tab-button {
-  height: 50px;
+  min-width: 0;
+  height: 52px;
   display: grid;
-  grid-template-columns: auto auto;
+  grid-template-columns: auto;
+  grid-template-rows: 21px 16px;
   place-content: center;
   align-items: center;
-  gap: 7px;
+  justify-items: center;
+  gap: 3px;
   border: 0;
   border-radius: 8px;
   color: rgba(23, 33, 31, 0.56);
@@ -997,6 +1050,33 @@ output {
 .tab-button svg {
   width: 19px;
   height: 19px;
+}
+
+.home-tab-button {
+  grid-template-rows: auto;
+  padding: 0;
+}
+
+.home-tab-button svg {
+  width: 31px;
+  height: 31px;
+  overflow: visible;
+}
+
+.chamomile-petals {
+  fill: rgba(255, 255, 255, 0.88);
+  stroke: currentColor;
+  stroke-width: 1.2;
+}
+
+.chamomile-center {
+  fill: #e6b936;
+  stroke: rgba(92, 69, 14, 0.48);
+  stroke-width: 1.4;
+}
+
+.home-tab-button.tab-active {
+  color: #517f70;
 }
 
 .tab-active {

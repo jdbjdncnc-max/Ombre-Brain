@@ -17,7 +17,8 @@ const defaultSettings = {
   temperature: 0.7,
   systemPrompt: "你是一个温柔、清醒、可靠的个人 AI 伙伴。回答自然具体，优先帮助用户把事情推进。",
   backgroundUrl: "",
-  glassOpacity: 0.68,
+  backgroundOpacity: 0.68,
+  backgroundFit: "cover",
   accentColor: "#17a897"
 };
 
@@ -53,7 +54,7 @@ const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
 
 const state = {
   messages: loadJson(storageKeys.messages, []),
-  settings: { ...defaultSettings, ...loadJson(storageKeys.settings, {}) },
+  settings: normalizeSettings(loadJson(storageKeys.settings, {})),
   activeTab: "chat",
   memoryPanel: "memories",
   memoryItems: [],
@@ -75,6 +76,7 @@ const els = {
   clock: document.querySelector("#clock"),
   serverStatus: document.querySelector("#serverStatus"),
   chatView: document.querySelector("#chatView"),
+  homeView: document.querySelector("#homeView"),
   memoryView: document.querySelector("#memoryView"),
   scheduleView: document.querySelector("#scheduleView"),
   settingsView: document.querySelector("#settingsView"),
@@ -82,7 +84,6 @@ const els = {
   composer: document.querySelector("#composer"),
   messageInput: document.querySelector("#messageInput"),
   sendButton: document.querySelector("#sendButton"),
-  newChatButton: document.querySelector("#newChatButton"),
   refreshMemoryButton: document.querySelector("#refreshMemoryButton"),
   memorySearchForm: document.querySelector("#memorySearchForm"),
   memorySearchInput: document.querySelector("#memorySearchInput"),
@@ -132,8 +133,9 @@ const els = {
   chooseBackgroundButton: document.querySelector("#chooseBackgroundButton"),
   resetBackgroundButton: document.querySelector("#resetBackgroundButton"),
   backgroundFile: document.querySelector("#backgroundFile"),
-  glassOpacity: document.querySelector("#glassOpacity"),
-  glassOpacityValue: document.querySelector("#glassOpacityValue"),
+  backgroundOpacity: document.querySelector("#backgroundOpacity"),
+  backgroundOpacityValue: document.querySelector("#backgroundOpacityValue"),
+  backgroundFit: document.querySelector("#backgroundFit"),
   accentColor: document.querySelector("#accentColor"),
   saveSettingsButton: document.querySelector("#saveSettingsButton"),
   clearChatButton: document.querySelector("#clearChatButton"),
@@ -218,14 +220,6 @@ function bindEvents() {
 
   els.scheduleNotifyButton.addEventListener("click", requestScheduleNotifications);
 
-  els.newChatButton.addEventListener("click", () => {
-    state.messages = [];
-    state.sessionId = crypto.randomUUID();
-    platform.storage.setString(storageKeys.sessionId, state.sessionId);
-    saveMessages();
-    renderMessages();
-  });
-
   els.saveSettingsButton.addEventListener("click", () => {
     readSettingsForm();
     saveSettings();
@@ -280,7 +274,8 @@ function bindEvents() {
     els.temperature,
     els.systemPrompt,
     els.backgroundUrl,
-    els.glassOpacity,
+    els.backgroundOpacity,
+    els.backgroundFit,
     els.accentColor
   ]) {
     input.addEventListener("change", () => {
@@ -294,9 +289,9 @@ function bindEvents() {
     els.temperatureValue.value = Number(els.temperature.value).toFixed(1);
   });
 
-  els.glassOpacity.addEventListener("input", () => {
-    els.glassOpacityValue.value = `${Math.round(Number(els.glassOpacity.value) * 100)}%`;
-    document.documentElement.style.setProperty("--panel-alpha", els.glassOpacity.value);
+  els.backgroundOpacity.addEventListener("input", () => {
+    els.backgroundOpacityValue.value = `${Math.round(Number(els.backgroundOpacity.value) * 100)}%`;
+    document.documentElement.style.setProperty("--bg-opacity", els.backgroundOpacity.value);
   });
 }
 
@@ -1903,6 +1898,7 @@ function renderMessages(shouldScroll = true) {
 function setActiveTab(tab) {
   state.activeTab = tab;
   els.chatView.classList.toggle("view-active", tab === "chat");
+  els.homeView.classList.toggle("view-active", tab === "home");
   els.memoryView.classList.toggle("view-active", tab === "memory");
   els.scheduleView.classList.toggle("view-active", tab === "schedule");
   els.settingsView.classList.toggle("view-active", tab === "settings");
@@ -1937,8 +1933,9 @@ function hydrateSettingsForm() {
   els.temperatureValue.value = Number(state.settings.temperature).toFixed(1);
   els.systemPrompt.value = state.settings.systemPrompt;
   els.backgroundUrl.value = state.settings.backgroundUrl;
-  els.glassOpacity.value = state.settings.glassOpacity;
-  els.glassOpacityValue.value = `${Math.round(Number(state.settings.glassOpacity) * 100)}%`;
+  els.backgroundOpacity.value = state.settings.backgroundOpacity;
+  els.backgroundOpacityValue.value = `${Math.round(Number(state.settings.backgroundOpacity) * 100)}%`;
+  els.backgroundFit.value = state.settings.backgroundFit;
   els.accentColor.value = state.settings.accentColor;
 }
 
@@ -1950,7 +1947,8 @@ function readSettingsForm() {
     temperature: Number(els.temperature.value),
     systemPrompt: els.systemPrompt.value.trim(),
     backgroundUrl: els.backgroundUrl.value.trim(),
-    glassOpacity: Number(els.glassOpacity.value),
+    backgroundOpacity: Number(els.backgroundOpacity.value),
+    backgroundFit: els.backgroundFit.value === "contain" ? "contain" : "cover",
     accentColor: els.accentColor.value || defaultSettings.accentColor
   };
 }
@@ -1958,7 +1956,8 @@ function readSettingsForm() {
 function applySettings() {
   const root = document.documentElement;
   root.style.setProperty("--accent", state.settings.accentColor);
-  root.style.setProperty("--panel-alpha", String(state.settings.glassOpacity));
+  root.style.setProperty("--bg-opacity", String(state.settings.backgroundOpacity));
+  root.style.setProperty("--bg-size", state.settings.backgroundFit);
   root.style.setProperty("--accent-ink", readableInkFor(state.settings.accentColor));
 
   if (state.settings.backgroundUrl) {
@@ -1966,6 +1965,20 @@ function applySettings() {
   } else {
     root.style.setProperty("--bg-image", 'url("/frontend/background.svg")');
   }
+}
+
+function normalizeSettings(value) {
+  const settings = value && typeof value === "object" ? value : {};
+  const legacyOpacity = Number(settings.glassOpacity);
+  const backgroundOpacity = Number(settings.backgroundOpacity);
+  return {
+    ...defaultSettings,
+    ...settings,
+    backgroundOpacity: Number.isFinite(backgroundOpacity)
+      ? Math.min(1, Math.max(0, backgroundOpacity))
+      : (Number.isFinite(legacyOpacity) ? Math.min(1, Math.max(0, legacyOpacity)) : defaultSettings.backgroundOpacity),
+    backgroundFit: settings.backgroundFit === "contain" ? "contain" : "cover"
+  };
 }
 
 async function refreshHealth() {
