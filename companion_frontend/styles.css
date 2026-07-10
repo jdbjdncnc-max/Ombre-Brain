@@ -62,7 +62,7 @@ button {
   display: grid;
   place-items: center;
   padding: 20px;
-  background: rgba(7, 18, 18, 0.18);
+  background: transparent;
 }
 
 .phone-shell {
@@ -74,9 +74,8 @@ button {
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.48);
   border-radius: 30px;
-  background: rgba(246, 251, 247, var(--panel-alpha));
+  background: transparent;
   box-shadow: 0 24px 80px rgba(4, 18, 18, 0.34);
-  backdrop-filter: blur(22px) saturate(1.18);
 }
 
 .top-bar {
@@ -131,35 +130,6 @@ button {
 #chatView {
   flex-direction: column;
   padding: 14px 16px 12px;
-}
-
-#homeView {
-  align-items: center;
-  justify-content: center;
-}
-
-.home-mark {
-  width: 86px;
-  height: 86px;
-  opacity: 0.7;
-}
-
-.home-mark svg {
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-}
-
-.home-mark-petals {
-  fill: rgba(255, 255, 255, 0.76);
-  stroke: rgba(23, 33, 31, 0.12);
-  stroke-width: 1;
-}
-
-.home-mark-center {
-  fill: #efc95c;
-  stroke: rgba(122, 91, 20, 0.22);
-  stroke-width: 1.5;
 }
 
 .chat-header,
@@ -359,7 +329,8 @@ svg {
   padding: 13px;
   border: 1px solid rgba(255, 255, 255, 0.34);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.44);
+  background: rgba(246, 251, 247, 0.82);
+  backdrop-filter: blur(14px);
 }
 
 .field span {
@@ -376,7 +347,7 @@ svg {
   outline: 0;
   border-radius: 8px;
   color: var(--ink);
-  background: rgba(255, 255, 255, 0.66);
+  background: rgba(255, 255, 255, 0.86);
   padding: 11px 12px;
 }
 
@@ -391,7 +362,7 @@ svg {
   padding: 2px;
   border: 0;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.66);
+  background: rgba(255, 255, 255, 0.86);
 }
 
 .range-row {
@@ -439,8 +410,9 @@ output {
 
 .secondary-button {
   color: var(--accent-ink);
-  background: rgba(255, 255, 255, 0.48);
+  background: rgba(246, 251, 247, 0.8);
   border-color: rgba(255, 255, 255, 0.38);
+  backdrop-filter: blur(12px);
 }
 
 .segment-control {
@@ -1057,26 +1029,8 @@ output {
   padding: 0;
 }
 
-.home-tab-button svg {
-  width: 31px;
-  height: 31px;
-  overflow: visible;
-}
-
-.chamomile-petals {
-  fill: rgba(255, 255, 255, 0.88);
-  stroke: currentColor;
-  stroke-width: 1.2;
-}
-
-.chamomile-center {
-  fill: #e6b936;
-  stroke: rgba(92, 69, 14, 0.48);
-  stroke-width: 1.4;
-}
-
 .home-tab-button.tab-active {
-  color: #517f70;
+  color: var(--accent-ink);
 }
 
 .tab-active {
