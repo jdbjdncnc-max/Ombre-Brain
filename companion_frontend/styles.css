@@ -6,7 +6,7 @@
   --line: rgba(255, 255, 255, 0.36);
   --panel-alpha: 0.78;
   --bg-image: url("./background.svg");
-  --bg-opacity: 0.68;
+  --bg-opacity: 0.65;
   --bg-size: cover;
 }
 
@@ -1027,6 +1027,13 @@ output {
 .home-tab-button {
   grid-template-rows: auto;
   padding: 0;
+}
+
+.home-tab-button svg {
+  width: 38px;
+  height: 40px;
+  stroke-width: 1.1;
+  transform: rotate(-12deg) translateY(-1px);
 }
 
 .home-tab-button.tab-active {

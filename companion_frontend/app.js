@@ -17,7 +17,7 @@ const defaultSettings = {
   temperature: 0.7,
   systemPrompt: "你是一个温柔、清醒、可靠的个人 AI 伙伴。回答自然具体，优先帮助用户把事情推进。",
   backgroundUrl: "",
-  backgroundOpacity: 0.68,
+  backgroundTransparency: 0.35,
   backgroundFit: "cover",
   accentColor: "#17a897"
 };
@@ -133,8 +133,8 @@ const els = {
   chooseBackgroundButton: document.querySelector("#chooseBackgroundButton"),
   resetBackgroundButton: document.querySelector("#resetBackgroundButton"),
   backgroundFile: document.querySelector("#backgroundFile"),
-  backgroundOpacity: document.querySelector("#backgroundOpacity"),
-  backgroundOpacityValue: document.querySelector("#backgroundOpacityValue"),
+  backgroundTransparency: document.querySelector("#backgroundTransparency"),
+  backgroundTransparencyValue: document.querySelector("#backgroundTransparencyValue"),
   backgroundFit: document.querySelector("#backgroundFit"),
   accentColor: document.querySelector("#accentColor"),
   saveSettingsButton: document.querySelector("#saveSettingsButton"),
@@ -274,7 +274,7 @@ function bindEvents() {
     els.temperature,
     els.systemPrompt,
     els.backgroundUrl,
-    els.backgroundOpacity,
+    els.backgroundTransparency,
     els.backgroundFit,
     els.accentColor
   ]) {
@@ -289,9 +289,10 @@ function bindEvents() {
     els.temperatureValue.value = Number(els.temperature.value).toFixed(1);
   });
 
-  els.backgroundOpacity.addEventListener("input", () => {
-    els.backgroundOpacityValue.value = `${Math.round(Number(els.backgroundOpacity.value) * 100)}%`;
-    document.documentElement.style.setProperty("--bg-opacity", els.backgroundOpacity.value);
+  els.backgroundTransparency.addEventListener("input", () => {
+    const transparency = Number(els.backgroundTransparency.value);
+    els.backgroundTransparencyValue.value = `${Math.round(transparency * 100)}%`;
+    document.documentElement.style.setProperty("--bg-opacity", String(1 - transparency));
   });
 }
 
@@ -1933,8 +1934,8 @@ function hydrateSettingsForm() {
   els.temperatureValue.value = Number(state.settings.temperature).toFixed(1);
   els.systemPrompt.value = state.settings.systemPrompt;
   els.backgroundUrl.value = state.settings.backgroundUrl;
-  els.backgroundOpacity.value = state.settings.backgroundOpacity;
-  els.backgroundOpacityValue.value = `${Math.round(Number(state.settings.backgroundOpacity) * 100)}%`;
+  els.backgroundTransparency.value = state.settings.backgroundTransparency;
+  els.backgroundTransparencyValue.value = `${Math.round(Number(state.settings.backgroundTransparency) * 100)}%`;
   els.backgroundFit.value = state.settings.backgroundFit;
   els.accentColor.value = state.settings.accentColor;
 }
@@ -1947,7 +1948,7 @@ function readSettingsForm() {
     temperature: Number(els.temperature.value),
     systemPrompt: els.systemPrompt.value.trim(),
     backgroundUrl: els.backgroundUrl.value.trim(),
-    backgroundOpacity: Number(els.backgroundOpacity.value),
+    backgroundTransparency: Number(els.backgroundTransparency.value),
     backgroundFit: els.backgroundFit.value === "contain" ? "contain" : "cover",
     accentColor: els.accentColor.value || defaultSettings.accentColor
   };
@@ -1956,7 +1957,7 @@ function readSettingsForm() {
 function applySettings() {
   const root = document.documentElement;
   root.style.setProperty("--accent", state.settings.accentColor);
-  root.style.setProperty("--bg-opacity", String(state.settings.backgroundOpacity));
+  root.style.setProperty("--bg-opacity", String(1 - state.settings.backgroundTransparency));
   root.style.setProperty("--bg-size", state.settings.backgroundFit);
   root.style.setProperty("--accent-ink", readableInkFor(state.settings.accentColor));
 
@@ -1969,14 +1970,18 @@ function applySettings() {
 
 function normalizeSettings(value) {
   const settings = value && typeof value === "object" ? value : {};
-  const legacyOpacity = Number(settings.glassOpacity);
-  const backgroundOpacity = Number(settings.backgroundOpacity);
+  const backgroundTransparency = Number(settings.backgroundTransparency);
+  const previousSliderValue = Number(settings.backgroundOpacity);
+  const legacySliderValue = Number(settings.glassOpacity);
+  const normalizedTransparency = Number.isFinite(backgroundTransparency)
+    ? backgroundTransparency
+    : (Number.isFinite(previousSliderValue) ? previousSliderValue : legacySliderValue);
   return {
     ...defaultSettings,
     ...settings,
-    backgroundOpacity: Number.isFinite(backgroundOpacity)
-      ? Math.min(1, Math.max(0, backgroundOpacity))
-      : (Number.isFinite(legacyOpacity) ? Math.min(1, Math.max(0, legacyOpacity)) : defaultSettings.backgroundOpacity),
+    backgroundTransparency: Number.isFinite(normalizedTransparency)
+      ? Math.min(1, Math.max(0, normalizedTransparency))
+      : defaultSettings.backgroundTransparency,
     backgroundFit: settings.backgroundFit === "contain" ? "contain" : "cover"
   };
 }
