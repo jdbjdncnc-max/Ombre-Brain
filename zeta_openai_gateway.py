@@ -244,6 +244,78 @@ class ZetaOpenAIGateway:
             }],
         })
 
+    async def duetto_context(self, request: Request) -> JSONResponse:
+        if not self.gateway_token:
+            return JSONResponse(
+                {
+                    "error": {
+                        "message": "OMBRE_GATEWAY_TOKEN must be configured for Duetto memory sharing",
+                        "type": "gateway_auth_not_configured",
+                    }
+                },
+                status_code=503,
+            )
+
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"error": {"message": "Invalid JSON body", "type": "invalid_request_error"}},
+                status_code=400,
+            )
+
+        if not isinstance(payload, dict):
+            return JSONResponse(
+                {"error": {"message": "JSON body must be an object", "type": "invalid_request_error"}},
+                status_code=400,
+            )
+
+        message = self._recall_context_piece(str(payload.get("message") or ""), 1800)
+        song = payload.get("song") if isinstance(payload.get("song"), dict) else {}
+        song_title = self._recall_context_piece(str(song.get("title") or ""), 160)
+        song_artist = self._recall_context_piece(str(song.get("artist") or ""), 120)
+        user_name = self._recall_context_piece(str(payload.get("user") or ""), 80)
+        ai_name = self._recall_context_piece(str(payload.get("ai") or ""), 80)
+
+        query_parts = [message]
+        if song_title:
+            song_text = f"正在一起听歌：《{song_title}》"
+            if song_artist:
+                song_text += f" - {song_artist}"
+            query_parts.append(song_text)
+        current_text = "\n".join(part for part in query_parts if part).strip()
+        if not current_text:
+            return JSONResponse({"context": "", "memory_count": 0})
+
+        recent_parts = ["source: Duetto"]
+        if user_name:
+            recent_parts.append(f"user: {user_name}")
+        if ai_name:
+            recent_parts.append(f"ai: {ai_name}")
+
+        recalled = await self.memory_gateway.recall({
+            "current_text": current_text,
+            "recent_context": "\n".join(recent_parts),
+            "max_results": self.recall_max_results,
+            "keyword_limit": self.keyword_limit,
+            "semantic_limit": self.semantic_limit,
+            "track_usage": True,
+        })
+        self._log_recall("duetto", recalled)
+
+        memories = recalled.get("memories") if isinstance(recalled, dict) else []
+        if not isinstance(memories, list):
+            memories = []
+        context = str(recalled.get("injection_text") or "").strip() if isinstance(recalled, dict) else ""
+        return JSONResponse({
+            "context": context[:4000],
+            "memory_count": len(memories),
+        })
+
     async def chat_completions(self, request: Request) -> Response:
         auth = self._authorize(request)
         if auth is not None:
@@ -1396,6 +1468,15 @@ async def chat_completions_route(request: Request) -> Response:
     return await gateway.chat_completions(request)
 
 
+async def duetto_context_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.duetto_context(request)
+
+
 @asynccontextmanager
 async def lifespan(app):
     try:
@@ -1409,6 +1490,7 @@ routes = [
     Route("/health", health_route, methods=["GET"]),
     Route("/v1/models", models_route, methods=["GET"]),
     Route("/v1/chat/completions", chat_completions_route, methods=["POST"]),
+    Route("/api/duetto/context", duetto_context_route, methods=["POST"]),
 ]
 
 app = Starlette(routes=routes, lifespan=lifespan)
