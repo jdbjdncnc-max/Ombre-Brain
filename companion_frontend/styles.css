@@ -528,6 +528,44 @@ svg {
   color: rgba(17, 28, 27, 0.94);
 }
 
+.message-assistant-body {
+  display: grid;
+  width: min(88%, 42ch);
+  gap: 8px;
+}
+
+.message-assistant-body .message-content {
+  max-width: none;
+}
+
+.message-reasoning {
+  overflow: hidden;
+  color: rgba(17, 28, 27, 0.68);
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.34);
+}
+
+.message-reasoning summary {
+  padding: 7px 10px;
+  cursor: pointer;
+  color: color-mix(in srgb, var(--accent) 72%, #24312f);
+  font-size: 12px;
+  font-weight: 650;
+  list-style-position: inside;
+  user-select: none;
+}
+
+.message-reasoning-content {
+  max-height: 220px;
+  overflow: auto;
+  padding: 0 10px 9px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .message.assistant.pending .message-content::after {
   content: "";
   display: inline-block;

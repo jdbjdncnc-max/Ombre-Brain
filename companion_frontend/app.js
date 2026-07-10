@@ -345,6 +345,7 @@ async function sendMessage() {
     id: crypto.randomUUID(),
     role: "assistant",
     content: "",
+    reasoning: "",
     pending: true,
     createdAt: new Date().toISOString()
   };
@@ -364,6 +365,7 @@ async function sendMessage() {
         model: state.settings.model,
         messages: buildRequestMessages(),
         temperature: state.settings.temperature,
+        include_reasoning: true,
         stream: true
       })
     });
@@ -377,8 +379,9 @@ async function sendMessage() {
       throw new Error("后端没有返回流式内容。");
     }
 
-    await readOpenAiStream(response.body, (token) => {
-      assistantMessage.content += token;
+    await readOpenAiStream(response.body, ({ content, reasoning }) => {
+      assistantMessage.content += content;
+      assistantMessage.reasoning += reasoning;
       renderMessages(false);
     });
 
@@ -1828,7 +1831,7 @@ function pad2(value) {
   return String(value).padStart(2, "0");
 }
 
-async function readOpenAiStream(stream, onToken) {
+async function readOpenAiStream(stream, onDelta) {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -1850,17 +1853,17 @@ async function readOpenAiStream(stream, onToken) {
     while (boundary >= 0) {
       const block = buffer.slice(0, boundary);
       buffer = buffer.slice(boundary + 2);
-      dispatchOpenAiBlock(block, onToken);
+      dispatchOpenAiBlock(block, onDelta);
       boundary = buffer.indexOf("\n\n");
     }
   }
 
   if (buffer.trim()) {
-    dispatchOpenAiBlock(buffer, onToken);
+    dispatchOpenAiBlock(buffer, onDelta);
   }
 }
 
-function dispatchOpenAiBlock(block, onToken) {
+function dispatchOpenAiBlock(block, onDelta) {
   const lines = block.split(/\r?\n/);
   const dataLines = lines
     .filter((line) => line.startsWith("data:"))
@@ -1881,14 +1884,50 @@ function dispatchOpenAiBlock(block, onToken) {
       throw new Error(parsed.error.message || "模型请求失败。");
     }
 
-    const token =
-      parsed.choices?.[0]?.delta?.content ||
-      parsed.choices?.[0]?.message?.content ||
-      "";
-    if (token) {
-      onToken(token);
+    const choice = parsed.choices?.[0] || {};
+    const delta = choice.delta || choice.message || {};
+    const content = typeof delta.content === "string" ? delta.content : "";
+    const reasoning = firstReasoningText(
+      delta.reasoning,
+      delta.reasoning_content,
+      delta.reasoning_details,
+      choice.reasoning,
+      choice.reasoning_content,
+      choice.reasoning_details
+    );
+    if (content || reasoning) {
+      onDelta({ content, reasoning });
     }
   }
+}
+
+function firstReasoningText(...values) {
+  for (const value of values) {
+    const text = reasoningText(value);
+    if (text) {
+      return text;
+    }
+  }
+  return "";
+}
+
+function reasoningText(value) {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(reasoningText).join("");
+  }
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+  for (const key of ["text", "content", "reasoning", "summary"]) {
+    const text = reasoningText(value[key]);
+    if (text) {
+      return text;
+    }
+  }
+  return "";
 }
 
 function streamReadErrorMessage(error) {
@@ -1916,7 +1955,27 @@ function renderMessages(shouldScroll = true) {
     const content = document.createElement("div");
     content.className = "message-content";
     content.textContent = message.content || " ";
-    item.append(content);
+    if (message.role === "assistant" && message.reasoning) {
+      const body = document.createElement("div");
+      body.className = "message-assistant-body";
+
+      const reasoning = document.createElement("details");
+      reasoning.className = "message-reasoning";
+      reasoning.open = Boolean(message.pending);
+
+      const summary = document.createElement("summary");
+      summary.textContent = message.pending ? "思考中…" : "思考过程";
+
+      const reasoningContent = document.createElement("div");
+      reasoningContent.className = "message-reasoning-content";
+      reasoningContent.textContent = message.reasoning;
+
+      reasoning.append(summary, reasoningContent);
+      body.append(reasoning, content);
+      item.append(body);
+    } else {
+      item.append(content);
+    }
     els.messageList.append(item);
   }
 
