@@ -292,7 +292,7 @@ function bindEvents() {
   els.backgroundTransparency.addEventListener("input", () => {
     const transparency = Number(els.backgroundTransparency.value);
     els.backgroundTransparencyValue.value = `${Math.round(transparency * 100)}%`;
-    document.documentElement.style.setProperty("--bg-opacity", String(1 - transparency));
+    document.documentElement.style.setProperty("--background-image-opacity", String(1 - transparency));
   });
 }
 
@@ -1957,7 +1957,7 @@ function readSettingsForm() {
 function applySettings() {
   const root = document.documentElement;
   root.style.setProperty("--accent", state.settings.accentColor);
-  root.style.setProperty("--bg-opacity", String(1 - state.settings.backgroundTransparency));
+  root.style.setProperty("--background-image-opacity", String(1 - state.settings.backgroundTransparency));
   root.style.setProperty("--bg-size", state.settings.backgroundFit);
   root.style.setProperty("--accent-ink", readableInkFor(state.settings.accentColor));
 
@@ -1971,11 +1971,12 @@ function applySettings() {
 function normalizeSettings(value) {
   const settings = value && typeof value === "object" ? value : {};
   const backgroundTransparency = Number(settings.backgroundTransparency);
-  const previousSliderValue = Number(settings.backgroundOpacity);
-  const legacySliderValue = Number(settings.glassOpacity);
+  const previousBackgroundOpacity = Number(settings.backgroundOpacity);
   const normalizedTransparency = Number.isFinite(backgroundTransparency)
     ? backgroundTransparency
-    : (Number.isFinite(previousSliderValue) ? previousSliderValue : legacySliderValue);
+    : (Number.isFinite(previousBackgroundOpacity)
+      ? 1 - previousBackgroundOpacity
+      : defaultSettings.backgroundTransparency);
   return {
     ...defaultSettings,
     ...settings,
