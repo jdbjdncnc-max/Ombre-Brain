@@ -362,10 +362,27 @@
             <div class="field prompt-file-field">
               <span>系统提示词</span>
               <div class="prompt-file-row">
-                <code>/frontend/system_prompt.md</code>
+                <code id="systemPromptFileName">/frontend/system_prompt.md</code>
                 <output id="systemPromptStatus">加载中</output>
               </div>
-              <small>提示词由部署文件直接注入，不在浏览器中保存副本。</small>
+              <div class="button-row prompt-file-actions">
+                <button id="chooseSystemPromptButton" class="secondary-button" type="button">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M6 3h8l4 4v14H6z"/>
+                    <path d="M14 3v5h5M9 13h6M9 17h4"/>
+                  </svg>
+                  <span>选择 Markdown</span>
+                </button>
+                <button id="resetSystemPromptButton" class="secondary-button" type="button">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M20 11a8 8 0 1 0-2.3 5.7"/>
+                    <path d="M20 4v7h-7"/>
+                  </svg>
+                  <span>恢复部署文件</span>
+                </button>
+              </div>
+              <input id="systemPromptFile" type="file" accept=".md,.markdown,text/markdown,text/plain" hidden>
+              <small>可以从本地选择 Markdown 文件；导入内容保存在当前设备。恢复后重新使用仓库中的 system_prompt.md。</small>
             </div>
 
             <label class="field">

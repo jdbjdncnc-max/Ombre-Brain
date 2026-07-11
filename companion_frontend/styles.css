@@ -677,13 +677,22 @@ svg {
 }
 
 .message-actions button {
-  padding: 3px 7px;
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
   border: 0;
   border-radius: 6px;
   color: rgba(17, 28, 27, 0.62);
   background: transparent;
   cursor: pointer;
-  font-size: 11px;
+}
+
+.message-action-button svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.8;
 }
 
 .message-actions button:hover,
@@ -840,6 +849,10 @@ svg {
 #systemPromptStatus.ready {
   color: var(--accent);
   font-weight: 750;
+}
+
+.prompt-file-actions .secondary-button {
+  flex: 1 1 150px;
 }
 
 .field input:not([type="range"]):not([type="color"]),

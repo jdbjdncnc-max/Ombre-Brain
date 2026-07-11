@@ -15,6 +15,8 @@ const defaultSettings = {
   gatewayToken: "",
   model: "zeta-gateway",
   temperature: 0.7,
+  systemPromptMarkdown: "",
+  systemPromptFileName: "",
   backgroundUrl: "",
   backgroundTransparency: 0.35,
   backgroundFit: "cover",
@@ -143,7 +145,11 @@ const els = {
   modelName: document.querySelector("#modelName"),
   temperature: document.querySelector("#temperature"),
   temperatureValue: document.querySelector("#temperatureValue"),
+  systemPromptFileName: document.querySelector("#systemPromptFileName"),
   systemPromptStatus: document.querySelector("#systemPromptStatus"),
+  systemPromptFile: document.querySelector("#systemPromptFile"),
+  chooseSystemPromptButton: document.querySelector("#chooseSystemPromptButton"),
+  resetSystemPromptButton: document.querySelector("#resetSystemPromptButton"),
   backgroundUrl: document.querySelector("#backgroundUrl"),
   chooseBackgroundButton: document.querySelector("#chooseBackgroundButton"),
   resetBackgroundButton: document.querySelector("#resetBackgroundButton"),
@@ -194,6 +200,14 @@ function bindEvents() {
   });
 
   els.cancelEditButton.addEventListener("click", cancelMessageEdit);
+
+  els.chooseSystemPromptButton.addEventListener("click", () => {
+    els.systemPromptFile.click();
+  });
+
+  els.systemPromptFile.addEventListener("change", importSystemPromptFile);
+
+  els.resetSystemPromptButton.addEventListener("click", resetSystemPromptFile);
 
   els.tabs.forEach((tab) => {
     tab.addEventListener("click", () => setActiveTab(tab.dataset.tab));
@@ -541,7 +555,16 @@ function buildRequestMessages() {
   return [...systemMessages, ...messages];
 }
 
-async function loadSystemPrompt() {
+async function loadSystemPrompt({ forceBundled = false } = {}) {
+  const importedPrompt = String(state.settings.systemPromptMarkdown || "").trim();
+  if (!forceBundled && importedPrompt) {
+    state.systemPrompt = importedPrompt;
+    state.systemPromptError = "";
+    els.systemPromptFileName.textContent = state.settings.systemPromptFileName || "本地提示词.md";
+    els.systemPromptStatus.textContent = "本地文件";
+    els.systemPromptStatus.classList.add("ready");
+    return importedPrompt;
+  }
   try {
     const response = await fetch("/frontend/system_prompt.md", {
       headers: { "Accept": "text/markdown, text/plain" },
@@ -556,16 +579,69 @@ async function loadSystemPrompt() {
     }
     state.systemPrompt = prompt;
     state.systemPromptError = "";
+    els.systemPromptFileName.textContent = "/frontend/system_prompt.md";
     els.systemPromptStatus.textContent = "已注入";
     els.systemPromptStatus.classList.add("ready");
     return prompt;
   } catch (error) {
     state.systemPrompt = "";
     state.systemPromptError = error instanceof Error ? error.message : String(error);
+    els.systemPromptFileName.textContent = "/frontend/system_prompt.md";
     els.systemPromptStatus.textContent = `加载失败：${state.systemPromptError}`;
     els.systemPromptStatus.classList.remove("ready");
     return "";
   }
+}
+
+async function importSystemPromptFile() {
+  const file = els.systemPromptFile.files?.[0];
+  if (!file) {
+    return;
+  }
+  try {
+    if (!/\.(md|markdown)$/i.test(file.name)) {
+      throw new Error("请选择 .md 或 .markdown 文件");
+    }
+    if (file.size > 256 * 1024) {
+      throw new Error("提示词文件不能超过 256 KB");
+    }
+    const prompt = (await readLocalTextFile(file)).trim();
+    if (!prompt) {
+      throw new Error("提示词文件内容为空");
+    }
+    state.settings.systemPromptMarkdown = prompt;
+    state.settings.systemPromptFileName = file.name;
+    state.systemPrompt = prompt;
+    state.systemPromptError = "";
+    els.systemPromptFileName.textContent = file.name;
+    els.systemPromptStatus.textContent = "本地文件";
+    els.systemPromptStatus.classList.add("ready");
+    saveSettings();
+  } catch (error) {
+    els.systemPromptStatus.textContent = `导入失败：${error instanceof Error ? error.message : String(error)}`;
+    els.systemPromptStatus.classList.remove("ready");
+  } finally {
+    els.systemPromptFile.value = "";
+  }
+}
+
+async function resetSystemPromptFile() {
+  state.settings.systemPromptMarkdown = "";
+  state.settings.systemPromptFileName = "";
+  saveSettings();
+  await loadSystemPrompt({ forceBundled: true });
+}
+
+function readLocalTextFile(file) {
+  if (typeof file.text === "function") {
+    return file.text();
+  }
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("无法读取提示词文件"));
+    reader.readAsText(file, "utf-8");
+  });
 }
 
 async function gatewayFetch(path, options = {}) {
@@ -2119,19 +2195,37 @@ function createMessageActions(message) {
   actions.className = "message-actions";
   const button = document.createElement("button");
   button.type = "button";
+  button.className = "message-action-button";
 
   if (message.role === "user") {
-    button.textContent = "编辑";
     button.title = "编辑并从这条消息重新发送";
+    button.setAttribute("aria-label", "编辑并重新发送");
+    button.append(createMessageActionIcon("edit"));
     button.addEventListener("click", () => beginMessageEdit(message.id));
   } else {
-    button.textContent = "重新生成";
     button.title = "从这条回复之前重新生成";
+    button.setAttribute("aria-label", "重新生成回答");
+    button.append(createMessageActionIcon("regenerate"));
     button.addEventListener("click", () => regenerateAssistantMessage(message.id));
   }
   button.disabled = state.busy;
   actions.append(button);
   return actions;
+}
+
+function createMessageActionIcon(kind) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const paths = kind === "edit"
+    ? ["M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z", "m13.5 6.5 4 4"]
+    : ["M20 11a8 8 0 1 0-2.3 5.7", "M20 4v7h-7"];
+  for (const data of paths) {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", data);
+    svg.append(path);
+  }
+  return svg;
 }
 
 function renderMessages(shouldScroll = true) {
@@ -2295,6 +2389,8 @@ function readSettingsForm() {
     gatewayToken: els.gatewayToken.value.trim(),
     model: els.modelName.value.trim() || defaultSettings.model,
     temperature: Number(els.temperature.value),
+    systemPromptMarkdown: state.settings.systemPromptMarkdown || "",
+    systemPromptFileName: state.settings.systemPromptFileName || "",
     backgroundUrl: els.backgroundUrl.value.trim(),
     backgroundTransparency: Number(els.backgroundTransparency.value),
     backgroundFit: els.backgroundFit.value === "contain" ? "contain" : "cover",
