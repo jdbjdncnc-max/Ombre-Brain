@@ -15,7 +15,6 @@ const defaultSettings = {
   gatewayToken: "",
   model: "zeta-gateway",
   temperature: 0.7,
-  systemPrompt: "你是一个温柔、清醒、可靠的个人 AI 伙伴。回答自然具体，优先帮助用户把事情推进。",
   backgroundUrl: "",
   backgroundTransparency: 0.35,
   backgroundFit: "cover",
@@ -67,6 +66,9 @@ const state = {
   scheduleNudges: loadJson(storageKeys.scheduleNudges, {}),
   scheduleSyncStatus: "本地日程",
   busy: false,
+  editingMessageId: "",
+  systemPrompt: "",
+  systemPromptError: "",
   sessionId: platform.storage.getString(storageKeys.sessionId) || crypto.randomUUID(),
   loadedMemoryPanels: new Set()
 };
@@ -84,6 +86,8 @@ const els = {
   settingsView: document.querySelector("#settingsView"),
   messageList: document.querySelector("#messageList"),
   composer: document.querySelector("#composer"),
+  editNotice: document.querySelector("#editNotice"),
+  cancelEditButton: document.querySelector("#cancelEditButton"),
   messageInput: document.querySelector("#messageInput"),
   sendButton: document.querySelector("#sendButton"),
   refreshMemoryButton: document.querySelector("#refreshMemoryButton"),
@@ -139,7 +143,7 @@ const els = {
   modelName: document.querySelector("#modelName"),
   temperature: document.querySelector("#temperature"),
   temperatureValue: document.querySelector("#temperatureValue"),
-  systemPrompt: document.querySelector("#systemPrompt"),
+  systemPromptStatus: document.querySelector("#systemPromptStatus"),
   backgroundUrl: document.querySelector("#backgroundUrl"),
   chooseBackgroundButton: document.querySelector("#chooseBackgroundButton"),
   resetBackgroundButton: document.querySelector("#resetBackgroundButton"),
@@ -155,8 +159,11 @@ const els = {
   memoryPanels: [...document.querySelectorAll(".memory-panel")]
 };
 
+const systemPromptReady = loadSystemPrompt();
+
 bindEvents();
 hydrateSettingsForm();
+saveSettings();
 applySettings();
 renderMessages();
 initSchedule();
@@ -185,6 +192,8 @@ function bindEvents() {
       sendMessage();
     }
   });
+
+  els.cancelEditButton.addEventListener("click", cancelMessageEdit);
 
   els.tabs.forEach((tab) => {
     tab.addEventListener("click", () => setActiveTab(tab.dataset.tab));
@@ -301,7 +310,6 @@ function bindEvents() {
     els.gatewayToken,
     els.modelName,
     els.temperature,
-    els.systemPrompt,
     els.backgroundUrl,
     els.backgroundTransparency,
     els.backgroundFit,
@@ -331,16 +339,39 @@ async function sendMessage() {
     return;
   }
 
+  await systemPromptReady;
+  if (!state.systemPrompt) {
+    els.systemPromptStatus.textContent = state.systemPromptError || "提示词为空";
+    setActiveTab("settings");
+    return;
+  }
+
   readSettingsForm();
   saveSettings();
   applySettings();
 
-  const userMessage = {
-    id: crypto.randomUUID(),
-    role: "user",
-    content: text,
-    createdAt: new Date().toISOString()
-  };
+  if (state.editingMessageId) {
+    if (!applyUserMessageEdit(state.editingMessageId, text)) {
+      cancelMessageEdit();
+      return;
+    }
+    cancelMessageEdit({ clearInput: false });
+  } else {
+    state.messages.push({
+      id: crypto.randomUUID(),
+      role: "user",
+      content: text,
+      createdAt: new Date().toISOString()
+    });
+  }
+
+  captureTodoFromMessage(text);
+  els.messageInput.value = "";
+  autosizeTextarea(els.messageInput);
+  await generateAssistantReply();
+}
+
+async function generateAssistantReply() {
   const assistantMessage = {
     id: crypto.randomUUID(),
     role: "assistant",
@@ -350,10 +381,7 @@ async function sendMessage() {
     createdAt: new Date().toISOString()
   };
 
-  captureTodoFromMessage(text);
-  state.messages.push(userMessage, assistantMessage);
-  els.messageInput.value = "";
-  autosizeTextarea(els.messageInput);
+  state.messages.push(assistantMessage);
   setBusy(true);
   renderMessages();
 
@@ -399,6 +427,84 @@ async function sendMessage() {
   }
 }
 
+async function regenerateAssistantMessage(messageId) {
+  if (state.busy) {
+    return;
+  }
+  await systemPromptReady;
+  if (!state.systemPrompt) {
+    els.systemPromptStatus.textContent = state.systemPromptError || "提示词为空";
+    setActiveTab("settings");
+    return;
+  }
+  const previousMessages = conversationBeforeAssistant(messageId);
+  if (!previousMessages) {
+    return;
+  }
+
+  readSettingsForm();
+  saveSettings();
+  applySettings();
+  if (state.editingMessageId) {
+    cancelMessageEdit();
+  }
+  state.messages = previousMessages;
+  saveMessages();
+  await generateAssistantReply();
+}
+
+function applyUserMessageEdit(messageId, content) {
+  const editIndex = state.messages.findIndex((message) => message.id === messageId && message.role === "user");
+  if (editIndex < 0) {
+    return false;
+  }
+  state.messages[editIndex] = {
+    ...state.messages[editIndex],
+    content,
+    editedAt: new Date().toISOString()
+  };
+  state.messages = state.messages.slice(0, editIndex + 1);
+  return true;
+}
+
+function conversationBeforeAssistant(messageId) {
+  const messageIndex = state.messages.findIndex((message) => message.id === messageId && message.role === "assistant");
+  if (messageIndex < 0) {
+    return null;
+  }
+  const previousMessages = state.messages.slice(0, messageIndex);
+  return previousMessages.at(-1)?.role === "user" ? previousMessages : null;
+}
+
+function beginMessageEdit(messageId) {
+  if (state.busy) {
+    return;
+  }
+  const message = state.messages.find((item) => item.id === messageId && item.role === "user");
+  if (!message) {
+    return;
+  }
+  state.editingMessageId = message.id;
+  els.messageInput.value = message.content;
+  els.editNotice.hidden = false;
+  els.sendButton.title = "保存并重新发送";
+  els.sendButton.setAttribute("aria-label", "保存并重新发送");
+  autosizeTextarea(els.messageInput);
+  els.messageInput.focus();
+  els.messageInput.setSelectionRange(els.messageInput.value.length, els.messageInput.value.length);
+}
+
+function cancelMessageEdit({ clearInput = true } = {}) {
+  state.editingMessageId = "";
+  els.editNotice.hidden = true;
+  els.sendButton.title = "发送";
+  els.sendButton.setAttribute("aria-label", "发送");
+  if (clearInput) {
+    els.messageInput.value = "";
+    autosizeTextarea(els.messageInput);
+  }
+}
+
 function buildGatewayHeaders() {
   return {
     ...buildAuthHeaders(),
@@ -424,8 +530,8 @@ function buildRequestMessages() {
   const scheduleContext = buildScheduleInjection();
   const systemMessages = [];
 
-  if (state.settings.systemPrompt) {
-    systemMessages.push({ role: "system", content: state.settings.systemPrompt });
+  if (state.systemPrompt) {
+    systemMessages.push({ role: "system", content: state.systemPrompt });
   }
 
   if (scheduleContext) {
@@ -433,6 +539,33 @@ function buildRequestMessages() {
   }
 
   return [...systemMessages, ...messages];
+}
+
+async function loadSystemPrompt() {
+  try {
+    const response = await fetch("/frontend/system_prompt.md", {
+      headers: { "Accept": "text/markdown, text/plain" },
+      cache: "no-cache"
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const prompt = (await response.text()).trim();
+    if (!prompt) {
+      throw new Error("文件内容为空");
+    }
+    state.systemPrompt = prompt;
+    state.systemPromptError = "";
+    els.systemPromptStatus.textContent = "已注入";
+    els.systemPromptStatus.classList.add("ready");
+    return prompt;
+  } catch (error) {
+    state.systemPrompt = "";
+    state.systemPromptError = error instanceof Error ? error.message : String(error);
+    els.systemPromptStatus.textContent = `加载失败：${state.systemPromptError}`;
+    els.systemPromptStatus.classList.remove("ready");
+    return "";
+  }
 }
 
 async function gatewayFetch(path, options = {}) {
@@ -1940,6 +2073,67 @@ function streamReadErrorMessage(error) {
   ].filter(Boolean).join("\n");
 }
 
+function renderMarkdown(element, source) {
+  const markdown = String(source || "");
+  if (!markdown) {
+    element.textContent = " ";
+    return;
+  }
+  if (!window.marked?.parse || !window.DOMPurify?.sanitize) {
+    element.textContent = markdown;
+    return;
+  }
+  try {
+    const html = window.marked.parse(markdown, {
+      gfm: true,
+      breaks: true
+    });
+    element.innerHTML = window.DOMPurify.sanitize(html, {
+      USE_PROFILES: { html: true },
+      FORBID_TAGS: ["script", "style", "iframe", "object", "embed", "form"],
+      FORBID_ATTR: ["style"]
+    });
+    if (typeof window.renderMathInElement === "function") {
+      window.renderMathInElement(element, {
+        delimiters: [
+          { left: "$$", right: "$$", display: true },
+          { left: "\\[", right: "\\]", display: true },
+          { left: "\\(", right: "\\)", display: false },
+          { left: "$", right: "$", display: false }
+        ],
+        throwOnError: false,
+        strict: "ignore"
+      });
+    }
+    for (const link of element.querySelectorAll("a[href]")) {
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    }
+  } catch {
+    element.textContent = markdown;
+  }
+}
+
+function createMessageActions(message) {
+  const actions = document.createElement("div");
+  actions.className = "message-actions";
+  const button = document.createElement("button");
+  button.type = "button";
+
+  if (message.role === "user") {
+    button.textContent = "编辑";
+    button.title = "编辑并从这条消息重新发送";
+    button.addEventListener("click", () => beginMessageEdit(message.id));
+  } else {
+    button.textContent = "重新生成";
+    button.title = "从这条回复之前重新生成";
+    button.addEventListener("click", () => regenerateAssistantMessage(message.id));
+  }
+  button.disabled = state.busy;
+  actions.append(button);
+  return actions;
+}
+
 function renderMessages(shouldScroll = true) {
   els.messageList.innerHTML = "";
 
@@ -1952,13 +2146,17 @@ function renderMessages(shouldScroll = true) {
     const item = document.createElement("article");
     item.className = `message ${message.role}${message.pending ? " pending" : ""}`;
 
+    const body = document.createElement("div");
+    body.className = `message-body message-${message.role}-body`;
+
     const content = document.createElement("div");
     content.className = "message-content";
-    content.textContent = message.content || " ";
+    if (message.role === "assistant") {
+      renderMarkdown(content, message.content);
+    } else {
+      content.textContent = message.content || " ";
+    }
     if (message.role === "assistant" && message.reasoning) {
-      const body = document.createElement("div");
-      body.className = "message-assistant-body";
-
       const reasoning = document.createElement("details");
       reasoning.className = "message-reasoning";
       reasoning.open = Boolean(message.pending);
@@ -1968,14 +2166,16 @@ function renderMessages(shouldScroll = true) {
 
       const reasoningContent = document.createElement("div");
       reasoningContent.className = "message-reasoning-content";
-      reasoningContent.textContent = message.reasoning;
+      renderMarkdown(reasoningContent, message.reasoning);
 
       reasoning.append(summary, reasoningContent);
-      body.append(reasoning, content);
-      item.append(body);
-    } else {
-      item.append(content);
+      body.append(reasoning);
     }
+    body.append(content);
+    if (!message.pending) {
+      body.append(createMessageActions(message));
+    }
+    item.append(body);
     els.messageList.append(item);
   }
 
@@ -2081,7 +2281,6 @@ function hydrateSettingsForm() {
   els.modelName.value = state.settings.model;
   els.temperature.value = state.settings.temperature;
   els.temperatureValue.value = Number(state.settings.temperature).toFixed(1);
-  els.systemPrompt.value = state.settings.systemPrompt;
   els.backgroundUrl.value = state.settings.backgroundUrl;
   els.backgroundTransparency.value = state.settings.backgroundTransparency;
   els.backgroundTransparencyValue.value = `${Math.round(Number(state.settings.backgroundTransparency) * 100)}%`;
@@ -2096,7 +2295,6 @@ function readSettingsForm() {
     gatewayToken: els.gatewayToken.value.trim(),
     model: els.modelName.value.trim() || defaultSettings.model,
     temperature: Number(els.temperature.value),
-    systemPrompt: els.systemPrompt.value.trim(),
     backgroundUrl: els.backgroundUrl.value.trim(),
     backgroundTransparency: Number(els.backgroundTransparency.value),
     backgroundFit: els.backgroundFit.value === "contain" ? "contain" : "cover",
@@ -2121,6 +2319,7 @@ function applySettings() {
 
 function normalizeSettings(value) {
   const settings = value && typeof value === "object" ? value : {};
+  const { systemPrompt: _legacySystemPrompt, ...persistedSettings } = settings;
   const backgroundTransparency = Number(settings.backgroundTransparency);
   const previousBackgroundOpacity = Number(settings.backgroundOpacity);
   const normalizedTransparency = Number.isFinite(backgroundTransparency)
@@ -2130,7 +2329,7 @@ function normalizeSettings(value) {
       : defaultSettings.backgroundTransparency);
   return {
     ...defaultSettings,
-    ...settings,
+    ...persistedSettings,
     backgroundTransparency: Number.isFinite(normalizedTransparency)
       ? Math.min(1, Math.max(0, normalizedTransparency))
       : defaultSettings.backgroundTransparency,

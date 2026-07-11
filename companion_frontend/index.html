@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Companion 1.0</title>
+  <link rel="stylesheet" href="/frontend/vendor/katex/katex.min.css">
   <link rel="stylesheet" href="/frontend/styles.css">
 </head>
 <body>
@@ -25,14 +26,20 @@
 
           <div id="messageList" class="message-list" aria-live="polite"></div>
 
-          <form id="composer" class="composer">
-            <textarea id="messageInput" rows="1" placeholder="说点什么" autocomplete="off"></textarea>
-            <button id="sendButton" class="send-button" type="submit" title="发送" aria-label="发送">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M5 12h13M13 6l6 6-6 6"/>
-              </svg>
-            </button>
-          </form>
+          <div class="composer-shell">
+            <div id="editNotice" class="edit-notice" hidden>
+              <span>正在编辑历史消息，发送后将从这里重新对话</span>
+              <button id="cancelEditButton" type="button">取消</button>
+            </div>
+            <form id="composer" class="composer">
+              <textarea id="messageInput" rows="1" placeholder="说点什么" autocomplete="off"></textarea>
+              <button id="sendButton" class="send-button" type="submit" title="发送" aria-label="发送">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 12h13M13 6l6 6-6 6"/>
+                </svg>
+              </button>
+            </form>
+          </div>
         </section>
 
         <section id="homeView" class="view" aria-label="今天">
@@ -352,10 +359,14 @@
               </div>
             </label>
 
-            <label class="field">
+            <div class="field prompt-file-field">
               <span>系统提示词</span>
-              <textarea id="systemPrompt" rows="5" spellcheck="false"></textarea>
-            </label>
+              <div class="prompt-file-row">
+                <code>/frontend/system_prompt.md</code>
+                <output id="systemPromptStatus">加载中</output>
+              </div>
+              <small>提示词由部署文件直接注入，不在浏览器中保存副本。</small>
+            </div>
 
             <label class="field">
               <span>背景图片</span>
@@ -457,6 +468,10 @@
     </section>
   </div>
 
+  <script src="/frontend/vendor/marked/marked.umd.js"></script>
+  <script src="/frontend/vendor/dompurify/purify.min.js"></script>
+  <script src="/frontend/vendor/katex/katex.min.js"></script>
+  <script src="/frontend/vendor/katex/auto-render.min.js"></script>
   <script src="/frontend/app.js" type="module"></script>
 </body>
 </html>
