@@ -13,6 +13,10 @@ const defaultBackend = platform.getDefaultApiBaseUrl();
 const defaultSettings = {
   backendUrl: defaultBackend,
   gatewayToken: "",
+  userName: "我",
+  assistantName: "Zeta",
+  userAvatar: "",
+  assistantAvatar: "",
   model: "zeta-gateway",
   temperature: 0.7,
   systemPromptMarkdown: "",
@@ -142,6 +146,24 @@ const els = {
   backendUrl: document.querySelector("#backendUrl"),
   duettoUrl: document.querySelector("#duettoUrl"),
   gatewayToken: document.querySelector("#gatewayToken"),
+  userDisplayName: document.querySelector("#userDisplayName"),
+  assistantDisplayName: document.querySelector("#assistantDisplayName"),
+  userAvatarButton: document.querySelector("#userAvatarButton"),
+  assistantAvatarButton: document.querySelector("#assistantAvatarButton"),
+  chooseUserAvatarButton: document.querySelector("#chooseUserAvatarButton"),
+  chooseAssistantAvatarButton: document.querySelector("#chooseAssistantAvatarButton"),
+  removeUserAvatarButton: document.querySelector("#removeUserAvatarButton"),
+  removeAssistantAvatarButton: document.querySelector("#removeAssistantAvatarButton"),
+  userAvatarFile: document.querySelector("#userAvatarFile"),
+  assistantAvatarFile: document.querySelector("#assistantAvatarFile"),
+  userAvatarPreview: document.querySelector("#userAvatarPreview"),
+  assistantAvatarPreview: document.querySelector("#assistantAvatarPreview"),
+  userAvatarFallback: document.querySelector("#userAvatarFallback"),
+  assistantAvatarFallback: document.querySelector("#assistantAvatarFallback"),
+  userIdentityPreview: document.querySelector("#userIdentityPreview"),
+  assistantIdentityPreview: document.querySelector("#assistantIdentityPreview"),
+  aiModelPreview: document.querySelector("#aiModelPreview"),
+  identityStatus: document.querySelector("#identityStatus"),
   modelName: document.querySelector("#modelName"),
   temperature: document.querySelector("#temperature"),
   temperatureValue: document.querySelector("#temperatureValue"),
@@ -208,6 +230,15 @@ function bindEvents() {
   els.systemPromptFile.addEventListener("change", importSystemPromptFile);
 
   els.resetSystemPromptButton.addEventListener("click", resetSystemPromptFile);
+
+  els.userAvatarButton.addEventListener("click", () => els.userAvatarFile.click());
+  els.assistantAvatarButton.addEventListener("click", () => els.assistantAvatarFile.click());
+  els.chooseUserAvatarButton.addEventListener("click", () => els.userAvatarFile.click());
+  els.chooseAssistantAvatarButton.addEventListener("click", () => els.assistantAvatarFile.click());
+  els.userAvatarFile.addEventListener("change", () => importAvatar("user"));
+  els.assistantAvatarFile.addEventListener("change", () => importAvatar("assistant"));
+  els.removeUserAvatarButton.addEventListener("click", () => clearAvatar("user"));
+  els.removeAssistantAvatarButton.addEventListener("click", () => clearAvatar("assistant"));
 
   els.tabs.forEach((tab) => {
     tab.addEventListener("click", () => setActiveTab(tab.dataset.tab));
@@ -322,6 +353,8 @@ function bindEvents() {
     els.backendUrl,
     els.duettoUrl,
     els.gatewayToken,
+    els.userDisplayName,
+    els.assistantDisplayName,
     els.modelName,
     els.temperature,
     els.backgroundUrl,
@@ -391,6 +424,8 @@ async function generateAssistantReply() {
     role: "assistant",
     content: "",
     reasoning: "",
+    model: state.settings.model,
+    usage: null,
     pending: true,
     createdAt: new Date().toISOString()
   };
@@ -408,6 +443,7 @@ async function generateAssistantReply() {
         messages: buildRequestMessages(),
         temperature: state.settings.temperature,
         include_reasoning: true,
+        stream_options: { include_usage: true },
         stream: true
       })
     });
@@ -421,9 +457,11 @@ async function generateAssistantReply() {
       throw new Error("后端没有返回流式内容。");
     }
 
-    await readOpenAiStream(response.body, ({ content, reasoning }) => {
+    await readOpenAiStream(response.body, ({ content, reasoning, model, usage }) => {
       assistantMessage.content += content;
       assistantMessage.reasoning += reasoning;
+      assistantMessage.model = model || assistantMessage.model;
+      assistantMessage.usage = usage || assistantMessage.usage;
       renderMessages(false);
     });
 
@@ -2104,10 +2142,48 @@ function dispatchOpenAiBlock(block, onDelta) {
       choice.reasoning_content,
       choice.reasoning_details
     );
-    if (content || reasoning) {
-      onDelta({ content, reasoning });
+    const model = typeof parsed.model === "string" ? parsed.model.trim() : "";
+    const usage = normalizeTokenUsage(parsed.usage);
+    if (content || reasoning || model || usage) {
+      onDelta({ content, reasoning, model, usage });
     }
   }
+}
+
+function normalizeTokenUsage(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const inputTokens = tokenCount(value.inputTokens, value.prompt_tokens, value.input_tokens);
+  const outputTokens = tokenCount(value.outputTokens, value.completion_tokens, value.output_tokens);
+  const totalTokens = tokenCount(
+    value.totalTokens,
+    value.total_tokens,
+    inputTokens !== null || outputTokens !== null
+      ? (inputTokens || 0) + (outputTokens || 0)
+      : null
+  );
+  const cachedTokens = tokenCount(
+    value.cachedTokens,
+    value.prompt_tokens_details?.cached_tokens,
+    value.input_tokens_details?.cached_tokens,
+    value.cache_read_input_tokens,
+    value.cached_tokens
+  );
+  if (inputTokens === null && outputTokens === null && totalTokens === null && cachedTokens === null) {
+    return null;
+  }
+  return { inputTokens, outputTokens, totalTokens, cachedTokens };
+}
+
+function tokenCount(...values) {
+  for (const value of values) {
+    const number = Number(value);
+    if (Number.isFinite(number) && number >= 0) {
+      return Math.round(number);
+    }
+  }
+  return null;
 }
 
 function firstReasoningText(...values) {
@@ -2193,39 +2269,162 @@ function renderMarkdown(element, source) {
 function createMessageActions(message) {
   const actions = document.createElement("div");
   actions.className = "message-actions";
+  actions.append(createMessageActionButton("copy", "复制消息", (button) => copyMessage(message, button)));
+  if (message.role === "user") {
+    actions.append(createMessageActionButton("edit", "编辑并重新发送", () => beginMessageEdit(message.id), state.busy));
+  } else {
+    actions.append(createMessageActionButton(
+      "regenerate",
+      "重新生成回答",
+      () => regenerateAssistantMessage(message.id),
+      state.busy
+    ));
+  }
+  return actions;
+}
+
+function createMessageActionButton(kind, label, onClick, disabled = false) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "message-action-button";
-
-  if (message.role === "user") {
-    button.title = "编辑并从这条消息重新发送";
-    button.setAttribute("aria-label", "编辑并重新发送");
-    button.append(createMessageActionIcon("edit"));
-    button.addEventListener("click", () => beginMessageEdit(message.id));
-  } else {
-    button.title = "从这条回复之前重新生成";
-    button.setAttribute("aria-label", "重新生成回答");
-    button.append(createMessageActionIcon("regenerate"));
-    button.addEventListener("click", () => regenerateAssistantMessage(message.id));
-  }
-  button.disabled = state.busy;
-  actions.append(button);
-  return actions;
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.append(createMessageActionIcon(kind));
+  button.addEventListener("click", () => onClick(button));
+  button.disabled = disabled;
+  return button;
 }
 
 function createMessageActionIcon(kind) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("aria-hidden", "true");
-  const paths = kind === "edit"
-    ? ["M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z", "m13.5 6.5 4 4"]
-    : ["M20 11a8 8 0 1 0-2.3 5.7", "M20 4v7h-7"];
+  const iconPaths = {
+    copy: ["M8 8h11v11H8z", "M5 16H4V5h11v1"],
+    check: ["M5 12.5l4 4L19 7"],
+    edit: ["M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z", "m13.5 6.5 4 4"],
+    regenerate: ["M20 11a8 8 0 1 0-2.3 5.7", "M20 4v7h-7"]
+  };
+  const paths = iconPaths[kind] || iconPaths.copy;
   for (const data of paths) {
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
     path.setAttribute("d", data);
     svg.append(path);
   }
   return svg;
+}
+
+async function copyMessage(message, button) {
+  const text = String(message.content || "");
+  if (!text) {
+    return;
+  }
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      copyTextFallback(text);
+    }
+  } catch {
+    try {
+      copyTextFallback(text);
+    } catch {
+      return;
+    }
+  }
+  button.replaceChildren(createMessageActionIcon("check"));
+  button.title = "已复制";
+  button.setAttribute("aria-label", "已复制");
+  window.setTimeout(() => {
+    if (!button.isConnected) {
+      return;
+    }
+    button.replaceChildren(createMessageActionIcon("copy"));
+    button.title = "复制消息";
+    button.setAttribute("aria-label", "复制消息");
+  }, 1600);
+}
+
+function copyTextFallback(text) {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.append(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
+function createMessageAvatar(role) {
+  const isUser = role === "user";
+  const name = isUser ? state.settings.userName : state.settings.assistantName;
+  const avatarUrl = isUser ? state.settings.userAvatar : state.settings.assistantAvatar;
+  const avatar = document.createElement("div");
+  avatar.className = `message-avatar message-avatar-${role}`;
+  avatar.setAttribute("aria-hidden", "true");
+  if (avatarUrl) {
+    const image = document.createElement("img");
+    image.src = avatarUrl;
+    image.alt = "";
+    avatar.append(image);
+  } else {
+    const fallback = document.createElement("span");
+    fallback.textContent = identityInitial(name);
+    avatar.append(fallback);
+  }
+  return avatar;
+}
+
+function createMessageIdentity(message) {
+  const identity = document.createElement("div");
+  identity.className = "message-identity";
+  const name = document.createElement("strong");
+  name.textContent = message.role === "user" ? state.settings.userName : state.settings.assistantName;
+  identity.append(name);
+  if (message.role === "assistant") {
+    const model = document.createElement("span");
+    model.textContent = message.model || state.settings.model;
+    identity.append(model);
+  }
+  return identity;
+}
+
+function createMessageFooter(message) {
+  const footer = document.createElement("div");
+  footer.className = "message-footer";
+  if (message.role === "assistant") {
+    const usageText = formatMessageUsage(message.usage);
+    if (usageText) {
+      const usage = document.createElement("span");
+      usage.className = "message-usage";
+      usage.textContent = usageText;
+      footer.append(usage);
+    }
+  }
+  footer.append(createMessageActions(message));
+  return footer;
+}
+
+function formatMessageUsage(usage) {
+  const normalized = normalizeTokenUsage(usage);
+  if (!normalized) {
+    return "";
+  }
+  const total = normalized.totalTokens ?? (normalized.inputTokens || 0) + (normalized.outputTokens || 0);
+  const cached = normalized.cachedTokens;
+  return `总计 ${formatTokenCount(total)} tokens · ${
+    cached === null ? "缓存未返回" : `缓存 ${formatTokenCount(cached)}`
+  }`;
+}
+
+function formatTokenCount(value) {
+  return new Intl.NumberFormat("zh-CN").format(Number(value) || 0);
+}
+
+function identityInitial(name) {
+  return Array.from(String(name || "?").trim())[0] || "?";
 }
 
 function renderMessages(shouldScroll = true) {
@@ -2242,6 +2441,7 @@ function renderMessages(shouldScroll = true) {
 
     const body = document.createElement("div");
     body.className = `message-body message-${message.role}-body`;
+    body.append(createMessageIdentity(message));
 
     const content = document.createElement("div");
     content.className = "message-content";
@@ -2267,9 +2467,14 @@ function renderMessages(shouldScroll = true) {
     }
     body.append(content);
     if (!message.pending) {
-      body.append(createMessageActions(message));
+      body.append(createMessageFooter(message));
     }
-    item.append(body);
+    const avatar = createMessageAvatar(message.role);
+    if (message.role === "user") {
+      item.append(body, avatar);
+    } else {
+      item.append(avatar, body);
+    }
     els.messageList.append(item);
   }
 
@@ -2372,6 +2577,8 @@ function hydrateSettingsForm() {
   els.backendUrl.value = state.settings.backendUrl;
   els.duettoUrl.value = state.settings.duettoUrl;
   els.gatewayToken.value = state.settings.gatewayToken;
+  els.userDisplayName.value = state.settings.userName;
+  els.assistantDisplayName.value = state.settings.assistantName;
   els.modelName.value = state.settings.model;
   els.temperature.value = state.settings.temperature;
   els.temperatureValue.value = Number(state.settings.temperature).toFixed(1);
@@ -2380,6 +2587,7 @@ function hydrateSettingsForm() {
   els.backgroundTransparencyValue.value = `${Math.round(Number(state.settings.backgroundTransparency) * 100)}%`;
   els.backgroundFit.value = state.settings.backgroundFit;
   els.accentColor.value = state.settings.accentColor;
+  renderIdentitySettings();
 }
 
 function readSettingsForm() {
@@ -2387,6 +2595,10 @@ function readSettingsForm() {
     backendUrl: els.backendUrl.value.trim() || defaultBackend,
     duettoUrl: els.duettoUrl.value.trim(),
     gatewayToken: els.gatewayToken.value.trim(),
+    userName: els.userDisplayName.value.trim() || defaultSettings.userName,
+    assistantName: els.assistantDisplayName.value.trim() || defaultSettings.assistantName,
+    userAvatar: state.settings.userAvatar || "",
+    assistantAvatar: state.settings.assistantAvatar || "",
     model: els.modelName.value.trim() || defaultSettings.model,
     temperature: Number(els.temperature.value),
     systemPromptMarkdown: state.settings.systemPromptMarkdown || "",
@@ -2410,6 +2622,8 @@ function applySettings() {
   } else {
     root.style.setProperty("--bg-image", 'url("/frontend/background.svg")');
   }
+  renderIdentitySettings();
+  renderMessages(false);
   renderHomeState();
 }
 
@@ -2433,6 +2647,111 @@ function normalizeSettings(value) {
   };
 }
 
+async function importAvatar(role) {
+  const isUser = role === "user";
+  const input = isUser ? els.userAvatarFile : els.assistantAvatarFile;
+  const file = input.files?.[0];
+  if (!file) {
+    return;
+  }
+  try {
+    if (!file.type.startsWith("image/")) {
+      throw new Error("请选择图片文件。");
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      throw new Error("头像图片不能超过 8 MB。");
+    }
+    const dataUrl = await prepareAvatarDataUrl(file);
+    if (isUser) {
+      state.settings.userAvatar = dataUrl;
+    } else {
+      state.settings.assistantAvatar = dataUrl;
+    }
+    saveSettings();
+    renderIdentitySettings();
+    renderMessages(false);
+    setIdentityStatus("头像已保存到当前设备。");
+  } catch (error) {
+    setIdentityStatus(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    input.value = "";
+  }
+}
+
+async function prepareAvatarDataUrl(file) {
+  const source = await platform.readFileAsDataUrl(file);
+  const image = await loadAvatarImage(source);
+  const size = Math.min(image.naturalWidth, image.naturalHeight);
+  const sourceX = Math.max(0, (image.naturalWidth - size) / 2);
+  const sourceY = Math.max(0, (image.naturalHeight - size) / 2);
+  const canvas = document.createElement("canvas");
+  canvas.width = 320;
+  canvas.height = 320;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("当前设备无法处理头像图片。");
+  }
+  context.drawImage(image, sourceX, sourceY, size, size, 0, 0, 320, 320);
+  return canvas.toDataURL("image/webp", 0.86);
+}
+
+function loadAvatarImage(source) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("无法解析这张头像图片。"));
+    image.src = source;
+  });
+}
+
+function clearAvatar(role) {
+  if (role === "user") {
+    state.settings.userAvatar = "";
+  } else {
+    state.settings.assistantAvatar = "";
+  }
+  saveSettings();
+  renderIdentitySettings();
+  renderMessages(false);
+  setIdentityStatus("已恢复文字头像。");
+}
+
+function renderIdentitySettings() {
+  const userName = state.settings.userName || defaultSettings.userName;
+  const assistantName = state.settings.assistantName || defaultSettings.assistantName;
+  els.userIdentityPreview.textContent = userName;
+  els.assistantIdentityPreview.textContent = assistantName;
+  els.aiModelPreview.textContent = state.settings.model || defaultSettings.model;
+  updateAvatarPreview(
+    els.userAvatarPreview,
+    els.userAvatarFallback,
+    state.settings.userAvatar,
+    userName
+  );
+  updateAvatarPreview(
+    els.assistantAvatarPreview,
+    els.assistantAvatarFallback,
+    state.settings.assistantAvatar,
+    assistantName
+  );
+}
+
+function updateAvatarPreview(image, fallback, avatarUrl, name) {
+  image.hidden = !avatarUrl;
+  fallback.hidden = Boolean(avatarUrl);
+  if (avatarUrl) {
+    image.src = avatarUrl;
+  } else {
+    image.removeAttribute("src");
+    fallback.textContent = identityInitial(name);
+  }
+}
+
+function setIdentityStatus(message, isError = false) {
+  els.identityStatus.textContent = message;
+  els.identityStatus.classList.toggle("error", isError);
+}
+
 async function refreshHealth() {
   try {
     const response = await platform.request(apiUrl("/health"));
@@ -2450,6 +2769,8 @@ async function refreshHealth() {
       state.settings.model = health.model;
       els.modelName.value = health.model;
       saveSettings();
+      renderIdentitySettings();
+      renderMessages(false);
     }
   } catch {
     els.serverStatus.textContent = "未连接";

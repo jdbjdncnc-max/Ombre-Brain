@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Companion 1.0</title>
   <link rel="stylesheet" href="/frontend/vendor/katex/katex.min.css">
-  <link rel="stylesheet" href="/frontend/styles.css">
+  <link rel="stylesheet" href="/frontend/styles.css?v=20260727">
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -330,6 +330,79 @@
           </div>
 
           <div class="settings-list">
+            <section class="field identity-panel" aria-labelledby="identitySettingsTitle">
+              <div class="identity-panel-heading">
+                <div>
+                  <strong id="identitySettingsTitle">身份与模型</strong>
+                  <small>头像和名称只保存在当前设备。</small>
+                </div>
+                <output id="identityStatus" aria-live="polite"></output>
+              </div>
+
+              <div class="identity-grid">
+                <article class="identity-card">
+                  <div class="identity-card-top">
+                    <button id="userAvatarButton" class="identity-avatar-button" type="button" title="上传用户头像" aria-label="上传用户头像">
+                      <img id="userAvatarPreview" alt="" hidden>
+                      <span id="userAvatarFallback" class="identity-avatar-fallback">我</span>
+                      <span class="identity-avatar-badge" aria-hidden="true">
+                        <svg viewBox="0 0 24 24">
+                          <path d="M4 8h4l1.5-2h5L16 8h4v11H4z"/>
+                          <circle cx="12" cy="13" r="3.2"/>
+                        </svg>
+                      </span>
+                    </button>
+                    <div class="identity-summary">
+                      <span class="identity-role">用户</span>
+                      <strong id="userIdentityPreview">我</strong>
+                    </div>
+                  </div>
+                  <label class="identity-input">
+                    <span>名称</span>
+                    <input id="userDisplayName" type="text" maxlength="32" autocomplete="nickname">
+                  </label>
+                  <div class="identity-avatar-actions">
+                    <button id="chooseUserAvatarButton" class="secondary-button" type="button">上传图片</button>
+                    <button id="removeUserAvatarButton" class="identity-remove-button" type="button">移除</button>
+                  </div>
+                  <input id="userAvatarFile" type="file" accept="image/png,image/jpeg,image/webp,image/avif" hidden>
+                </article>
+
+                <article class="identity-card">
+                  <div class="identity-card-top">
+                    <button id="assistantAvatarButton" class="identity-avatar-button assistant-avatar-button" type="button" title="上传模型头像" aria-label="上传模型头像">
+                      <img id="assistantAvatarPreview" alt="" hidden>
+                      <span id="assistantAvatarFallback" class="identity-avatar-fallback">Z</span>
+                      <span class="identity-avatar-badge" aria-hidden="true">
+                        <svg viewBox="0 0 24 24">
+                          <path d="M4 8h4l1.5-2h5L16 8h4v11H4z"/>
+                          <circle cx="12" cy="13" r="3.2"/>
+                        </svg>
+                      </span>
+                    </button>
+                    <div class="identity-summary">
+                      <span class="identity-role">模型</span>
+                      <strong id="assistantIdentityPreview">Zeta</strong>
+                      <small id="aiModelPreview">zeta-gateway</small>
+                    </div>
+                  </div>
+                  <label class="identity-input">
+                    <span>名称</span>
+                    <input id="assistantDisplayName" type="text" maxlength="32">
+                  </label>
+                  <label class="identity-input">
+                    <span>模型型号</span>
+                    <input id="modelName" type="text" spellcheck="false">
+                  </label>
+                  <div class="identity-avatar-actions">
+                    <button id="chooseAssistantAvatarButton" class="secondary-button" type="button">上传图片</button>
+                    <button id="removeAssistantAvatarButton" class="identity-remove-button" type="button">移除</button>
+                  </div>
+                  <input id="assistantAvatarFile" type="file" accept="image/png,image/jpeg,image/webp,image/avif" hidden>
+                </article>
+              </div>
+            </section>
+
             <label class="field">
               <span>后端地址</span>
               <input id="backendUrl" type="url" inputmode="url">
@@ -344,11 +417,6 @@
             <label class="field">
               <span>网关令牌</span>
               <input id="gatewayToken" type="password" autocomplete="current-password" placeholder="OMBRE_GATEWAY_TOKEN">
-            </label>
-
-            <label class="field">
-              <span>模型</span>
-              <input id="modelName" type="text" spellcheck="false">
             </label>
 
             <label class="field">
@@ -489,6 +557,6 @@
   <script src="/frontend/vendor/dompurify/purify.min.js"></script>
   <script src="/frontend/vendor/katex/katex.min.js"></script>
   <script src="/frontend/vendor/katex/auto-render.min.js"></script>
-  <script src="/frontend/app.js" type="module"></script>
+  <script src="/frontend/app.js?v=20260727" type="module"></script>
 </body>
 </html>
