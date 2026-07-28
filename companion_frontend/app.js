@@ -171,7 +171,6 @@ const els = {
   systemPromptStatus: document.querySelector("#systemPromptStatus"),
   systemPromptFile: document.querySelector("#systemPromptFile"),
   chooseSystemPromptButton: document.querySelector("#chooseSystemPromptButton"),
-  resetSystemPromptButton: document.querySelector("#resetSystemPromptButton"),
   backgroundUrl: document.querySelector("#backgroundUrl"),
   chooseBackgroundButton: document.querySelector("#chooseBackgroundButton"),
   resetBackgroundButton: document.querySelector("#resetBackgroundButton"),
@@ -228,8 +227,6 @@ function bindEvents() {
   });
 
   els.systemPromptFile.addEventListener("change", importSystemPromptFile);
-
-  els.resetSystemPromptButton.addEventListener("click", resetSystemPromptFile);
 
   els.userAvatarButton.addEventListener("click", () => els.userAvatarFile.click());
   els.assistantAvatarButton.addEventListener("click", () => els.assistantAvatarFile.click());
@@ -593,9 +590,9 @@ function buildRequestMessages() {
   return [...systemMessages, ...messages];
 }
 
-async function loadSystemPrompt({ forceBundled = false } = {}) {
+async function loadSystemPrompt() {
   const importedPrompt = String(state.settings.systemPromptMarkdown || "").trim();
-  if (!forceBundled && importedPrompt) {
+  if (importedPrompt) {
     state.systemPrompt = importedPrompt;
     state.systemPromptError = "";
     els.systemPromptFileName.textContent = state.settings.systemPromptFileName || "本地提示词.md";
@@ -603,32 +600,12 @@ async function loadSystemPrompt({ forceBundled = false } = {}) {
     els.systemPromptStatus.classList.add("ready");
     return importedPrompt;
   }
-  try {
-    const response = await fetch("/frontend/system_prompt.md", {
-      headers: { "Accept": "text/markdown, text/plain" },
-      cache: "no-cache"
-    });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    const prompt = (await response.text()).trim();
-    if (!prompt) {
-      throw new Error("文件内容为空");
-    }
-    state.systemPrompt = prompt;
-    state.systemPromptError = "";
-    els.systemPromptFileName.textContent = "/frontend/system_prompt.md";
-    els.systemPromptStatus.textContent = "已注入";
-    els.systemPromptStatus.classList.add("ready");
-    return prompt;
-  } catch (error) {
-    state.systemPrompt = "";
-    state.systemPromptError = error instanceof Error ? error.message : String(error);
-    els.systemPromptFileName.textContent = "/frontend/system_prompt.md";
-    els.systemPromptStatus.textContent = `加载失败：${state.systemPromptError}`;
-    els.systemPromptStatus.classList.remove("ready");
-    return "";
-  }
+  state.systemPrompt = "";
+  state.systemPromptError = "请先在设置中导入 .md 提示词";
+  els.systemPromptFileName.textContent = "尚未选择 Markdown";
+  els.systemPromptStatus.textContent = "未导入";
+  els.systemPromptStatus.classList.remove("ready");
+  return "";
 }
 
 async function importSystemPromptFile() {
@@ -661,13 +638,6 @@ async function importSystemPromptFile() {
   } finally {
     els.systemPromptFile.value = "";
   }
-}
-
-async function resetSystemPromptFile() {
-  state.settings.systemPromptMarkdown = "";
-  state.settings.systemPromptFileName = "";
-  saveSettings();
-  await loadSystemPrompt({ forceBundled: true });
 }
 
 function readLocalTextFile(file) {
