@@ -43,12 +43,17 @@ OMBRE_GATEWAY_TOKEN=long-random-token
 OMBRE_UPSTREAM_BASE_URL=https://openrouter.ai/api/v1
 OMBRE_UPSTREAM_API_KEY=your-openrouter-key
 OMBRE_UPSTREAM_MODEL=openrouter-model-slug
+OMBRE_SUMMARY_BASE_URL=https://openrouter.ai/api/v1
+OMBRE_SUMMARY_API_KEY=your-openrouter-key
+OMBRE_SUMMARY_MODEL=summary-model-slug
 OMBRE_OPENROUTER_SITE_URL=https://your-zeabur-domain
 OMBRE_OPENROUTER_APP_NAME=Zeta Memory Gateway
 OMBRE_PUBLIC_MODEL=zeta-gateway
 OMBRE_BUCKETS_DIR=/app/buckets
 OMBRE_DASHBOARD_PASSWORD=your-dashboard-password
 ```
+
+`OMBRE_SUMMARY_BASE_URL`、`OMBRE_SUMMARY_API_KEY` 和 `OMBRE_SUMMARY_MODEL` 均可省略；省略时分别复用上游对话模型的地址、密钥和模型。前端设置页可覆盖总结模型 ID。总结提示词不会从环境变量读取，只保存在 Companion 当前设备的前端存储中。
 
 Use these for memory quality. `OMBRE_API_KEY` still works as a legacy shared key, but the split variables are clearer:
 

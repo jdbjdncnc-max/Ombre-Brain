@@ -59,6 +59,17 @@ OMBRE_UPSTREAM_MODEL=openrouter-model-slug
 OMBRE_BUCKETS_DIR=/app/buckets
 ```
 
+Optional separate conversation summary model:
+
+```text
+OMBRE_SUMMARY_BASE_URL=https://openrouter.ai/api/v1
+OMBRE_SUMMARY_API_KEY=your-summary-api-key
+OMBRE_SUMMARY_MODEL=summary-model-slug
+OMBRE_SUMMARY_TIMEOUT=60
+```
+
+If these are omitted, the summary endpoint reuses the upstream base URL, API key, and model. The Companion settings page may override only the model ID. The summary prompt is deliberately not an environment variable: it remains editable in the frontend and is stored only on the current device.
+
 Optional OpenRouter app attribution headers:
 
 ```text
@@ -174,6 +185,7 @@ OMBRE_REFLECTION_DISABLED=true
 GET  /health
 GET  /v1/models
 POST /v1/chat/completions
+POST /api/conversation-summary
 ```
 
 The gateway currently supports OpenAI-compatible chat completions. It supports normal and streaming responses.

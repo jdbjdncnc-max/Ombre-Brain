@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Companion 1.0</title>
   <link rel="stylesheet" href="/frontend/vendor/katex/katex.min.css">
-  <link rel="stylesheet" href="/frontend/styles.css?v=20260727">
+  <link rel="stylesheet" href="/frontend/styles.css?v=20260730">
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -446,6 +446,34 @@
               <small>从本地选择 .md 或 .markdown 文件；提示词内容保存在当前设备。以后修改文件后重新导入即可，不需要重新部署前端。</small>
             </div>
 
+            <section class="field summary-settings" aria-labelledby="summarySettingsTitle">
+              <div class="summary-settings-heading">
+                <div>
+                  <strong id="summarySettingsTitle">对话总结</strong>
+                  <small>独立模型会生成累计摘要，后续对话只携带最新摘要和摘要之后的原始消息。</small>
+                </div>
+                <output id="summaryStatus" aria-live="polite"></output>
+              </div>
+
+              <label>
+                <span>总结模型 ID</span>
+                <input id="summaryModel" type="text" spellcheck="false" placeholder="留空使用 OMBRE_SUMMARY_MODEL">
+              </label>
+
+              <label>
+                <span>每多少次用户发言总结</span>
+                <input id="summaryInterval" type="number" min="1" max="200" step="1" inputmode="numeric">
+                <small>在 AI 回复结束后检查；默认 16 次，和 Operit 一样按用户发言次数计算。</small>
+              </label>
+
+              <label>
+                <span>总结提示词</span>
+                <textarea id="summaryPrompt" rows="14" spellcheck="true"></textarea>
+              </label>
+
+              <small>提示词只保存在当前设备，可以随时直接修改；API key 只由 Zeabur 环境变量读取，不会下发到前端。</small>
+            </section>
+
             <label class="field">
               <span>背景图片</span>
               <input id="backgroundUrl" type="url" inputmode="url" placeholder="https://...">
@@ -550,6 +578,6 @@
   <script src="/frontend/vendor/dompurify/purify.min.js"></script>
   <script src="/frontend/vendor/katex/katex.min.js"></script>
   <script src="/frontend/vendor/katex/auto-render.min.js"></script>
-  <script src="/frontend/app.js?v=20260727" type="module"></script>
+  <script src="/frontend/app.js?v=20260730" type="module"></script>
 </body>
 </html>

@@ -723,6 +723,72 @@ svg {
   line-height: 1.55;
 }
 
+.conversation-summary {
+  width: 100%;
+  padding: 5px 0;
+}
+
+.conversation-summary details {
+  width: 100%;
+}
+
+.conversation-summary summary {
+  display: grid;
+  grid-template-columns: minmax(18px, 1fr) auto minmax(18px, 1fr);
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: color-mix(in srgb, var(--accent) 72%, #34413f);
+  font-size: 11px;
+  font-weight: 700;
+  list-style: none;
+  user-select: none;
+}
+
+.conversation-summary summary::-webkit-details-marker {
+  display: none;
+}
+
+.conversation-summary summary::before,
+.conversation-summary summary::after {
+  height: 1px;
+  content: "";
+  background: color-mix(in srgb, var(--accent) 38%, transparent);
+}
+
+.conversation-summary summary span {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, rgba(255, 255, 255, 0.76));
+}
+
+.conversation-summary.pending summary {
+  cursor: default;
+  opacity: 0.76;
+}
+
+.conversation-summary-content {
+  max-height: 320px;
+  overflow: auto;
+  margin: 8px 14px 2px;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  border-radius: 10px;
+  color: rgba(17, 28, 27, 0.74);
+  background: rgba(255, 255, 255, 0.54);
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.conversation-summary-content > :first-child {
+  margin-top: 0;
+}
+
+.conversation-summary-content > :last-child {
+  margin-bottom: 0;
+}
+
 .message-actions {
   display: flex;
   gap: 6px;
@@ -881,6 +947,52 @@ svg {
 
 .identity-panel {
   gap: 12px;
+}
+
+.summary-settings {
+  gap: 12px;
+}
+
+.summary-settings-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.summary-settings-heading > div {
+  display: grid;
+  gap: 4px;
+}
+
+.summary-settings-heading strong {
+  color: rgba(17, 28, 27, 0.88);
+  font-size: 15px;
+}
+
+.summary-settings-heading small,
+.summary-settings label small {
+  color: rgba(23, 33, 31, 0.54);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.summary-settings label {
+  display: grid;
+  gap: 7px;
+}
+
+#summaryStatus {
+  max-width: 42%;
+  color: color-mix(in srgb, var(--accent) 76%, #31514d);
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: right;
+}
+
+#summaryStatus.error {
+  color: #a44343;
 }
 
 .identity-panel-heading {
