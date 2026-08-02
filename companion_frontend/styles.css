@@ -723,6 +723,11 @@ svg {
   line-height: 1.55;
 }
 
+.message-reasoning-content.reasoning-presentation-status {
+  color: color-mix(in srgb, var(--accent) 68%, rgba(17, 28, 27, 0.68));
+  font-style: italic;
+}
+
 .conversation-summary {
   width: 100%;
   padding: 5px 0;
@@ -983,7 +988,8 @@ svg {
   gap: 7px;
 }
 
-#summaryStatus {
+#summaryStatus,
+#reasoningPresentationStatus {
   max-width: 42%;
   color: color-mix(in srgb, var(--accent) 76%, #31514d);
   font-size: 10px;
@@ -991,7 +997,13 @@ svg {
   text-align: right;
 }
 
-#summaryStatus.error {
+#reasoningPresentationStatus {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+#summaryStatus.error,
+#reasoningPresentationStatus.error {
   color: #a44343;
 }
 

@@ -79,9 +79,18 @@ class ConversationSummaryGatewayTests(unittest.IsolatedAsyncioTestCase):
         response = await gateway.conversation_summary(request)
 
         self.assertEqual(response.status_code, 200)
+        response_body = json.loads(response.body)
+        self.assertEqual(response_body["model"], "summary-provider-model")
         self.assertEqual(
-            json.loads(response.body),
-            {"summary": "累计摘要内容", "model": "summary-provider-model"},
+            response_body["summary"],
+            (
+                "<<<OMBRE_CONVERSATION_SUMMARY>>>\n"
+                "累计摘要内容\n\n"
+                "【本轮对话原文】\n"
+                "—— 她 ——\n新问题\n\n"
+                "—— 我 ——\n新回答\n"
+                "<<<END_OMBRE_CONVERSATION_SUMMARY>>>"
+            ),
         )
         call = gateway.http.post.await_args
         self.assertEqual(call.kwargs["headers"]["Authorization"], "Bearer summary-secret")
@@ -94,6 +103,7 @@ class ConversationSummaryGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             summary_input,
             {
+                "user_reference": "她",
                 "previous_summary": "旧摘要",
                 "new_messages": [
                     {"role": "user", "content": "新问题"},
@@ -101,6 +111,38 @@ class ConversationSummaryGatewayTests(unittest.IsolatedAsyncioTestCase):
                 ],
             },
         )
+
+    async def test_appends_exact_current_transcript_with_configured_name(self):
+        gateway = _gateway({
+            "choices": [{
+                "message": {
+                    "content": (
+                        "<<<OMBRE_CONVERSATION_SUMMARY>>>\n"
+                        "【当前话题】\n温暖的概要\n\n"
+                        "【本轮对话原文】\n模型不应负责这里\n"
+                        "<<<END_OMBRE_CONVERSATION_SUMMARY>>>"
+                    )
+                }
+            }]
+        })
+        request = _request(
+            {
+                "prompt": "总结",
+                "user_reference": "小舟",
+                "messages": [
+                    {"role": "user", "content": "第一行\n第二行"},
+                    {"role": "assistant", "content": "好呀。"},
+                ],
+            }
+        )
+
+        response = await gateway.conversation_summary(request)
+
+        summary = json.loads(response.body)["summary"]
+        self.assertIn("【当前话题】\n温暖的概要", summary)
+        self.assertIn("—— 小舟 ——\n第一行\n第二行", summary)
+        self.assertIn("—— 我 ——\n好呀。", summary)
+        self.assertNotIn("模型不应负责这里", summary)
 
     async def test_allows_frontend_model_override(self):
         gateway = _gateway()

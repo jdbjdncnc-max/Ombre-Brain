@@ -68,7 +68,9 @@ OMBRE_SUMMARY_MODEL=summary-model-slug
 OMBRE_SUMMARY_TIMEOUT=60
 ```
 
-If these are omitted, the summary endpoint reuses the upstream base URL, API key, and model. The Companion settings page may override only the model ID. The summary prompt is deliberately not an environment variable: it remains editable in the frontend and is stored only on the current device.
+If these are omitted, the summary endpoint reuses the upstream base URL, API key, and model. The Companion settings page may override only the model ID. The summary prompt is deliberately not an environment variable: it remains editable in the frontend and is stored only on the current device. The returned cumulative summary is wrapped in `<<<OMBRE_CONVERSATION_SUMMARY>>>` markers, and the gateway deterministically appends the exact new user/assistant transcript at the end.
+
+Visible reasoning presentation does not use `OMBRE_SUMMARY_*` and has no separate credentials. `/api/reasoning-presentation` always reuses `OMBRE_UPSTREAM_BASE_URL`, `OMBRE_UPSTREAM_API_KEY`, and `OMBRE_UPSTREAM_MODEL`, with the full frontend system prompt and the locally editable presentation prompt.
 
 Optional OpenRouter app attribution headers:
 
@@ -186,6 +188,7 @@ GET  /health
 GET  /v1/models
 POST /v1/chat/completions
 POST /api/conversation-summary
+POST /api/reasoning-presentation
 ```
 
 The gateway currently supports OpenAI-compatible chat completions. It supports normal and streaming responses.

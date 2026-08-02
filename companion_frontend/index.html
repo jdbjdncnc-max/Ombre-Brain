@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Companion 1.0</title>
   <link rel="stylesheet" href="/frontend/vendor/katex/katex.min.css">
-  <link rel="stylesheet" href="/frontend/styles.css?v=20260730">
+  <link rel="stylesheet" href="/frontend/styles.css?v=20260803">
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -450,7 +450,7 @@
               <div class="summary-settings-heading">
                 <div>
                   <strong id="summarySettingsTitle">对话总结</strong>
-                  <small>独立模型会生成累计摘要，后续对话只携带最新摘要和摘要之后的原始消息。</small>
+                  <small>独立模型会生成带明确标识的累计摘要，保留当前话题、未完话题、历程概要与本轮原文。</small>
                 </div>
                 <output id="summaryStatus" aria-live="polite"></output>
               </div>
@@ -461,9 +461,9 @@
               </label>
 
               <label>
-                <span>每多少次用户发言总结</span>
+                <span>每多少次你的发言总结</span>
                 <input id="summaryInterval" type="number" min="1" max="200" step="1" inputmode="numeric">
-                <small>在 AI 回复结束后检查；默认 16 次，和 Operit 一样按用户发言次数计算。</small>
+                <small>在回复结束后检查；默认 16 次，和 Operit 一样按你的发言次数计算。</small>
               </label>
 
               <label>
@@ -472,6 +472,23 @@
               </label>
 
               <small>提示词只保存在当前设备，可以随时直接修改；API key 只由 Zeabur 环境变量读取，不会下发到前端。</small>
+            </section>
+
+            <section class="field summary-settings reasoning-presentation-settings" aria-labelledby="reasoningPresentationTitle">
+              <div class="summary-settings-heading">
+                <div>
+                  <strong id="reasoningPresentationTitle">思考内容覆写</strong>
+                  <small>使用当前对话模型、完整系统提示词和相关对话，把可见思考整理成直接对你说的话。</small>
+                </div>
+                <output id="reasoningPresentationStatus" aria-live="polite"></output>
+              </div>
+
+              <label>
+                <span>思考覆写提示词</span>
+                <textarea id="reasoningPresentationPrompt" rows="20" spellcheck="true"></textarea>
+              </label>
+
+              <small>不需要新的模型或 API key；始终复用当前对话模型的 OMBRE_UPSTREAM_* 配置。失败时会显示供应商返回的原始思考。</small>
             </section>
 
             <label class="field">
@@ -578,6 +595,6 @@
   <script src="/frontend/vendor/dompurify/purify.min.js"></script>
   <script src="/frontend/vendor/katex/katex.min.js"></script>
   <script src="/frontend/vendor/katex/auto-render.min.js"></script>
-  <script src="/frontend/app.js?v=20260730" type="module"></script>
+  <script src="/frontend/app.js?v=20260803" type="module"></script>
 </body>
 </html>

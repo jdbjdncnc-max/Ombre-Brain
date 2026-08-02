@@ -60,6 +60,7 @@ def _startup_error_app(error: str) -> Starlette:
         Route("/v1/models", unavailable, methods=["GET"]),
         Route("/v1/chat/completions", unavailable, methods=["POST"]),
         Route("/api/conversation-summary", unavailable, methods=["POST"]),
+        Route("/api/reasoning-presentation", unavailable, methods=["POST"]),
     ])
     app.add_middleware(
         CORSMiddleware,
