@@ -148,10 +148,12 @@ const state = {
 platform.storage.setString(storageKeys.sessionId, state.sessionId);
 
 const els = {
+  phoneShell: document.querySelector("#phoneShell"),
   clock: document.querySelector("#clock"),
   serverStatus: document.querySelector("#serverStatus"),
   chatView: document.querySelector("#chatView"),
   homeView: document.querySelector("#homeView"),
+  musicView: document.querySelector("#musicView"),
   toolsView: document.querySelector("#toolsView"),
   memoryView: document.querySelector("#memoryView"),
   scheduleView: document.querySelector("#scheduleView"),
@@ -204,6 +206,11 @@ const els = {
   homeFeatureCards: [...document.querySelectorAll("[data-home-feature]")],
   duettoCard: document.querySelector("#duettoCard"),
   duettoCardSubtitle: document.querySelector("#duettoCardSubtitle"),
+  duettoFrame: document.querySelector("#duettoFrame"),
+  duettoFrameLoading: document.querySelector("#duettoFrameLoading"),
+  duettoFrameStatus: document.querySelector("#duettoFrameStatus"),
+  musicBackButton: document.querySelector("#musicBackButton"),
+  reloadDuettoButton: document.querySelector("#reloadDuettoButton"),
   homeNotice: document.querySelector("#homeNotice"),
   toolPageButtons: [...document.querySelectorAll("[data-tool-page]")],
   toolPlaceholderButtons: [...document.querySelectorAll("[data-tool-placeholder]")],
@@ -265,6 +272,7 @@ hydrateSettingsForm();
 saveSettings();
 applySettings();
 renderMessages();
+restoreNavigationState();
 initSchedule();
 renderSchedule();
 updateClock();
@@ -316,6 +324,12 @@ function bindEvents() {
   els.homeFeatureCards.forEach((card) => {
     card.addEventListener("click", () => handleHomeFeature(card.dataset.homeFeature));
   });
+
+  els.musicBackButton.addEventListener("click", closeDuettoView);
+  els.reloadDuettoButton.addEventListener("click", () => openDuettoView({ forceReload: true }));
+  els.duettoFrame.addEventListener("load", handleDuettoFrameLoad);
+  window.addEventListener("message", handleDuettoMessage);
+  window.addEventListener("popstate", handleNavigationPopState);
 
   els.toolPageButtons.forEach((button) => {
     button.addEventListener("click", () => openToolsPage(button.dataset.toolPage));
@@ -2893,8 +2907,7 @@ function handleHomeFeature(feature) {
       els.duettoUrl.focus();
       return;
     }
-    showHomeNotice("正在打开 Duetto…");
-    platform.openExternalUrl(url);
+    openDuettoView();
     return;
   }
 
@@ -2904,6 +2917,95 @@ function handleHomeFeature(feature) {
     zeta: "Zeta 的今日状态会在后续对话中接入。"
   };
   showHomeNotice(messages[feature] || "这项功能会在后续对话中接入。");
+}
+
+function openDuettoView({ forceReload = false } = {}) {
+  const url = buildDuettoEmbedUrl();
+  if (!url) {
+    setActiveTab("settings");
+    els.duettoUrl.focus();
+    return;
+  }
+  if (history.state?.companionView !== "music") {
+    history.pushState({ ...(history.state || {}), companionView: "music" }, "", "#music");
+  }
+  setActiveTab("music");
+  els.duettoFrameLoading.hidden = false;
+  setDuettoFrameStatus("载入中");
+  if (forceReload || els.duettoFrame.dataset.embedUrl !== url) {
+    els.duettoFrame.dataset.embedUrl = url;
+    els.duettoFrame.src = forceReload ? cacheBustedUrl(url) : url;
+  } else {
+    syncDuettoFrameTheme();
+  }
+}
+
+function closeDuettoView() {
+  if (history.state?.companionView === "music") {
+    history.back();
+    return;
+  }
+  setActiveTab("home");
+}
+
+function handleNavigationPopState() {
+  if (state.activeTab === "music") {
+    setActiveTab("home");
+  }
+}
+
+function restoreNavigationState() {
+  if (history.state?.companionView === "music" && normalizeDuettoUrl(state.settings.duettoUrl)) {
+    setTimeout(openDuettoView, 0);
+  }
+}
+
+function buildDuettoEmbedUrl() {
+  const normalized = normalizeDuettoUrl(state.settings.duettoUrl);
+  if (!normalized) {
+    return "";
+  }
+  const url = new URL(normalized);
+  url.searchParams.set("embed", "ombre");
+  url.searchParams.set("accent", state.settings.accentColor || defaultSettings.accentColor);
+  return url.toString();
+}
+
+function cacheBustedUrl(value) {
+  const url = new URL(value);
+  url.searchParams.set("ombre_reload", String(Date.now()));
+  return url.toString();
+}
+
+function handleDuettoFrameLoad() {
+  syncDuettoFrameTheme();
+}
+
+function handleDuettoMessage(event) {
+  if (event.source !== els.duettoFrame.contentWindow || event.data?.type !== "duetto:ready") {
+    return;
+  }
+  els.duettoFrameLoading.hidden = true;
+  setDuettoFrameStatus("已载入");
+  syncDuettoFrameTheme();
+}
+
+function setDuettoFrameStatus(label, offline = false) {
+  els.duettoFrameStatus.textContent = label;
+  els.duettoFrameStatus.classList.toggle("offline", offline);
+}
+
+function syncDuettoFrameTheme() {
+  if (!els.duettoFrame.contentWindow || !els.duettoFrame.dataset.embedUrl) {
+    return;
+  }
+  try {
+    const targetOrigin = new URL(els.duettoFrame.dataset.embedUrl).origin;
+    els.duettoFrame.contentWindow.postMessage({
+      type: "ombre:theme",
+      accent: state.settings.accentColor || defaultSettings.accentColor
+    }, targetOrigin);
+  } catch {}
 }
 
 function openToolsPage(section) {
@@ -2924,7 +3026,7 @@ function renderHomeState() {
   const configured = Boolean(normalizeDuettoUrl(state.settings.duettoUrl));
   els.duettoCard.classList.toggle("feature-ready", configured);
   els.duettoCardSubtitle.textContent = configured
-    ? "继续播放 · 打开 Duetto"
+    ? "继续播放 · 应用内打开"
     : "继续播放 · 尚未连接 Duetto";
 }
 
@@ -2947,11 +3049,13 @@ function setActiveTab(tab) {
   state.activeTab = tab;
   els.chatView.classList.toggle("view-active", tab === "chat");
   els.homeView.classList.toggle("view-active", tab === "home");
+  els.musicView.classList.toggle("view-active", tab === "music");
   els.toolsView.classList.toggle("view-active", tab === "tools");
   els.memoryView.classList.toggle("view-active", tab === "memory");
   els.scheduleView.classList.toggle("view-active", tab === "schedule");
   els.settingsView.classList.toggle("view-active", tab === "settings");
-  const navigationTab = tab === "tools" ? "home" : tab;
+  els.phoneShell.classList.toggle("music-mode", tab === "music");
+  const navigationTab = tab === "tools" || tab === "music" ? "home" : tab;
   els.tabs.forEach((button) => {
     button.classList.toggle("tab-active", button.dataset.tab === navigationTab);
   });
@@ -3042,6 +3146,7 @@ function applySettings() {
   renderIdentitySettings();
   renderMessages(false);
   renderHomeState();
+  syncDuettoFrameTheme();
 }
 
 function normalizeSettings(value) {

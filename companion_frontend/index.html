@@ -5,11 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Companion 1.0</title>
   <link rel="stylesheet" href="/frontend/vendor/katex/katex.min.css">
-  <link rel="stylesheet" href="/frontend/styles.css?v=20260803">
+  <link rel="stylesheet" href="/frontend/styles.css?v=20260804">
 </head>
 <body>
   <div id="app" class="app-shell">
-    <section class="phone-shell" aria-label="Companion app">
+    <section id="phoneShell" class="phone-shell" aria-label="Companion app">
       <header class="top-bar">
         <span id="clock" class="clock">09:41</span>
         <span id="serverStatus" class="server-status">连接中</span>
@@ -122,6 +122,36 @@
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h16v11H4zM8 8V5h8v3M4 12h16M10 12v2h4v-2"/></svg>
               </button>
             </div>
+          </div>
+        </section>
+
+        <section id="musicView" class="view" aria-label="一起听歌">
+          <div class="music-header">
+            <button id="musicBackButton" class="icon-button" type="button" title="返回今天" aria-label="返回今天">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+            </button>
+            <div class="music-header-copy">
+              <p class="eyebrow">Duetto</p>
+              <h1>一起听歌</h1>
+            </div>
+            <div class="music-header-actions">
+              <output id="duettoFrameStatus" class="music-status">准备载入</output>
+              <button id="reloadDuettoButton" class="icon-button" type="button" title="重新载入" aria-label="重新载入 Duetto">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v6h-6"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="duetto-frame-shell">
+            <div id="duettoFrameLoading" class="duetto-frame-loading" aria-live="polite">
+              <span class="duetto-loading-dot" aria-hidden="true"></span>
+              <span>正在连接 Duetto…</span>
+            </div>
+            <iframe
+              id="duettoFrame"
+              title="Duetto 一起听歌"
+              allow="autoplay; clipboard-write; encrypted-media; picture-in-picture"
+              referrerpolicy="strict-origin-when-cross-origin"
+            ></iframe>
           </div>
         </section>
 
@@ -411,7 +441,7 @@
             <label class="field">
               <span>Duetto 地址</span>
               <input id="duettoUrl" type="url" inputmode="url" placeholder="https://music.example.com/pkg/index.html">
-              <small>部署 Duetto 后填完整网页地址，“一起听歌”卡片会从这里打开。</small>
+              <small>部署 Duetto 后填完整网页地址；“一起听歌”会在 Ombre 应用内打开，不再跳转外部浏览器。</small>
             </label>
 
             <label class="field">
@@ -595,6 +625,6 @@
   <script src="/frontend/vendor/dompurify/purify.min.js"></script>
   <script src="/frontend/vendor/katex/katex.min.js"></script>
   <script src="/frontend/vendor/katex/auto-render.min.js"></script>
-  <script src="/frontend/app.js?v=20260803" type="module"></script>
+  <script src="/frontend/app.js?v=20260804" type="module"></script>
 </body>
 </html>
