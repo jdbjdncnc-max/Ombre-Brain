@@ -542,7 +542,6 @@ class ZetaOpenAIGateway:
                 },
                 status_code=502,
             )
-        summary = self._summary_with_original_transcript(summary, messages, user_reference)
         try:
             response_body = response.json()
         except ValueError:
@@ -1683,44 +1682,6 @@ Return strict JSON with this shape:
         if any(marker in lowered for marker in metadata_only_markers):
             return ""
         return cleaned
-
-    def _summary_with_original_transcript(
-        self,
-        summary: str,
-        messages: list[dict[str, str]],
-        user_reference: str,
-    ) -> str:
-        start_marker = "<<<OMBRE_CONVERSATION_SUMMARY>>>"
-        end_marker = "<<<END_OMBRE_CONVERSATION_SUMMARY>>>"
-        core = str(summary or "").strip()
-        core = re.sub(
-            rf"^\s*{re.escape(start_marker)}\s*",
-            "",
-            core,
-            count=1,
-            flags=re.IGNORECASE,
-        )
-        core = re.split(r"\n?【本轮对话原文】", core, maxsplit=1)[0].strip()
-        core = re.sub(
-            rf"\s*{re.escape(end_marker)}\s*$",
-            "",
-            core,
-            count=1,
-            flags=re.IGNORECASE,
-        ).strip()
-
-        transcript_parts: list[str] = []
-        for message in messages:
-            speaker = user_reference if message.get("role") == "user" else "我"
-            transcript_parts.append(f"—— {speaker} ——\n{message.get('content', '')}")
-        transcript = "\n\n".join(transcript_parts)
-        return (
-            f"{start_marker}\n"
-            f"{core}\n\n"
-            f"【本轮对话原文】\n"
-            f"{transcript}\n"
-            f"{end_marker}"
-        )
 
     def _message_content_to_text(self, content: Any) -> str:
         if isinstance(content, str):
