@@ -1,0 +1,40 @@
+import assert from "node:assert/strict";
+import { readFile, stat } from "node:fs/promises";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+const mobileRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const outputDir = path.join(mobileRoot, "www");
+
+test("prepared frontend contains the web app and platform adapters", async () => {
+  const index = await readFile(path.join(outputDir, "index.html"), "utf8");
+  assert.match(index, /<head(?:\s|>)/i);
+  assert.equal((await stat(path.join(outputDir, "app.js"))).isFile(), true);
+  assert.equal((await stat(path.join(outputDir, "platform.js"))).isFile(), true);
+  assert.equal((await stat(path.join(outputDir, "platform.browser.js"))).isFile(), true);
+  assert.equal((await stat(path.join(outputDir, "platform.android.js"))).isFile(), true);
+});
+
+test("fallback bundle publishes a versioned native bridge contract", async () => {
+  const metadata = JSON.parse(
+    await readFile(path.join(outputDir, "mobile-build.json"), "utf8")
+  );
+
+  assert.deepEqual(metadata, {
+    schema: "ombre.frontend-bundle.v1",
+    source: "companion_frontend",
+    purpose: "bundled-offline-fallback",
+    minimumNativeBridgeVersion: 1
+  });
+});
+
+test("production config uses bundled assets instead of a remote server URL", async () => {
+  const config = JSON.parse(
+    await readFile(path.join(mobileRoot, "capacitor.config.json"), "utf8")
+  );
+
+  assert.equal(config.webDir, "www");
+  assert.equal(config.appId, "io.github.jdbjdncncmax.ombrebrain");
+  assert.equal(config.server?.url, undefined);
+});

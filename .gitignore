@@ -34,3 +34,15 @@ diary_style_probe_toolpkg/
 probe_toolpkg/
 toolpkg/
 _tmp_*/
+
+# Personal Android/Capacitor shell generated files and local secrets
+mobile/node_modules/
+mobile/www/
+mobile/android/.gradle/
+mobile/android/local.properties
+mobile/android/app/build/
+mobile/android/build/
+mobile/*.jks
+mobile/*.keystore
+mobile/keystore.properties
+mobile/npm-debug.log*
