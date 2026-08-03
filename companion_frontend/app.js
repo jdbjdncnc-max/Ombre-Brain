@@ -83,8 +83,6 @@ const defaultSettings = {
   assistantAvatar: "",
   model: "zeta-gateway",
   temperature: 0.7,
-  systemPromptMarkdown: "",
-  systemPromptFileName: "",
   summaryModel: "",
   summaryInterval: 16,
   summaryPrompt: DEFAULT_SUMMARY_PROMPT,
@@ -141,7 +139,7 @@ const state = {
   scheduleSyncStatus: "本地日程",
   busy: false,
   editingMessageId: "",
-  systemPrompt: "",
+  systemPromptConfigured: false,
   systemPromptError: "",
   sessionId: platform.storage.getString(storageKeys.sessionId) || crypto.randomUUID(),
   loadedMemoryPanels: new Set()
@@ -378,6 +376,7 @@ function bindEvents() {
     saveSettings();
     applySettings();
     refreshHealth();
+    loadSystemPrompt();
     state.loadedMemoryPanels.clear();
     loadSchedule().catch(() => {
       setScheduleSyncStatus("本地日程", "offline");
@@ -444,6 +443,10 @@ function bindEvents() {
     });
   }
 
+  for (const input of [els.backendUrl, els.gatewayToken]) {
+    input.addEventListener("change", loadSystemPrompt);
+  }
+
   els.temperature.addEventListener("input", () => {
     els.temperatureValue.value = Number(els.temperature.value).toFixed(1);
   });
@@ -462,7 +465,7 @@ async function sendMessage() {
   }
 
   await systemPromptReady;
-  if (!state.systemPrompt) {
+  if (!state.systemPromptConfigured) {
     els.systemPromptStatus.textContent = state.systemPromptError || "提示词为空";
     setActiveTab("settings");
     return;
@@ -589,7 +592,7 @@ async function regenerateAssistantMessage(messageId) {
     return;
   }
   await systemPromptReady;
-  if (!state.systemPrompt) {
+  if (!state.systemPromptConfigured) {
     els.systemPromptStatus.textContent = state.systemPromptError || "提示词为空";
     setActiveTab("settings");
     return;
@@ -691,10 +694,6 @@ function buildRequestMessages() {
   const scheduleContext = buildScheduleInjection();
   const systemMessages = [];
 
-  if (state.systemPrompt) {
-    systemMessages.push({ role: "system", content: state.systemPrompt });
-  }
-
   if (latestSummary?.content) {
     systemMessages.push({
       role: "system",
@@ -706,7 +705,6 @@ function buildRequestMessages() {
       ].join("\n")
     });
   }
-
   if (scheduleContext) {
     systemMessages.push({ role: "system", content: scheduleContext });
   }
@@ -770,10 +768,10 @@ async function maybePresentReasoning(message) {
     message.reasoningPresentationPending = false;
     return;
   }
-  if (!state.systemPrompt || !presentationPrompt) {
+  if (!state.systemPromptConfigured || !presentationPrompt) {
     message.reasoning = sourceReasoning;
     message.reasoningPresentationPending = false;
-    setReasoningPresentationStatus("覆写提示词不可用，已保留原始思考", true);
+    setReasoningPresentationStatus("网关系统提示词或覆写提示词不可用，已保留原始思考", true);
     saveMessages();
     renderMessages(false);
     return;
@@ -789,7 +787,6 @@ async function maybePresentReasoning(message) {
       method: "POST",
       headers: buildGatewayHeaders(),
       body: JSON.stringify({
-        system_prompt: state.systemPrompt,
         prompt: presentationPrompt,
         conversation_summary: context.conversationSummary,
         messages: context.messages,
@@ -928,21 +925,38 @@ function normalizeSummaryInterval(value) {
 }
 
 async function loadSystemPrompt() {
-  const importedPrompt = String(state.settings.systemPromptMarkdown || "").trim();
-  if (importedPrompt) {
-    state.systemPrompt = importedPrompt;
+  try {
+    let status = await gatewayFetch("/api/system-prompt");
+    const legacyPrompt = String(state.settings.systemPromptMarkdown || "").trim();
+    if (!status.configured && legacyPrompt) {
+      status = await gatewayFetch("/api/system-prompt", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: state.settings.systemPromptFileName || "system_prompt.md",
+          content: legacyPrompt
+        })
+      });
+    }
+    state.systemPromptConfigured = Boolean(status.configured);
     state.systemPromptError = "";
-    els.systemPromptFileName.textContent = state.settings.systemPromptFileName || "本地提示词.md";
-    els.systemPromptStatus.textContent = "本地文件";
-    els.systemPromptStatus.classList.add("ready");
-    return importedPrompt;
+    if (status.configured) {
+      delete state.settings.systemPromptMarkdown;
+      delete state.settings.systemPromptFileName;
+      saveSettings();
+    }
+    els.systemPromptFileName.textContent = status.filename || "尚未选择 Markdown";
+    els.systemPromptStatus.textContent = status.configured ? "网关已保存" : "未上传";
+    els.systemPromptStatus.classList.toggle("ready", Boolean(status.configured));
+    return status;
+  } catch (error) {
+    state.systemPromptConfigured = false;
+    state.systemPromptError = error instanceof Error ? error.message : String(error);
+    els.systemPromptFileName.textContent = "无法读取网关提示词";
+    els.systemPromptStatus.textContent = "连接失败";
+    els.systemPromptStatus.classList.remove("ready");
+    return null;
   }
-  state.systemPrompt = "";
-  state.systemPromptError = "请先在设置中导入 .md 提示词";
-  els.systemPromptFileName.textContent = "尚未选择 Markdown";
-  els.systemPromptStatus.textContent = "未导入";
-  els.systemPromptStatus.classList.remove("ready");
-  return "";
 }
 
 async function importSystemPromptFile() {
@@ -961,17 +975,28 @@ async function importSystemPromptFile() {
     if (!prompt) {
       throw new Error("提示词文件内容为空");
     }
-    state.settings.systemPromptMarkdown = prompt;
-    state.settings.systemPromptFileName = file.name;
-    state.systemPrompt = prompt;
-    state.systemPromptError = "";
-    els.systemPromptFileName.textContent = file.name;
-    els.systemPromptStatus.textContent = "本地文件";
-    els.systemPromptStatus.classList.add("ready");
+    readSettingsForm();
     saveSettings();
+    els.systemPromptStatus.textContent = "上传中…";
+    const status = await gatewayFetch("/api/system-prompt", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name, content: prompt })
+    });
+    state.systemPromptConfigured = Boolean(status.configured);
+    state.systemPromptError = "";
+    delete state.settings.systemPromptMarkdown;
+    delete state.settings.systemPromptFileName;
+    saveSettings();
+    els.systemPromptFileName.textContent = status.filename || file.name;
+    els.systemPromptStatus.textContent = "网关已保存";
+    els.systemPromptStatus.classList.add("ready");
   } catch (error) {
-    els.systemPromptStatus.textContent = `导入失败：${error instanceof Error ? error.message : String(error)}`;
-    els.systemPromptStatus.classList.remove("ready");
+    state.systemPromptError = error instanceof Error ? error.message : String(error);
+    els.systemPromptStatus.textContent = state.systemPromptConfigured
+      ? `上传失败，仍使用旧文件：${state.systemPromptError}`
+      : `上传失败：${state.systemPromptError}`;
+    els.systemPromptStatus.classList.toggle("ready", state.systemPromptConfigured);
   } finally {
     els.systemPromptFile.value = "";
   }
@@ -1002,7 +1027,9 @@ async function gatewayFetch(path, options = {}) {
   const type = response.headers.get("content-type") || "";
   const payload = type.includes("json") ? await response.json().catch(() => ({})) : await response.text();
   if (!response.ok) {
-    const message = typeof payload === "string" ? payload : payload.error || payload.message || "请求失败";
+    const message = typeof payload === "string"
+      ? payload
+      : payload.error?.message || payload.error || payload.message || "请求失败";
     throw new Error(message);
   }
   return payload;
@@ -2982,8 +3009,12 @@ function readSettingsForm() {
     assistantAvatar: state.settings.assistantAvatar || "",
     model: els.modelName.value.trim() || defaultSettings.model,
     temperature: Number(els.temperature.value),
-    systemPromptMarkdown: state.settings.systemPromptMarkdown || "",
-    systemPromptFileName: state.settings.systemPromptFileName || "",
+    ...(state.settings.systemPromptMarkdown
+      ? {
+          systemPromptMarkdown: state.settings.systemPromptMarkdown,
+          systemPromptFileName: state.settings.systemPromptFileName || "system_prompt.md"
+        }
+      : {}),
     summaryModel: els.summaryModel.value.trim(),
     summaryInterval: normalizeSummaryInterval(els.summaryInterval.value),
     summaryPrompt: els.summaryPrompt.value.trim() || defaultSettings.summaryPrompt,
@@ -3015,7 +3046,10 @@ function applySettings() {
 
 function normalizeSettings(value) {
   const settings = value && typeof value === "object" ? value : {};
-  const { systemPrompt: _legacySystemPrompt, ...persistedSettings } = settings;
+  const {
+    systemPrompt: _legacySystemPrompt,
+    ...persistedSettings
+  } = settings;
   const backgroundTransparency = Number(settings.backgroundTransparency);
   const previousBackgroundOpacity = Number(settings.backgroundOpacity);
   const normalizedTransparency = Number.isFinite(backgroundTransparency)

@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from bucket_manager import BucketManager
 from dehydrator import Dehydrator
 from embedding_engine import EmbeddingEngine
+from gateway_system_prompt import GatewaySystemPromptStore, inject_gateway_messages
 from utils import load_config, setup_logging
 from zeta_gateway import ZetaMemoryGateway
 
@@ -195,6 +196,8 @@ class ZetaOpenAIGateway:
             "OMBRE_OPENROUTER_REASONING_FORCE",
         ))
 
+        self.system_prompt_store = GatewaySystemPromptStore(config["buckets_dir"])
+
         self.http = httpx.AsyncClient(timeout=120.0)
 
     async def close(self) -> None:
@@ -245,6 +248,7 @@ class ZetaOpenAIGateway:
             "openrouter_headers_configured": bool(self.openrouter_site_url or self.openrouter_app_name),
             "reasoning_configured": bool(self.reasoning_config),
             "reasoning_force": self.reasoning_force,
+            "system_prompt": self._system_prompt_status(),
             "memory": self.memory_gateway.status(),
             "buckets": stats,
         })
@@ -262,6 +266,44 @@ class ZetaOpenAIGateway:
                 "owned_by": "zeta-gateway",
             }],
         })
+
+    async def system_prompt(self, request: Request) -> JSONResponse:
+        if request.method == "PUT" and not self.gateway_token:
+            return JSONResponse(
+                {
+                    "error": {
+                        "message": "OMBRE_GATEWAY_TOKEN must be configured before uploading a system prompt",
+                        "type": "gateway_auth_not_configured",
+                    }
+                },
+                status_code=503,
+            )
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        if request.method == "GET":
+            return JSONResponse(self._system_prompt_status())
+
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"error": {"message": "Request body must be valid JSON", "type": "invalid_request_error"}},
+                status_code=400,
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"error": {"message": "Request body must be an object", "type": "invalid_request_error"}},
+                status_code=400,
+            )
+        try:
+            status = self._write_system_prompt(body.get("content"), body.get("filename"))
+        except ValueError as exc:
+            return JSONResponse(
+                {"error": {"message": str(exc), "type": "invalid_request_error"}},
+                status_code=400,
+            )
+        return JSONResponse(status)
 
     async def duetto_context(self, request: Request) -> JSONResponse:
         if not self.gateway_token:
@@ -537,7 +579,9 @@ class ZetaOpenAIGateway:
                 status_code=400,
             )
 
-        system_prompt = str(payload.get("system_prompt") or "").strip()
+        system_prompt = self._read_system_prompt()
+        if not system_prompt:
+            system_prompt = str(payload.get("system_prompt") or "").strip()
         presentation_prompt = str(payload.get("prompt") or "").strip()
         source_reasoning = self._message_content_to_text(payload.get("source_reasoning")).strip()
         if not system_prompt:
@@ -712,7 +756,11 @@ class ZetaOpenAIGateway:
         memory_headers = self._memory_debug_headers(recalled)
         self._log_recall(session_id, recalled)
         injected_text = self._build_gateway_system_text(recalled)
-        forward_payload = self._prepare_forward_payload(payload, injected_text)
+        forward_payload = self._prepare_forward_payload(
+            payload,
+            injected_text,
+            self._read_system_prompt(),
+        )
 
         if forward_payload.get("stream") is True:
             return await self._stream_upstream(
@@ -1028,16 +1076,43 @@ class ZetaOpenAIGateway:
             headers["X-Title"] = self.openrouter_app_name
         return headers
 
-    def _prepare_forward_payload(self, payload: dict[str, Any], injected_text: str) -> dict[str, Any]:
+    def _prepare_forward_payload(
+        self,
+        payload: dict[str, Any],
+        injected_text: str,
+        system_prompt: str = "",
+    ) -> dict[str, Any]:
         forward = deepcopy(payload)
-        messages = list(forward.get("messages") or [])
-        if injected_text.strip():
-            memory_message = {"role": "system", "content": injected_text}
-            insert_at = 1 if messages and messages[0].get("role") == "system" else 0
-            messages.insert(insert_at, memory_message)
-        forward["messages"] = messages
+        forward["messages"] = inject_gateway_messages(
+            list(forward.get("messages") or []),
+            injected_text,
+            system_prompt,
+        )
         self._remove_visible_private_diary_tools(forward)
         return forward
+
+    def _read_system_prompt(self) -> str:
+        try:
+            return self.system_prompt_store.read()
+        except Exception as exc:
+            logger.warning("Unable to read gateway system prompt: %s", exc)
+            return ""
+
+    def _system_prompt_status(self) -> dict[str, Any]:
+        try:
+            return self.system_prompt_store.status()
+        except Exception as exc:
+            logger.warning("Unable to read gateway system prompt status: %s", exc)
+            return {"ok": False, "configured": False, "filename": "", "characters": 0, "bytes": 0, "updated_at": ""}
+
+    def _write_system_prompt(self, content: Any, filename: Any) -> dict[str, Any]:
+        status = self.system_prompt_store.write(content, filename)
+        logger.info(
+            "Gateway system prompt updated | filename=%s characters=%s",
+            status["filename"],
+            status["characters"],
+        )
+        return status
 
     def _remove_visible_private_diary_tools(self, payload: dict[str, Any]) -> None:
         tools = payload.get("tools")
@@ -1891,6 +1966,15 @@ async def reasoning_presentation_route(request: Request) -> Response:
     return await gateway.reasoning_presentation(request)
 
 
+async def system_prompt_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.system_prompt(request)
+
+
 @asynccontextmanager
 async def lifespan(app):
     try:
@@ -1904,6 +1988,7 @@ routes = [
     Route("/health", health_route, methods=["GET"]),
     Route("/v1/models", models_route, methods=["GET"]),
     Route("/v1/chat/completions", chat_completions_route, methods=["POST"]),
+    Route("/api/system-prompt", system_prompt_route, methods=["GET", "PUT"]),
     Route("/api/duetto/context", duetto_context_route, methods=["POST"]),
     Route("/api/conversation-summary", conversation_summary_route, methods=["POST"]),
     Route("/api/reasoning-presentation", reasoning_presentation_route, methods=["POST"]),

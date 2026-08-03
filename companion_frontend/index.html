@@ -430,8 +430,8 @@
             <div class="field prompt-file-field">
               <span>系统提示词</span>
               <div class="prompt-file-row">
-                <code id="systemPromptFileName">尚未选择 Markdown</code>
-                <output id="systemPromptStatus">未导入</output>
+                <code id="systemPromptFileName">正在读取网关…</code>
+                <output id="systemPromptStatus">读取中</output>
               </div>
               <div class="button-row prompt-file-actions">
                 <button id="chooseSystemPromptButton" class="secondary-button" type="button">
@@ -443,7 +443,7 @@
                 </button>
               </div>
               <input id="systemPromptFile" type="file" accept=".md,.markdown,text/markdown,text/plain" hidden>
-              <small>从本地选择 .md 或 .markdown 文件；提示词内容保存在当前设备。以后修改文件后重新导入即可，不需要重新部署前端。</small>
+              <small>从本地选择 .md 或 .markdown 文件并上传到网关；网页、Operit 和 Duetto 会共用这一份。修改文件后重新上传即可，不需要重新部署前端。</small>
             </div>
 
             <section class="field summary-settings" aria-labelledby="summarySettingsTitle">

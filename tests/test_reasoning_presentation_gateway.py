@@ -39,7 +39,7 @@ def _request(payload, *, headers=None):
     return Request(scope, receive)
 
 
-def _gateway(*, gateway_token=""):
+def _gateway(*, gateway_token="", stored_system_prompt=""):
     gateway = object.__new__(ZetaOpenAIGateway)
     gateway.gateway_token = gateway_token
     gateway.upstream_chat_url = "https://dialog.example/v1/chat/completions"
@@ -50,6 +50,7 @@ def _gateway(*, gateway_token=""):
     gateway.reasoning_force = False
     gateway.openrouter_site_url = ""
     gateway.openrouter_app_name = ""
+    gateway.system_prompt_store = SimpleNamespace(read=lambda: stored_system_prompt)
     upstream_response = httpx.Response(
         200,
         json={
@@ -63,12 +64,11 @@ def _gateway(*, gateway_token=""):
 
 
 class ReasoningPresentationGatewayTests(unittest.IsolatedAsyncioTestCase):
-    async def test_reuses_dialog_model_with_full_system_prompt_and_context(self):
-        gateway = _gateway()
+    async def test_reuses_dialog_model_with_gateway_system_prompt_and_context(self):
+        gateway = _gateway(stored_system_prompt="这是网关保存的完整对话系统提示词。")
         request = _request(
             {
                 "model": "must-not-override-dialog-model",
-                "system_prompt": "这是完整的对话系统提示词。",
                 "prompt": "把思考写成我直接对你说的话。",
                 "conversation_summary": "此前的累计摘要",
                 "messages": [
@@ -93,7 +93,7 @@ class ReasoningPresentationGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             upstream_payload["messages"][:2],
             [
-                {"role": "system", "content": "这是完整的对话系统提示词。"},
+                {"role": "system", "content": "这是网关保存的完整对话系统提示词。"},
                 {"role": "system", "content": "把思考写成我直接对你说的话。"},
             ],
         )
@@ -113,7 +113,7 @@ class ReasoningPresentationGatewayTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-    async def test_requires_full_dialog_system_prompt(self):
+    async def test_requires_system_prompt_when_gateway_and_request_are_empty(self):
         gateway = _gateway()
         request = _request(
             {
@@ -131,6 +131,25 @@ class ReasoningPresentationGatewayTests(unittest.IsolatedAsyncioTestCase):
             "Full conversation system prompt is required",
         )
         gateway.http.post.assert_not_awaited()
+
+    async def test_accepts_request_prompt_as_legacy_fallback(self):
+        gateway = _gateway()
+        request = _request(
+            {
+                "system_prompt": "旧网页仍然发送的完整提示词",
+                "prompt": "覆写",
+                "source_reasoning": "reasoning",
+            }
+        )
+
+        response = await gateway.reasoning_presentation(request)
+
+        self.assertEqual(response.status_code, 200)
+        upstream_payload = gateway.http.post.await_args.kwargs["json"]
+        self.assertEqual(
+            upstream_payload["messages"][0],
+            {"role": "system", "content": "旧网页仍然发送的完整提示词"},
+        )
 
     async def test_honors_gateway_authentication(self):
         gateway = _gateway(gateway_token="gateway-secret")
