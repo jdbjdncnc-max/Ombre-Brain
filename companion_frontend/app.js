@@ -1,4 +1,5 @@
 import { platform } from "./platform.js";
+import { createSoloPanel } from "./solo.js?v=20260807";
 
 const LEGACY_SUMMARY_PROMPT_V1 = `你负责为一段持续对话生成“累计上下文摘要”，供同一个对话模型在后续轮次继续使用。
 
@@ -154,6 +155,7 @@ const els = {
   chatView: document.querySelector("#chatView"),
   homeView: document.querySelector("#homeView"),
   musicView: document.querySelector("#musicView"),
+  soloView: document.querySelector("#soloView"),
   toolsView: document.querySelector("#toolsView"),
   memoryView: document.querySelector("#memoryView"),
   scheduleView: document.querySelector("#scheduleView"),
@@ -265,6 +267,11 @@ const els = {
   memoryPanels: [...document.querySelectorAll(".memory-panel")]
 };
 
+const soloPanel = createSoloPanel({
+  requestState: () => gatewayFetch("/api/solo/state"),
+  onClose: closeSoloView
+});
+
 const systemPromptReady = loadSystemPrompt();
 
 bindEvents();
@@ -277,6 +284,7 @@ initSchedule();
 renderSchedule();
 updateClock();
 refreshHealth();
+soloPanel.start();
 loadSchedule().catch(() => {
   setScheduleSyncStatus("本地日程", "offline");
 });
@@ -2947,12 +2955,32 @@ function handleHomeFeature(feature) {
     return;
   }
 
+  if (feature === "zeta") {
+    openSoloView();
+    return;
+  }
+
   const messages = {
     reading: "共读会在后续对话中接入。",
-    health: "身体数据会在后续对话中接入。",
-    zeta: "Zeta 的今日状态会在后续对话中接入。"
+    health: "身体数据会在后续对话中接入。"
   };
   showHomeNotice(messages[feature] || "这项功能会在后续对话中接入。");
+}
+
+function openSoloView() {
+  if (history.state?.companionView !== "solo") {
+    history.pushState({ ...(history.state || {}), companionView: "solo" }, "", "#solo");
+  }
+  setActiveTab("solo");
+  soloPanel.open();
+}
+
+function closeSoloView() {
+  if (history.state?.companionView === "solo") {
+    history.back();
+    return;
+  }
+  setActiveTab("home");
 }
 
 function openDuettoView({ forceReload = false } = {}) {
@@ -2985,12 +3013,16 @@ function closeDuettoView() {
 }
 
 function handleNavigationPopState() {
-  if (state.activeTab === "music") {
+  if (state.activeTab === "music" || state.activeTab === "solo") {
     setActiveTab("home");
   }
 }
 
 function restoreNavigationState() {
+  if (history.state?.companionView === "solo" || location.hash === "#solo") {
+    setTimeout(openSoloView, 0);
+    return;
+  }
   if (history.state?.companionView === "music" && normalizeDuettoUrl(state.settings.duettoUrl)) {
     setTimeout(openDuettoView, 0);
   }
@@ -3086,12 +3118,14 @@ function setActiveTab(tab) {
   els.chatView.classList.toggle("view-active", tab === "chat");
   els.homeView.classList.toggle("view-active", tab === "home");
   els.musicView.classList.toggle("view-active", tab === "music");
+  els.soloView.classList.toggle("view-active", tab === "solo");
   els.toolsView.classList.toggle("view-active", tab === "tools");
   els.memoryView.classList.toggle("view-active", tab === "memory");
   els.scheduleView.classList.toggle("view-active", tab === "schedule");
   els.settingsView.classList.toggle("view-active", tab === "settings");
   els.phoneShell.classList.toggle("music-mode", tab === "music");
-  const navigationTab = tab === "tools" || tab === "music" ? "home" : tab;
+  els.phoneShell.classList.toggle("subpage-mode", tab === "solo");
+  const navigationTab = tab === "tools" || tab === "music" || tab === "solo" ? "home" : tab;
   els.tabs.forEach((button) => {
     button.classList.toggle("tab-active", button.dataset.tab === navigationTab);
   });

@@ -11,6 +11,7 @@ test("prepared frontend contains the web app and platform adapters", async () =>
   const index = await readFile(path.join(outputDir, "index.html"), "utf8");
   assert.match(index, /<head(?:\s|>)/i);
   assert.equal((await stat(path.join(outputDir, "app.js"))).isFile(), true);
+  assert.equal((await stat(path.join(outputDir, "solo.js"))).isFile(), true);
   assert.equal((await stat(path.join(outputDir, "platform.js"))).isFile(), true);
   assert.equal((await stat(path.join(outputDir, "platform.browser.js"))).isFile(), true);
   assert.equal((await stat(path.join(outputDir, "platform.android.js"))).isFile(), true);

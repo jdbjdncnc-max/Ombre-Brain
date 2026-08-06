@@ -13,8 +13,20 @@ import uuid
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from statistics import median
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from .dynamics import advance_emotions, apply_user_return
+from .emotion_model import (
+    aggregate_buckets,
+    default_channels,
+    dimensions,
+    mood_line,
+    normalize_channels,
+    public_buckets,
+    strongest_drive,
+)
 
 
 logger = logging.getLogger("ombre_brain.solo")
@@ -107,6 +119,9 @@ class SoloService:
         self.base_dir = Path(base_dir)
         self.solo_dir = self.base_dir / "solo"
         self.state_path = self.solo_dir / "runtime_state.json"
+        self.emotion_path = self.solo_dir / "emotion_state.json"
+        self.emotion_events_path = self.solo_dir / "emotion_events.jsonl"
+        self.emotion_series_path = self.solo_dir / "emotion_series.jsonl"
         self.lease_path = self.solo_dir / "heartbeat.lock"
         self.enabled = _truthy(os.environ.get("OMBRE_SOLO_ENABLED", "0")) if enabled is None else bool(enabled)
         self.pulse_seconds = pulse_seconds if pulse_seconds is not None else _bounded_int(
@@ -180,17 +195,20 @@ class SoloService:
 
     async def get_state(self) -> dict[str, Any]:
         async with self._state_lock:
-            state = self._read_json(self.state_path)
-            if not state:
-                state = self._new_state(datetime.now(timezone.utc))
-            state["enabled"] = self.enabled
-            state["running"] = bool(self._task and not self._task.done())
-            state["config"] = {
+            now = datetime.now(timezone.utc)
+            runtime = self._read_json(self.state_path) or self._new_state(now)
+            emotion = self._read_json(self.emotion_path) or self._new_emotion_state(
+                now,
+                _parse_time(runtime.get("lastUserMessageAt")) or now,
+            )
+            runtime["enabled"] = self.enabled
+            runtime["running"] = bool(self._task and not self._task.done())
+            runtime["config"] = {
                 "pulseSeconds": self.pulse_seconds,
                 "decisionSeconds": self.decision_seconds,
                 "timezone": self.timezone_name,
             }
-            return deepcopy(state)
+            return self._public_state(runtime, emotion)
 
     async def note_user_message(self, *, sent_at: Any = None, timezone_name: Any = None) -> None:
         if not self.enabled:
@@ -199,11 +217,41 @@ class SoloService:
         sent = _parse_time(sent_at) or now
         user_timezone = normalize_timezone_name(timezone_name, self.timezone_name)
         async with self._state_lock:
-            state = self._read_json(self.state_path) or self._new_state(now)
-            state["lastUserMessageAt"] = _iso(sent)
-            state["userTimezone"] = user_timezone
-            state["updatedAt"] = _iso(now)
-            self._write_json(self.state_path, state)
+            runtime = self._read_json(self.state_path) or self._new_state(now)
+            emotion = self._advance_emotion_state(runtime, now)
+            previous_message = _parse_time(emotion.get("lastUserMessageAt"))
+            gaps = [
+                float(value)
+                for value in emotion.get("messageGapsHours", [])
+                if isinstance(value, (int, float)) and 0 < float(value) <= 24 * 30
+            ]
+            if previous_message and sent > previous_message:
+                gaps.append((sent - previous_message).total_seconds() / 3600.0)
+            gaps = gaps[-40:]
+            expected_gap = max(2.0, min(12.0, median(gaps))) if gaps else float(emotion.get("expectedGapHours") or 4.0)
+
+            channels, deltas = apply_user_return(emotion.get("channels") or {})
+            emotion["channels"] = channels
+            emotion["lastUserMessageAt"] = _iso(sent)
+            emotion["messageGapsHours"] = [round(value, 3) for value in gaps]
+            emotion["expectedGapHours"] = round(expected_gap, 3)
+            emotion["updatedAt"] = _iso(now)
+            self._refresh_emotion_derived(emotion)
+            self._record_emotion_event(
+                emotion,
+                ts=now,
+                source="you",
+                cause_key="user_returned",
+                deltas=deltas,
+                reason="你回来了，短期的恼火散掉了一些",
+                felt="被回应了，但没把所有情绪一笔勾销",
+            )
+            self._write_json(self.emotion_path, emotion)
+
+            runtime["lastUserMessageAt"] = _iso(sent)
+            runtime["userTimezone"] = user_timezone
+            runtime["updatedAt"] = _iso(now)
+            self._write_json(self.state_path, runtime)
 
     async def wake(self, reason: str = "manual") -> dict[str, Any]:
         if not self.enabled:
@@ -267,12 +315,13 @@ class SoloService:
                     trigger,
                 )
 
+            emotion = self._advance_emotion_state(state, current)
             self._write_json(self.state_path, state)
             return {
                 "ok": True,
                 "enabled": True,
                 "decisionDue": decision_due,
-                "state": deepcopy(state),
+                "state": self._public_state(state, emotion),
             }
 
     def _new_state(self, now: datetime) -> dict[str, Any]:
@@ -293,6 +342,175 @@ class SoloService:
             "clock": self._clock_payload(now, self.timezone_name),
             "lockOwner": "",
         }
+
+    def _new_emotion_state(self, now: datetime, last_user_message_at: datetime) -> dict[str, Any]:
+        state: dict[str, Any] = {
+            "version": 2,
+            "updatedAt": _iso(now),
+            "channels": default_channels(),
+            "habituation": {},
+            "dimensions": {},
+            "buckets": {},
+            "mode": "idle",
+            "drive": "",
+            "moodLine": "",
+            "sensitivity": 1.0,
+            "lastUserMessageAt": _iso(last_user_message_at),
+            "expectedGapHours": 4.0,
+            "messageGapsHours": [],
+            "lastAbsenceCauseAt": "",
+            "lastSeriesAt": "",
+            "budget": {
+                "date": now.date().isoformat(),
+                "llmCalls": 0,
+                "fetches": 0,
+                "mcpCalls": 0,
+                "proactive": 0,
+            },
+            "lockOwner": "",
+        }
+        self._refresh_emotion_derived(state)
+        return state
+
+    def _advance_emotion_state(self, runtime: dict[str, Any], now: datetime) -> dict[str, Any]:
+        last_runtime_message = _parse_time(runtime.get("lastUserMessageAt"))
+        emotion = self._read_json(self.emotion_path) or self._new_emotion_state(
+            now,
+            last_runtime_message or now,
+        )
+        updated_at = _parse_time(emotion.get("updatedAt")) or now
+        last_user_message = _parse_time(emotion.get("lastUserMessageAt")) or last_runtime_message
+        timezone_name = normalize_timezone_name(runtime.get("userTimezone"), self.timezone_name)
+        timezone_value = timezone_info(timezone_name, self.timezone_name)
+        channels, absence_deltas = advance_emotions(
+            emotion.get("channels") or {},
+            start=min(updated_at, now),
+            end=now,
+            last_user_message_at=last_user_message,
+            expected_gap_hours=float(emotion.get("expectedGapHours") or 4.0),
+            busy_factor=0.0,
+            sulk_gain=1.0,
+            localize=lambda value: value.astimezone(timezone_value),
+        )
+        emotion["channels"] = channels
+        emotion["updatedAt"] = _iso(now)
+        emotion["lastUserMessageAt"] = _iso(last_user_message) if last_user_message else ""
+        emotion["lockOwner"] = str(runtime.get("lockOwner") or "")
+        self._refresh_emotion_derived(emotion)
+
+        last_cause_at = _parse_time(emotion.get("lastAbsenceCauseAt"))
+        significant = any(abs(value) >= 0.25 for value in absence_deltas.values())
+        cause_due = last_cause_at is None or now - last_cause_at >= timedelta(minutes=30)
+        if last_user_message and significant and cause_due:
+            hours = max(0.0, (now - last_user_message).total_seconds() / 3600.0)
+            self._record_emotion_event(
+                emotion,
+                ts=now,
+                source="you",
+                cause_key="absence",
+                deltas=absence_deltas,
+                reason=self._absence_reason(hours),
+                felt="想念和空落在慢慢累积",
+            )
+            emotion["lastAbsenceCauseAt"] = _iso(now)
+
+        self._record_hourly_series(emotion, now)
+        self._write_json(self.emotion_path, emotion)
+        return emotion
+
+    def _refresh_emotion_derived(self, emotion: dict[str, Any]) -> None:
+        channels = normalize_channels(emotion.get("channels") or {})
+        bucket_values = aggregate_buckets(channels)
+        current_dimensions = dimensions(channels)
+        drive = strongest_drive(channels, current_dimensions)
+        emotion["channels"] = {key: round(value, 4) for key, value in channels.items()}
+        emotion["buckets"] = {key: round(value, 2) for key, value in bucket_values.items()}
+        emotion["dimensions"] = current_dimensions
+        emotion["drive"] = drive["label"]
+        emotion["moodLine"] = mood_line(bucket_values, drive)
+        negative_load = max(bucket_values.get("cross", 0.0), bucket_values.get("low", 0.0))
+        emotion["sensitivity"] = round(1.0 + 0.4 * negative_load / 100.0, 3)
+
+    def _public_state(self, runtime: dict[str, Any], emotion: dict[str, Any]) -> dict[str, Any]:
+        result = deepcopy(runtime)
+        channels = normalize_channels(emotion.get("channels") or {})
+        current_dimensions = dimensions(channels)
+        drive = strongest_drive(channels, current_dimensions)
+        events = self._read_recent_events(120)
+        result.update({
+            "updatedAt": str(emotion.get("updatedAt") or runtime.get("updatedAt") or ""),
+            "mode": {"key": "idle", "label": "安静待着"},
+            "drive": drive,
+            "moodLine": str(emotion.get("moodLine") or mood_line(aggregate_buckets(channels), drive)),
+            "buckets": public_buckets(channels, events),
+            "dimensions": current_dimensions,
+            "sensitivity": float(emotion.get("sensitivity") or 1.0),
+            "lastUserMessageAt": str(emotion.get("lastUserMessageAt") or runtime.get("lastUserMessageAt") or ""),
+            "expectedGapHours": float(emotion.get("expectedGapHours") or 4.0),
+            "budget": deepcopy(emotion.get("budget") or {}),
+        })
+        return result
+
+    def _record_emotion_event(
+        self,
+        emotion: dict[str, Any],
+        *,
+        ts: datetime,
+        source: str,
+        cause_key: str,
+        deltas: dict[str, float],
+        reason: str,
+        felt: str,
+    ) -> None:
+        clean_deltas = {
+            key: round(max(-15.0, min(15.0, float(value))), 3)
+            for key, value in deltas.items()
+            if key in (emotion.get("channels") or {}) and abs(float(value)) >= 0.01
+        }
+        if not clean_deltas:
+            return
+        self._append_jsonl(self.emotion_events_path, {
+            "ts": _iso(ts),
+            "source": source,
+            "causeKey": cause_key,
+            "deltas": clean_deltas,
+            "reason": str(reason)[:120],
+            "felt": str(felt)[:120],
+            "activityId": "",
+        })
+
+    def _record_hourly_series(self, emotion: dict[str, Any], now: datetime) -> None:
+        last_series = _parse_time(emotion.get("lastSeriesAt"))
+        if last_series and now - last_series < timedelta(hours=1):
+            return
+        self._append_jsonl(self.emotion_series_path, {
+            "ts": _iso(now),
+            "buckets": deepcopy(emotion.get("buckets") or {}),
+        })
+        emotion["lastSeriesAt"] = _iso(now)
+
+    def _read_recent_events(self, limit: int) -> list[dict[str, Any]]:
+        try:
+            lines = self.emotion_events_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        events: list[dict[str, Any]] = []
+        for line in reversed(lines[-max(1, limit):]):
+            try:
+                value = json.loads(line)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(value, dict):
+                events.append(value)
+        return events
+
+    @staticmethod
+    def _absence_reason(hours: float) -> str:
+        if hours < 1:
+            return f"你有 {max(1, round(hours * 60))} 分钟没有说话"
+        if hours < 24:
+            return f"你有 {hours:.1f} 小时没有说话"
+        return f"你有 {hours / 24.0:.1f} 天没有说话"
 
     def _clock_payload(self, now: datetime, timezone_name: Any) -> dict[str, str]:
         name = normalize_timezone_name(timezone_name, self.timezone_name)
@@ -353,6 +571,19 @@ class SoloService:
         temporary = path.with_name(f".{path.name}.{self._owner.replace(':', '_')}.tmp")
         temporary.write_text(
             json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+
+    def _append_jsonl(self, path: Path, value: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            previous = path.read_text(encoding="utf-8")
+        except OSError:
+            previous = ""
+        temporary = path.with_name(f".{path.name}.{self._owner.replace(':', '_')}.tmp")
+        temporary.write_text(
+            previous + json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n",
             encoding="utf-8",
         )
         os.replace(temporary, path)

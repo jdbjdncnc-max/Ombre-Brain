@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Companion 1.0</title>
   <link rel="stylesheet" href="/frontend/vendor/katex/katex.min.css">
-  <link rel="stylesheet" href="/frontend/styles.css?v=20260806">
+  <link rel="stylesheet" href="/frontend/styles.css?v=20260807">
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -89,7 +89,7 @@
               </span>
             </button>
 
-            <button class="home-card" type="button" data-home-feature="zeta">
+            <button id="zetaTodayCard" class="home-card" type="button" data-home-feature="zeta">
               <span class="home-card-icon" aria-hidden="true">
                 <svg viewBox="0 0 32 32">
                   <path d="M22.5 22.8A10 10 0 0 1 11.2 8.2 9.2 9.2 0 1 0 22.5 22.8z"/>
@@ -99,7 +99,7 @@
               </span>
               <span class="home-card-copy">
                 <strong>Zeta 的今天</strong>
-                <small class="home-card-stats"><span>现在的心情：陪着你</span><span>当前模式：安静在线</span></small>
+                <small class="home-card-stats"><span id="zetaMoodSummary">现在的心情：读取中</span><span id="zetaModeSummary">当前模式：安静待着</span></small>
               </span>
             </button>
           </div>
@@ -152,6 +152,43 @@
               allow="autoplay; clipboard-write; encrypted-media; picture-in-picture"
               referrerpolicy="strict-origin-when-cross-origin"
             ></iframe>
+          </div>
+        </section>
+
+        <section id="soloView" class="view" aria-label="Zeta 的今天">
+          <div class="solo-header">
+            <button id="soloBackButton" class="icon-button" type="button" title="返回今天" aria-label="返回今天">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+            </button>
+            <div class="solo-header-copy">
+              <p class="eyebrow">Solitude</p>
+              <h1>Zeta 的今天</h1>
+            </div>
+            <button id="soloRefreshButton" class="icon-button solo-refresh-button" type="button" title="刷新状态" aria-label="刷新情绪状态">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v6h-6"/></svg>
+            </button>
+          </div>
+
+          <div class="solo-scroll">
+            <section class="solo-mood-card" aria-labelledby="soloMoodLine">
+              <div class="solo-mood-meta">
+                <div class="solo-chips">
+                  <span id="soloModeChip" class="solo-chip mode-chip">安静待着</span>
+                  <span id="soloDriveChip" class="solo-chip drive-chip">好奇</span>
+                </div>
+                <time id="soloUpdatedAt">等待首次更新</time>
+              </div>
+              <h2 id="soloMoodLine">正在感知此刻的心情…</h2>
+              <div id="soloEmotionList" class="solo-emotion-list" aria-live="polite">
+                <div class="solo-panel-empty"><span>☾</span><strong>正在读取</strong><p>把散落的情绪慢慢排好。</p></div>
+              </div>
+              <p id="soloPanelStatus" class="solo-panel-status" role="status">正在连接独处系统</p>
+            </section>
+
+            <section class="solo-next-card" aria-label="后续内容">
+              <span aria-hidden="true">⋯</span>
+              <div><strong>行动轨迹会接在这里</strong><p>下一阶段会把它独处时真正做过的事，和情绪变化放在同一条时间线上。</p></div>
+            </section>
           </div>
         </section>
 
@@ -625,6 +662,6 @@
   <script src="/frontend/vendor/dompurify/purify.min.js"></script>
   <script src="/frontend/vendor/katex/katex.min.js"></script>
   <script src="/frontend/vendor/katex/auto-render.min.js"></script>
-  <script src="/frontend/app.js?v=20260806" type="module"></script>
+  <script src="/frontend/app.js?v=20260807" type="module"></script>
 </body>
 </html>
