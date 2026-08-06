@@ -7,6 +7,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -23,6 +24,7 @@ from bucket_manager import BucketManager
 from dehydrator import Dehydrator
 from embedding_engine import EmbeddingEngine
 from gateway_system_prompt import GatewaySystemPromptStore, inject_gateway_messages
+from solo.service import SoloService, normalize_timezone_name, timezone_info
 from utils import load_config, setup_logging
 from zeta_gateway import ZetaMemoryGateway
 
@@ -197,11 +199,17 @@ class ZetaOpenAIGateway:
         ))
 
         self.system_prompt_store = GatewaySystemPromptStore(config["buckets_dir"])
+        self.solo = SoloService.from_gateway(self)
 
         self.http = httpx.AsyncClient(timeout=120.0)
 
     async def close(self) -> None:
-        await self.http.aclose()
+        try:
+            await self.solo.stop()
+        except Exception:
+            logger.exception("Unable to stop solo service cleanly")
+        finally:
+            await self.http.aclose()
 
     def _authorize(self, request: Request) -> Response | None:
         if not self.gateway_token:
@@ -249,6 +257,7 @@ class ZetaOpenAIGateway:
             "reasoning_configured": bool(self.reasoning_config),
             "reasoning_force": self.reasoning_force,
             "system_prompt": self._system_prompt_status(),
+            "solo": self.solo.status_snapshot(),
             "memory": self.memory_gateway.status(),
             "buckets": stats,
         })
@@ -445,6 +454,10 @@ class ZetaOpenAIGateway:
                 status_code=400,
             )
         messages: list[dict[str, str]] = []
+        client_timezone = normalize_timezone_name(
+            request.headers.get("X-Ombre-Client-Timezone"),
+            getattr(getattr(self, "solo", None), "timezone_name", "UTC"),
+        )
         total_characters = 0
         for item in raw_messages:
             if not isinstance(item, dict):
@@ -456,7 +469,12 @@ class ZetaOpenAIGateway:
             if not content:
                 continue
             total_characters += len(content)
-            messages.append({"role": role, "content": content})
+            normalized_message = {"role": role, "content": content}
+            context = self._message_context(item, client_timezone)
+            if context.get("sentAt"):
+                normalized_message["sent_at"] = context["sentAt"]
+                normalized_message["timezone"] = context["timezone"]
+            messages.append(normalized_message)
         if not messages:
             return JSONResponse(
                 {"error": {"message": "No user or assistant messages to summarize", "type": "invalid_request_error"}},
@@ -741,8 +759,11 @@ class ZetaOpenAIGateway:
                 status_code=400,
             )
 
-        user_text = self._extract_last_user_text(payload.get("messages", []))
-        user_raw_refs = await self._save_turn(session_id, "user", user_text)
+        user_text, user_raw_refs, client_timezone = await self._capture_user_turn(
+            request,
+            payload.get("messages", []),
+            session_id,
+        )
         recall_context = self._recall_context_text(payload.get("messages", []))
         recalled = await self.memory_gateway.recall({
             "current_text": user_text,
@@ -759,6 +780,7 @@ class ZetaOpenAIGateway:
             payload,
             injected_text,
             self._read_system_prompt(),
+            client_timezone,
         )
 
         if forward_payload.get("stream") is True:
@@ -1080,10 +1102,15 @@ class ZetaOpenAIGateway:
         payload: dict[str, Any],
         injected_text: str,
         system_prompt: str = "",
+        client_timezone: str = "UTC",
     ) -> dict[str, Any]:
         forward = deepcopy(payload)
-        forward["messages"] = inject_gateway_messages(
+        contextual_messages = self._inject_message_time_context(
             list(forward.get("messages") or []),
+            client_timezone,
+        )
+        forward["messages"] = inject_gateway_messages(
+            contextual_messages,
             injected_text,
             system_prompt,
         )
@@ -1294,7 +1321,15 @@ Zeta hidden memory protocol:
             return False
         return True
 
-    async def _save_turn(self, session_id: str, speaker: str, content: str) -> list[str]:
+    async def _save_turn(
+        self,
+        session_id: str,
+        speaker: str,
+        content: str,
+        *,
+        timestamp: Any = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> list[str]:
         if not str(content or "").strip():
             return []
         result = await self.memory_gateway.save_raw({
@@ -1303,9 +1338,142 @@ Zeta hidden memory protocol:
             "messages": [{
                 "speaker": speaker,
                 "content": content,
+                "timestamp": timestamp,
+                "metadata": metadata or {},
             }],
         })
         return list(result.get("raw_refs") or [])
+
+    def _inject_message_time_context(
+        self,
+        messages: list[Any],
+        fallback_timezone: str,
+    ) -> list[Any]:
+        contextualized: list[Any] = []
+        for raw_message in messages:
+            if not isinstance(raw_message, dict):
+                contextualized.append(raw_message)
+                continue
+
+            message = deepcopy(raw_message)
+            context = self._message_context(message, fallback_timezone)
+            message.pop("context", None)
+            message.pop("createdAt", None)
+            message.pop("created_at", None)
+            message.pop("timestamp", None)
+            message.pop("timezone", None)
+
+            role = str(message.get("role") or "")
+            content = message.get("content")
+            if role in {"user", "assistant"} and isinstance(content, str) and context.get("sentAt"):
+                local_time = self._local_message_time(context["sentAt"], context["timezone"])
+                if local_time and not content.lstrip().startswith("[Ombre 消息信息]"):
+                    message["content"] = (
+                        "[Ombre 消息信息]\n"
+                        f"发送时间：{local_time}\n"
+                        f"时区：{context['timezone']}\n"
+                        "[/Ombre 消息信息]\n\n"
+                        f"{content}"
+                    )
+            contextualized.append(message)
+        return contextualized
+
+    async def _capture_user_turn(
+        self,
+        request: Request,
+        messages: list[Any],
+        session_id: str,
+    ) -> tuple[str, list[str], str]:
+        client_timezone = normalize_timezone_name(
+            request.headers.get("X-Ombre-Client-Timezone"),
+            self.solo.timezone_name,
+        )
+        user_context = self._last_user_message_context(messages, client_timezone)
+        user_text = self._extract_last_user_text(messages)
+        await self.solo.note_user_message(
+            sent_at=user_context.get("sentAt"),
+            timezone_name=user_context.get("timezone"),
+        )
+        user_raw_refs = await self._save_turn(
+            session_id,
+            "user",
+            user_text,
+            timestamp=user_context.get("sentAt"),
+            metadata={
+                "timezone": user_context.get("timezone", client_timezone),
+                "receivedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            },
+        )
+        return user_text, user_raw_refs, client_timezone
+
+    def _last_user_message_context(
+        self,
+        messages: list[Any],
+        fallback_timezone: str,
+    ) -> dict[str, str]:
+        for message in reversed(messages):
+            if isinstance(message, dict) and message.get("role") == "user":
+                return self._message_context(message, fallback_timezone)
+        return {"sentAt": "", "timezone": fallback_timezone}
+
+    def _message_context(self, message: dict[str, Any], fallback_timezone: str) -> dict[str, str]:
+        raw_context = message.get("context") if isinstance(message.get("context"), dict) else {}
+        sent_at = str(
+            raw_context.get("sentAt")
+            or raw_context.get("sent_at")
+            or message.get("createdAt")
+            or message.get("created_at")
+            or message.get("timestamp")
+            or ""
+        ).strip()
+        timezone_name = normalize_timezone_name(
+            raw_context.get("timezone") or message.get("timezone"),
+            fallback_timezone,
+        )
+        if not self._parse_message_time(sent_at):
+            sent_at = ""
+        return {"sentAt": sent_at, "timezone": timezone_name}
+
+    @staticmethod
+    def _parse_message_time(value: Any) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
+    def _local_message_time(self, sent_at: str, timezone_name: str) -> str:
+        parsed = self._parse_message_time(sent_at)
+        if parsed is None:
+            return ""
+        normalized_timezone = normalize_timezone_name(timezone_name, "UTC")
+        return parsed.astimezone(timezone_info(normalized_timezone)).strftime("%Y-%m-%d %H:%M:%S")
+
+    async def solo_state(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        return JSONResponse({"ok": True, **(await self.solo.get_state())})
+
+    async def solo_wake(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        reason = "manual"
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                reason = str(body.get("reason") or reason).strip()[:80]
+        except Exception:
+            pass
+        result = await self.solo.wake(reason)
+        status_code = 200 if result.get("ok") else 409
+        return JSONResponse(result, status_code=status_code)
 
     def _schedule_reflection(
         self,
@@ -1936,9 +2104,32 @@ async def system_prompt_route(request: Request) -> Response:
     return await gateway.system_prompt(request)
 
 
+async def solo_state_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.solo_state(request)
+
+
+async def solo_wake_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.solo_wake(request)
+
+
 @asynccontextmanager
 async def lifespan(app):
     try:
+        if gateway is not None:
+            try:
+                await gateway.solo.start()
+            except Exception:
+                logger.exception("Solo service failed to start; chat gateway will continue without it")
         yield
     finally:
         if gateway is not None:
@@ -1953,6 +2144,8 @@ routes = [
     Route("/api/duetto/context", duetto_context_route, methods=["POST"]),
     Route("/api/conversation-summary", conversation_summary_route, methods=["POST"]),
     Route("/api/reasoning-presentation", reasoning_presentation_route, methods=["POST"]),
+    Route("/api/solo/state", solo_state_route, methods=["GET"]),
+    Route("/api/solo/wake", solo_wake_route, methods=["POST"]),
 ]
 
 app = Starlette(routes=routes, lifespan=lifespan)

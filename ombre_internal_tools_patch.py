@@ -1144,8 +1144,11 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
                 status_code=400,
             )
 
-        user_text = self._extract_last_user_text(payload.get("messages", []))
-        user_raw_refs = await self._save_turn(session_id, "user", user_text)
+        user_text, user_raw_refs, client_timezone = await self._capture_user_turn(
+            request,
+            payload.get("messages", []),
+            session_id,
+        )
         recall_context = self._recall_context_text(payload.get("messages", []))
         recalled = await self.memory_gateway.recall({
             "current_text": user_text,
@@ -1158,7 +1161,11 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
         memory_headers = self._memory_debug_headers(recalled)
         self._log_recall(session_id, recalled)
         injected_text = self._build_gateway_system_text(recalled)
-        forward_payload = self._prepare_forward_payload(payload, injected_text)
+        forward_payload = self._prepare_forward_payload(
+            payload,
+            injected_text,
+            client_timezone=client_timezone,
+        )
         wants_stream = forward_payload.get("stream") is True
         if wants_stream:
             return await self._ombre_stream_upstream(

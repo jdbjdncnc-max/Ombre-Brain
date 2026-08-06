@@ -51,11 +51,21 @@ OMBRE_OPENROUTER_APP_NAME=Zeta Memory Gateway
 OMBRE_PUBLIC_MODEL=zeta-gateway
 OMBRE_BUCKETS_DIR=/app/buckets
 OMBRE_DASHBOARD_PASSWORD=your-dashboard-password
+OMBRE_SOLO_ENABLED=0
+OMBRE_SOLO_PULSE_SECONDS=60
+OMBRE_SOLO_DECISION_SECONDS=180
+OMBRE_SOLO_TIMEZONE=Asia/Taipei
 ```
 
 `OMBRE_SUMMARY_BASE_URL`、`OMBRE_SUMMARY_API_KEY` 和 `OMBRE_SUMMARY_MODEL` 均可省略；省略时分别复用上游对话模型的地址、密钥和模型。前端设置页可覆盖总结模型 ID。总结提示词不会从环境变量读取，只保存在 Companion 当前设备的前端存储中。
 
 思考内容覆写不需要新增环境变量，也不会使用 `OMBRE_SUMMARY_*`。它始终复用 `OMBRE_UPSTREAM_BASE_URL`、`OMBRE_UPSTREAM_API_KEY` 和 `OMBRE_UPSTREAM_MODEL`；完整对话系统提示词与覆写提示词由当前设备前端随请求提供。
+
+独处系统第一阶段默认关闭。设置 `OMBRE_SOLO_ENABLED=1` 后，服务端每隔
+`OMBRE_SOLO_PULSE_SECONDS` 秒更新时间状态，并约每隔
+`OMBRE_SOLO_DECISION_SECONDS` 秒记录一次行动判断；第一阶段的行动结果固定为
+`idle`，不会调用模型或发送主动消息。`POST /api/solo/wake` 可手动触发一次判断，
+`GET /api/solo/state` 可查看运行状态，两者都沿用网关令牌鉴权。
 
 Use these for memory quality. `OMBRE_API_KEY` still works as a legacy shared key, but the split variables are clearer:
 

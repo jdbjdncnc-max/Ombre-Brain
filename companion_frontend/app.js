@@ -500,7 +500,8 @@ async function sendMessage() {
       id: crypto.randomUUID(),
       role: "user",
       content: text,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      timezone: currentTimeZone()
     });
   }
 
@@ -525,7 +526,8 @@ async function generateAssistantReply() {
     model: state.settings.model,
     usage: null,
     pending: true,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    timezone: currentTimeZone()
   };
 
   state.messages.push(assistantMessage);
@@ -684,7 +686,8 @@ function buildGatewayHeaders() {
     ...buildAuthHeaders(),
     "Content-Type": "application/json",
     "Accept": "text/event-stream",
-    "X-Ombre-Session-Id": state.sessionId
+    "X-Ombre-Session-Id": state.sessionId,
+    "X-Ombre-Client-Timezone": currentTimeZone()
   };
 }
 
@@ -704,7 +707,7 @@ function buildRequestMessages() {
     .slice(latestSummaryIndex + 1)
     .filter((message) => !message.pending)
     .filter((message) => message.role === "user" || message.role === "assistant")
-    .map(({ role, content }) => ({ role, content }));
+    .map(messageForGateway);
   const scheduleContext = buildScheduleInjection();
   const systemMessages = [];
 
@@ -752,15 +755,39 @@ function normalizeStoredMessages(value) {
       && !(message.role === "summary" && message.pending)
     ))
     .map((message) => {
-      if (message.role !== "assistant" || !message.reasoningPresentationPending) {
-        return message;
+      const normalized = message.role === "assistant" && message.reasoningPresentationPending
+        ? {
+            ...message,
+            reasoning: message.reasoning || message.reasoningSource || "",
+            reasoningPresentationPending: false
+          }
+        : message;
+      if (
+        (normalized.role === "user" || normalized.role === "assistant")
+        && normalized.createdAt
+        && !normalized.timezone
+      ) {
+        return { ...normalized, timezone: currentTimeZone() };
       }
-      return {
-        ...message,
-        reasoning: message.reasoning || message.reasoningSource || "",
-        reasoningPresentationPending: false
-      };
+      return normalized;
     });
+}
+
+function messageForGateway(message) {
+  const sentAt = normalizeMessageTimestamp(message.createdAt);
+  const timezone = normalizeTimeZone(message.timezone);
+  return {
+    role: message.role,
+    content: message.content,
+    ...(sentAt
+      ? {
+          context: {
+            sentAt,
+            timezone
+          }
+        }
+      : {})
+  };
 }
 
 function messagesSinceLatestSummary() {
@@ -896,7 +923,7 @@ async function maybeSummarizeConversation() {
         prompt: summaryPrompt,
         user_reference: summaryUserReference(),
         previous_summary: previousSummary,
-        messages: newMessages.map(({ role, content }) => ({ role, content }))
+        messages: newMessages.map(messageForGateway)
       })
     });
     const data = await response.json().catch(() => ({}));
@@ -2742,6 +2769,15 @@ function createMessageIdentity(message) {
 function createMessageFooter(message) {
   const footer = document.createElement("div");
   footer.className = "message-footer";
+  const timestamp = formatMessageTimestamp(message.createdAt, message.timezone);
+  if (timestamp) {
+    const time = document.createElement("time");
+    time.className = "message-time";
+    time.dateTime = message.createdAt;
+    time.title = `${message.createdAt} · ${normalizeTimeZone(message.timezone)}`;
+    time.textContent = timestamp;
+    footer.append(time);
+  }
   if (message.role === "assistant") {
     const usageText = formatMessageUsage(message.usage);
     if (usageText) {
@@ -3339,6 +3375,44 @@ function updateClock() {
     minute: "2-digit",
     hour12: false
   }).format(new Date());
+}
+
+function currentTimeZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+function normalizeTimeZone(value) {
+  const candidate = String(value || "").trim() || currentTimeZone();
+  try {
+    new Intl.DateTimeFormat("zh-CN", { timeZone: candidate }).format(new Date());
+    return candidate;
+  } catch {
+    return currentTimeZone();
+  }
+}
+
+function normalizeMessageTimestamp(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+}
+
+function formatMessageTimestamp(value, timezone) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: normalizeTimeZone(timezone)
+  }).format(date);
 }
 
 function setBusy(value) {
