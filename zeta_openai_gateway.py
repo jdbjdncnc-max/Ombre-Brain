@@ -1,4 +1,5 @@
 ﻿import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -24,6 +25,7 @@ from bucket_manager import BucketManager
 from dehydrator import Dehydrator
 from embedding_engine import EmbeddingEngine
 from gateway_system_prompt import GatewaySystemPromptStore, inject_gateway_messages
+from solo.appraisal import APPRAISAL_SYSTEM_PROMPT, build_appraisal_user_text, parse_appraisal_response
 from solo.service import SoloService, normalize_timezone_name, timezone_info
 from utils import load_config, setup_logging
 from zeta_gateway import ZetaMemoryGateway
@@ -240,6 +242,9 @@ class ZetaOpenAIGateway:
             "model": self.public_model,
             "summary_ready": bool(self.summary_chat_url and self.summary_api_key and self.summary_model),
             "summary_model": self.summary_model,
+            "solo_appraisal_ready": bool(
+                self.solo.enabled and self.summary_chat_url and self.summary_api_key and self.summary_model
+            ),
             "reasoning_presentation_ready": bool(
                 self.upstream_chat_url and self.upstream_api_key and self.upstream_model
             ),
@@ -565,7 +570,122 @@ class ZetaOpenAIGateway:
         except ValueError:
             response_body = {}
         response_model = str(response_body.get("model") or model).strip() if isinstance(response_body, dict) else model
-        return JSONResponse({"summary": summary, "model": response_model})
+        appraisal_scheduled = self._schedule_emotion_appraisal(
+            summary=summary,
+            new_messages=messages,
+            model=model,
+            user_reference=user_reference,
+        )
+        return JSONResponse({
+            "summary": summary,
+            "model": response_model,
+            "emotion_appraisal_scheduled": appraisal_scheduled,
+        })
+
+    def _schedule_emotion_appraisal(
+        self,
+        *,
+        summary: str,
+        new_messages: list[dict[str, Any]],
+        model: str,
+        user_reference: str,
+    ) -> bool:
+        solo = getattr(self, "solo", None)
+        if solo is None or not bool(getattr(solo, "enabled", False)):
+            return False
+        try:
+            current_state = solo.appraisal_snapshot()
+        except Exception as exc:
+            logger.warning("Unable to read solitude state for semantic appraisal: %s", exc)
+            return False
+        if not current_state:
+            return False
+
+        fingerprint_source = json.dumps(
+            {"summary": summary, "new_messages": new_messages},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        appraisal_id = "summary_" + hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()[:24]
+
+        async def runner() -> None:
+            try:
+                await self._run_emotion_appraisal(
+                    summary=summary,
+                    new_messages=new_messages,
+                    current_state=current_state,
+                    model=model,
+                    user_reference=user_reference,
+                    appraisal_id=appraisal_id,
+                )
+            except Exception as exc:
+                logger.warning("Conversation emotion appraisal failed | id=%s error=%s", appraisal_id, exc)
+
+        asyncio.create_task(runner())
+        return True
+
+    async def _run_emotion_appraisal(
+        self,
+        *,
+        summary: str,
+        new_messages: list[dict[str, Any]],
+        current_state: dict[str, Any],
+        model: str,
+        user_reference: str,
+        appraisal_id: str,
+    ) -> None:
+        solo = getattr(self, "solo", None)
+        if solo is None or not bool(getattr(solo, "enabled", False)):
+            return
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": APPRAISAL_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": build_appraisal_user_text(
+                        summary=summary,
+                        new_messages=new_messages,
+                        current_state=current_state,
+                        user_reference=user_reference,
+                    ),
+                },
+            ],
+            "stream": False,
+        }
+        try:
+            response = await self.http.post(
+                self.summary_chat_url,
+                headers=self._upstream_headers(self.summary_api_key),
+                json=payload,
+                timeout=self.summary_timeout,
+            )
+        except httpx.RequestError as exc:
+            logger.warning("Emotion appraisal provider request failed | id=%s error=%s", appraisal_id, exc)
+            return
+        if not 200 <= response.status_code < 300:
+            logger.warning(
+                "Emotion appraisal provider returned HTTP %s | id=%s body=%s",
+                response.status_code,
+                appraisal_id,
+                _preview_text(response.text),
+            )
+            return
+        appraisal = parse_appraisal_response(self._assistant_text_from_response(response))
+        if appraisal is None:
+            logger.warning("Emotion appraisal returned invalid JSON | id=%s", appraisal_id)
+            return
+        result = await solo.apply_conversation_appraisal(
+            appraisal,
+            appraisal_id=appraisal_id,
+        )
+        logger.info(
+            "Conversation emotion appraisal applied | id=%s duplicate=%s deltas=%s",
+            appraisal_id,
+            bool(result.get("duplicate")),
+            result.get("applied", {}),
+        )
 
     async def reasoning_presentation(self, request: Request) -> JSONResponse:
         auth = self._authorize(request)
@@ -1179,7 +1299,20 @@ class ZetaOpenAIGateway:
         memory_context = self._build_injection_text(recalled)
         if memory_context:
             parts.append(memory_context)
+        solo_context = self._solo_system_context()
+        if solo_context:
+            parts.append(solo_context)
         return "\n\n".join(parts).strip()
+
+    def _solo_system_context(self) -> str:
+        solo = getattr(self, "solo", None)
+        if solo is None:
+            return ""
+        try:
+            return str(solo.model_context_text() or "").strip()
+        except Exception as exc:
+            logger.warning("Unable to build solitude model context: %s", exc)
+            return ""
 
     def _build_injection_text(self, recalled: dict[str, Any]) -> str:
         injection = str(recalled.get("injection_text") or "").strip()

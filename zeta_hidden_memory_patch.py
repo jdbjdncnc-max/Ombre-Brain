@@ -165,6 +165,10 @@ def _build_gateway_system_text(
     memory_context = self._build_injection_text(recalled)
     if memory_context:
         parts.append(memory_context)
+    solo_context_builder = getattr(self, "_solo_system_context", None)
+    solo_context = solo_context_builder() if callable(solo_context_builder) else ""
+    if solo_context:
+        parts.append(solo_context)
     return "\n\n".join(parts).strip()
 
 
