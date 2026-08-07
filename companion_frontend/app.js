@@ -95,6 +95,9 @@ const defaultSettings = {
   duettoUrl: ""
 };
 
+const DUETTO_LOAD_TIMEOUT_MS = 15000;
+let duettoLoadTimeoutId = 0;
+
 const COURSE_PERIODS = [
   { index: 1, start: "08:00", end: "08:45" },
   { index: 2, start: "08:55", end: "09:40" },
@@ -210,6 +213,7 @@ const els = {
   duettoCardSubtitle: document.querySelector("#duettoCardSubtitle"),
   duettoFrame: document.querySelector("#duettoFrame"),
   duettoFrameLoading: document.querySelector("#duettoFrameLoading"),
+  duettoFrameLoadingText: document.querySelector("#duettoFrameLoadingText"),
   duettoFrameStatus: document.querySelector("#duettoFrameStatus"),
   musicBackButton: document.querySelector("#musicBackButton"),
   reloadDuettoButton: document.querySelector("#reloadDuettoButton"),
@@ -337,6 +341,7 @@ function bindEvents() {
   els.musicBackButton.addEventListener("click", closeDuettoView);
   els.reloadDuettoButton.addEventListener("click", () => openDuettoView({ forceReload: true }));
   els.duettoFrame.addEventListener("load", handleDuettoFrameLoad);
+  els.duettoFrame.addEventListener("error", handleDuettoFrameError);
   window.addEventListener("message", handleDuettoMessage);
   window.addEventListener("popstate", handleNavigationPopState);
 
@@ -2995,9 +3000,16 @@ function openDuettoView({ forceReload = false } = {}) {
     history.pushState({ ...(history.state || {}), companionView: "music" }, "", "#music");
   }
   setActiveTab("music");
-  els.duettoFrameLoading.hidden = false;
+  const needsNavigation = forceReload || els.duettoFrame.dataset.embedUrl !== url;
+  if (!needsNavigation && els.duettoFrame.dataset.loaded === "true") {
+    markDuettoFrameReady();
+    return;
+  }
+  showDuettoFrameLoading("正在连接 Duetto…");
   setDuettoFrameStatus("载入中");
-  if (forceReload || els.duettoFrame.dataset.embedUrl !== url) {
+  els.duettoFrame.dataset.loaded = "false";
+  startDuettoLoadTimeout();
+  if (needsNavigation) {
     els.duettoFrame.dataset.embedUrl = url;
     els.duettoFrame.src = forceReload ? cacheBustedUrl(url) : url;
   } else {
@@ -3047,16 +3059,60 @@ function cacheBustedUrl(value) {
 }
 
 function handleDuettoFrameLoad() {
+  if (!els.duettoFrame.dataset.embedUrl) {
+    return;
+  }
+  markDuettoFrameReady();
   syncDuettoFrameTheme();
+}
+
+function handleDuettoFrameError() {
+  clearDuettoLoadTimeout();
+  els.duettoFrame.dataset.loaded = "false";
+  showDuettoFrameLoading("Duetto 载入失败，请点右上角重试", true);
+  setDuettoFrameStatus("载入失败", true);
 }
 
 function handleDuettoMessage(event) {
   if (event.source !== els.duettoFrame.contentWindow || event.data?.type !== "duetto:ready") {
     return;
   }
-  els.duettoFrameLoading.hidden = true;
-  setDuettoFrameStatus("已载入");
+  markDuettoFrameReady();
   syncDuettoFrameTheme();
+}
+
+function markDuettoFrameReady() {
+  clearDuettoLoadTimeout();
+  els.duettoFrame.dataset.loaded = "true";
+  els.duettoFrameLoading.hidden = true;
+  els.duettoFrameLoading.classList.remove("error");
+  setDuettoFrameStatus("已载入");
+}
+
+function showDuettoFrameLoading(message, error = false) {
+  els.duettoFrameLoadingText.textContent = message;
+  els.duettoFrameLoading.classList.toggle("error", error);
+  els.duettoFrameLoading.hidden = false;
+}
+
+function startDuettoLoadTimeout() {
+  clearDuettoLoadTimeout();
+  duettoLoadTimeoutId = window.setTimeout(() => {
+    duettoLoadTimeoutId = 0;
+    if (els.duettoFrame.dataset.loaded === "true") {
+      return;
+    }
+    showDuettoFrameLoading("连接超时，请确认地址为 HTTPS 后重试", true);
+    setDuettoFrameStatus("连接超时", true);
+  }, DUETTO_LOAD_TIMEOUT_MS);
+}
+
+function clearDuettoLoadTimeout() {
+  if (!duettoLoadTimeoutId) {
+    return;
+  }
+  window.clearTimeout(duettoLoadTimeoutId);
+  duettoLoadTimeoutId = 0;
 }
 
 function setDuettoFrameStatus(label, offline = false) {
@@ -3104,6 +3160,9 @@ function normalizeDuettoUrl(value) {
     const url = new URL(String(value || "").trim());
     if (url.protocol !== "https:" && url.protocol !== "http:") {
       return "";
+    }
+    if (url.protocol === "http:" && (location.protocol === "https:" || url.hostname.endsWith(".zeabur.app"))) {
+      url.protocol = "https:";
     }
     if (url.pathname === "/") {
       url.pathname = "/pkg/index.html";
@@ -3174,9 +3233,13 @@ function hydrateSettingsForm() {
 }
 
 function readSettingsForm() {
+  const normalizedDuettoUrl = normalizeDuettoUrl(els.duettoUrl.value);
+  if (normalizedDuettoUrl) {
+    els.duettoUrl.value = normalizedDuettoUrl;
+  }
   state.settings = {
     backendUrl: els.backendUrl.value.trim() || defaultBackend,
-    duettoUrl: els.duettoUrl.value.trim(),
+    duettoUrl: normalizedDuettoUrl,
     gatewayToken: els.gatewayToken.value.trim(),
     userName: els.userDisplayName.value.trim() || defaultSettings.userName,
     assistantName: els.assistantDisplayName.value.trim() || defaultSettings.assistantName,
@@ -3236,6 +3299,7 @@ function normalizeSettings(value) {
   return {
     ...defaultSettings,
     ...persistedSettings,
+    duettoUrl: normalizeDuettoUrl(settings.duettoUrl),
     backgroundTransparency: Number.isFinite(normalizedTransparency)
       ? Math.min(1, Math.max(0, normalizedTransparency))
       : defaultSettings.backgroundTransparency,

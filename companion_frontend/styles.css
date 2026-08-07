@@ -920,6 +920,17 @@ button {
   display: none;
 }
 
+.duetto-frame-loading.error {
+  padding: 24px;
+  color: #9d2838;
+  text-align: center;
+}
+
+.duetto-frame-loading.error .duetto-loading-dot {
+  background: #9d2838;
+  animation: none;
+}
+
 .duetto-loading-dot {
   width: 9px;
   height: 9px;
