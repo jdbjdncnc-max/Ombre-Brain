@@ -17,9 +17,11 @@ from statistics import median
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .actions import ACTION_SPECS, choose_action, perform_action
 from .dynamics import advance_emotions, apply_user_return
 from .emotion_model import (
     aggregate_buckets,
+    apply_delta,
     default_channels,
     dimensions,
     mood_line,
@@ -98,11 +100,10 @@ def _timezone_info(name: str):
 
 
 class SoloService:
-    """Runs cheap clock pulses and records when an AI decision becomes due.
+    """Runs clock pulses, emotion dynamics, and honest local P1 activities.
 
-    This first-stage service intentionally does not call a model. Later action
-    modules can consume ``lastDecision`` and decide whether a model-backed
-    action is warranted.
+    This stage intentionally does not claim model, web, or MCP activity. Every
+    visible timeline item is either a real local operation or explicit idle time.
     """
 
     def __init__(
@@ -112,6 +113,7 @@ class SoloService:
         enabled: bool | None = None,
         pulse_seconds: int | None = None,
         decision_seconds: int | None = None,
+        activity_min_seconds: int | None = None,
         jitter_ratio: float = 0.2,
         timezone_name: str | None = None,
         rng: random.Random | None = None,
@@ -122,6 +124,9 @@ class SoloService:
         self.emotion_path = self.solo_dir / "emotion_state.json"
         self.emotion_events_path = self.solo_dir / "emotion_events.jsonl"
         self.emotion_series_path = self.solo_dir / "emotion_series.jsonl"
+        self.activities_path = self.solo_dir / "activities.jsonl"
+        self.unsent_path = self.solo_dir / "unsent.jsonl"
+        self.talking_points_path = self.solo_dir / "talking_points.json"
         self.lease_path = self.solo_dir / "heartbeat.lock"
         self.enabled = _truthy(os.environ.get("OMBRE_SOLO_ENABLED", "0")) if enabled is None else bool(enabled)
         self.pulse_seconds = pulse_seconds if pulse_seconds is not None else _bounded_int(
@@ -129,6 +134,9 @@ class SoloService:
         )
         self.decision_seconds = decision_seconds if decision_seconds is not None else _bounded_int(
             os.environ.get("OMBRE_SOLO_DECISION_SECONDS"), 180, 30, 86400
+        )
+        self.activity_min_seconds = activity_min_seconds if activity_min_seconds is not None else _bounded_int(
+            os.environ.get("OMBRE_SOLO_ACTIVITY_MIN_SECONDS"), 5400, 300, 21600
         )
         self.jitter_ratio = max(0.0, min(0.5, float(jitter_ratio)))
         configured_timezone = timezone_name or os.environ.get("OMBRE_SOLO_TIMEZONE", "Asia/Taipei")
@@ -151,6 +159,7 @@ class SoloService:
             "running": bool(self._task and not self._task.done()),
             "pulseSeconds": self.pulse_seconds,
             "decisionSeconds": self.decision_seconds,
+            "activityMinSeconds": self.activity_min_seconds,
             "timezone": self.timezone_name,
         }
 
@@ -206,9 +215,47 @@ class SoloService:
             runtime["config"] = {
                 "pulseSeconds": self.pulse_seconds,
                 "decisionSeconds": self.decision_seconds,
+                "activityMinSeconds": self.activity_min_seconds,
                 "timezone": self.timezone_name,
             }
             return self._public_state(runtime, emotion)
+
+    async def get_timeline(self, *, hours: int = 24) -> dict[str, Any]:
+        safe_hours = max(1, min(24 * 7, int(hours)))
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=safe_hours)
+        async with self._state_lock:
+            series = [
+                item for item in self._read_jsonl(self.emotion_series_path, limit=4000)
+                if (_parse_time(item.get("ts")) or datetime.min.replace(tzinfo=timezone.utc)) >= cutoff
+            ]
+            activities = [
+                item for item in self._read_jsonl(self.activities_path, limit=2000)
+                if (_parse_time(item.get("ts")) or datetime.min.replace(tzinfo=timezone.utc)) >= cutoff
+            ]
+            unsent = [
+                item for item in self._read_jsonl(self.unsent_path, limit=200)
+                if (_parse_time(item.get("ts")) or datetime.min.replace(tzinfo=timezone.utc)) >= cutoff
+            ]
+            talking_points = self._read_talking_points()
+            return {
+                "hours": safe_hours,
+                "series": sorted(series, key=lambda item: str(item.get("ts") or "")),
+                "activities": sorted(activities, key=lambda item: str(item.get("ts") or ""), reverse=True),
+                "unsent": sorted(unsent, key=lambda item: str(item.get("ts") or ""), reverse=True)[:20],
+                "talkingPoints": list(reversed(talking_points[-12:])),
+            }
+
+    async def get_activities(self, *, limit: int = 30, before: Any = None) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(100, int(limit)))
+        before_time = _parse_time(before)
+        async with self._state_lock:
+            items = self._read_jsonl(self.activities_path, limit=5000)
+            if before_time is not None:
+                items = [
+                    item for item in items
+                    if (_parse_time(item.get("ts")) or datetime.max.replace(tzinfo=timezone.utc)) < before_time
+                ]
+            return sorted(items, key=lambda item: str(item.get("ts") or ""), reverse=True)[:safe_limit]
 
     async def note_user_message(self, *, sent_at: Any = None, timezone_name: Any = None) -> None:
         if not self.enabled:
@@ -292,10 +339,13 @@ class SoloService:
             state["lockOwner"] = self._owner
             state["clock"] = self._clock_payload(current, state.get("userTimezone"))
 
+            emotion = self._advance_emotion_state(state, current)
             next_decision = _parse_time(state.get("nextDecisionAt"))
             decision_due = force_decision or next_decision is None or current >= next_decision
             if decision_due:
                 wake_id = f"wake_{current.strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
+                activity = self._maybe_run_activity(state, emotion, current)
+                result = str(activity.get("type") or "idle") if activity else "idle"
                 state["decisionCount"] = int(state.get("decisionCount") or 0) + 1
                 state["lastDecisionAt"] = _iso(current)
                 state["lastWakeId"] = wake_id
@@ -303,19 +353,20 @@ class SoloService:
                     "id": wake_id,
                     "at": _iso(current),
                     "trigger": str(trigger or "timer")[:80],
-                    "result": "idle",
+                    "result": result,
                     "modelCalled": False,
+                    "activityId": str(activity.get("id") or "") if activity else "",
                 }
                 state["nextDecisionAt"] = _iso(
                     current + timedelta(seconds=self._jittered(self.decision_seconds))
                 )
                 logger.info(
-                    "Solo decision due | wake=%s trigger=%s result=idle model_called=false",
+                    "Solo decision due | wake=%s trigger=%s result=%s model_called=false",
                     wake_id,
                     trigger,
+                    result,
                 )
 
-            emotion = self._advance_emotion_state(state, current)
             self._write_json(self.state_path, state)
             return {
                 "ok": True,
@@ -326,7 +377,7 @@ class SoloService:
 
     def _new_state(self, now: datetime) -> dict[str, Any]:
         return {
-            "version": 1,
+            "version": 2,
             "enabled": self.enabled,
             "status": "idle",
             "updatedAt": _iso(now),
@@ -339,6 +390,9 @@ class SoloService:
             "decisionCount": 0,
             "lastWakeId": "",
             "lastDecision": None,
+            "lastActivityAt": "",
+            "lastActionAt": {},
+            "mode": {"key": "idle", "label": "安静待着"},
             "clock": self._clock_payload(now, self.timezone_name),
             "lockOwner": "",
         }
@@ -437,9 +491,17 @@ class SoloService:
         current_dimensions = dimensions(channels)
         drive = strongest_drive(channels, current_dimensions)
         events = self._read_recent_events(120)
+        mode = runtime.get("mode") if isinstance(runtime.get("mode"), dict) else None
+        if not mode:
+            mode = {"key": "resting", "label": "在休息"} if channels.get("fatigue", 0) >= 55 else {
+                "key": "idle",
+                "label": "安静待着",
+            }
+        talking_points = self._read_talking_points()
+        recent_activities = self._read_jsonl(self.activities_path, limit=1)
         result.update({
             "updatedAt": str(emotion.get("updatedAt") or runtime.get("updatedAt") or ""),
-            "mode": {"key": "idle", "label": "安静待着"},
+            "mode": deepcopy(mode),
             "drive": drive,
             "moodLine": str(emotion.get("moodLine") or mood_line(aggregate_buckets(channels), drive)),
             "buckets": public_buckets(channels, events),
@@ -448,8 +510,127 @@ class SoloService:
             "lastUserMessageAt": str(emotion.get("lastUserMessageAt") or runtime.get("lastUserMessageAt") or ""),
             "expectedGapHours": float(emotion.get("expectedGapHours") or 4.0),
             "budget": deepcopy(emotion.get("budget") or {}),
+            "talkingPoints": deepcopy(list(reversed(talking_points[-2:]))),
+            "lastActivity": deepcopy(recent_activities[-1]) if recent_activities else None,
         })
         return result
+
+    def _maybe_run_activity(
+        self,
+        runtime: dict[str, Any],
+        emotion: dict[str, Any],
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        last_activity = _parse_time(runtime.get("lastActivityAt"))
+        if last_activity and (now - last_activity).total_seconds() < self.activity_min_seconds:
+            elapsed = (now - last_activity).total_seconds()
+            if elapsed >= min(1800, self.activity_min_seconds / 2):
+                runtime["mode"] = self._resting_or_idle_mode(emotion)
+            return None
+
+        last_actions = runtime.get("lastActionAt") if isinstance(runtime.get("lastActionAt"), dict) else {}
+        available: list[str] = []
+        for key, spec in ACTION_SPECS.items():
+            last_action = _parse_time(last_actions.get(key))
+            if last_action is None or now - last_action >= timedelta(minutes=spec.cooldown_minutes):
+                available.append(key)
+
+        if not available:
+            runtime["mode"] = self._resting_or_idle_mode(emotion)
+            return None
+
+        spec = choose_action(
+            emotion.get("channels") or {},
+            available=available,
+            rng=self._rng,
+        )
+        outcome = perform_action(spec, emotion.get("channels") or {}, rng=self._rng)
+        activity_id = f"act_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        drive = strongest_drive(emotion.get("channels") or {})
+        channels = normalize_channels(emotion.get("channels") or {})
+        applied: dict[str, float] = {}
+        for key, raw_delta in (outcome.get("deltas") or {}).items():
+            before = float(channels.get(key, 0.0))
+            channels = apply_delta(channels, key, raw_delta)
+            change = float(channels.get(key, before)) - before
+            if abs(change) >= 0.01:
+                applied[key] = round(change, 3)
+
+        emotion["channels"] = channels
+        emotion["updatedAt"] = _iso(now)
+        self._refresh_emotion_derived(emotion)
+        activity = {
+            "id": activity_id,
+            "ts": _iso(now),
+            "type": str(outcome.get("type") or spec.key)[:60],
+            "kind": str(outcome.get("kind") or spec.kind)[:20],
+            "status": str(outcome.get("status") or "ok")[:20],
+            "title": str(outcome.get("title") or spec.label).strip()[:120],
+            "summary": str(outcome.get("summary") or "").strip()[:240],
+            "detail": str(outcome.get("detail") or "").strip()[:1200],
+            "evidence": deepcopy(outcome.get("evidence") or {"kind": "self"}),
+            "felt": str(outcome.get("felt") or "").strip()[:160],
+            "drive": f"{drive['label']} {drive['value']:.0f}",
+            "deltas": applied,
+            "source": str(outcome.get("source") or "self")[:20],
+            "llmCalls": max(0, int(outcome.get("llmCalls") or 0)),
+        }
+        if isinstance(outcome.get("game"), dict):
+            activity["game"] = deepcopy(outcome["game"])
+
+        self._append_jsonl(self.activities_path, activity)
+        if applied:
+            self._record_emotion_event(
+                emotion,
+                ts=now,
+                source=activity["source"],
+                cause_key=activity["type"],
+                deltas=applied,
+                reason=activity["title"],
+                felt=activity["felt"],
+                activity_id=activity_id,
+            )
+        self._record_hourly_series(emotion, now, force=True, activity_id=activity_id)
+        self._write_json(self.emotion_path, emotion)
+
+        unsent_text = str(outcome.get("unsentText") or "").strip()
+        if unsent_text:
+            self._append_jsonl(self.unsent_path, {
+                "id": f"unsent_{uuid.uuid4().hex[:10]}",
+                "ts": _iso(now),
+                "text": unsent_text[:600],
+                "why": activity["felt"],
+                "activityId": activity_id,
+            })
+        talking_point = str(outcome.get("talkingPoint") or "").strip()
+        if talking_point:
+            points = self._read_talking_points()
+            points.append({
+                "id": f"talk_{uuid.uuid4().hex[:10]}",
+                "ts": _iso(now),
+                "text": talking_point[:600],
+                "activityId": activity_id,
+                "used": False,
+            })
+            self._write_json(self.talking_points_path, {"items": points[-12:]})
+
+        last_actions[spec.key] = _iso(now)
+        runtime["lastActionAt"] = last_actions
+        runtime["lastActivityAt"] = _iso(now)
+        runtime["mode"] = deepcopy(outcome.get("mode") or {"key": spec.mode_key, "label": spec.mode_label})
+        return activity
+
+    @staticmethod
+    def _resting_or_idle_mode(emotion: dict[str, Any]) -> dict[str, str]:
+        channels = normalize_channels(emotion.get("channels") or {})
+        if channels.get("fatigue", 0) >= 55:
+            return {"key": "resting", "label": "在休息"}
+        return {"key": "idle", "label": "安静待着"}
+
+    def _read_talking_points(self) -> list[dict[str, Any]]:
+        value = self._read_json(self.talking_points_path)
+        items = value.get("items") if isinstance(value.get("items"), list) else []
+        return [deepcopy(item) for item in items if isinstance(item, dict)][-12:]
 
     def _record_emotion_event(
         self,
@@ -461,6 +642,7 @@ class SoloService:
         deltas: dict[str, float],
         reason: str,
         felt: str,
+        activity_id: str = "",
     ) -> None:
         clean_deltas = {
             key: round(max(-15.0, min(15.0, float(value))), 3)
@@ -476,33 +658,45 @@ class SoloService:
             "deltas": clean_deltas,
             "reason": str(reason)[:120],
             "felt": str(felt)[:120],
-            "activityId": "",
+            "activityId": str(activity_id or "")[:80],
         })
 
-    def _record_hourly_series(self, emotion: dict[str, Any], now: datetime) -> None:
+    def _record_hourly_series(
+        self,
+        emotion: dict[str, Any],
+        now: datetime,
+        *,
+        force: bool = False,
+        activity_id: str = "",
+    ) -> None:
         last_series = _parse_time(emotion.get("lastSeriesAt"))
-        if last_series and now - last_series < timedelta(hours=1):
+        if not force and last_series and now - last_series < timedelta(hours=1):
             return
         self._append_jsonl(self.emotion_series_path, {
             "ts": _iso(now),
             "buckets": deepcopy(emotion.get("buckets") or {}),
+            "activityId": str(activity_id or "")[:80],
         })
         emotion["lastSeriesAt"] = _iso(now)
 
-    def _read_recent_events(self, limit: int) -> list[dict[str, Any]]:
+    @staticmethod
+    def _read_jsonl(path: Path, *, limit: int = 1000) -> list[dict[str, Any]]:
         try:
-            lines = self.emotion_events_path.read_text(encoding="utf-8").splitlines()
+            lines = path.read_text(encoding="utf-8").splitlines()
         except OSError:
             return []
-        events: list[dict[str, Any]] = []
-        for line in reversed(lines[-max(1, limit):]):
+        result: list[dict[str, Any]] = []
+        for line in lines[-max(1, int(limit)):]:
             try:
                 value = json.loads(line)
             except (TypeError, json.JSONDecodeError):
                 continue
             if isinstance(value, dict):
-                events.append(value)
-        return events
+                result.append(value)
+        return result
+
+    def _read_recent_events(self, limit: int) -> list[dict[str, Any]]:
+        return list(reversed(self._read_jsonl(self.emotion_events_path, limit=limit)))
 
     @staticmethod
     def _absence_reason(hours: float) -> str:

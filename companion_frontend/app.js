@@ -1,5 +1,5 @@
 import { platform } from "./platform.js";
-import { createSoloPanel } from "./solo.js?v=20260807";
+import { createSoloPanel } from "./solo.js?v=20260807.2";
 
 const LEGACY_SUMMARY_PROMPT_V1 = `你负责为一段持续对话生成“累计上下文摘要”，供同一个对话模型在后续轮次继续使用。
 
@@ -269,6 +269,7 @@ const els = {
 
 const soloPanel = createSoloPanel({
   requestState: () => gatewayFetch("/api/solo/state"),
+  requestTimeline: () => gatewayFetch("/api/solo/timeline?hours=24"),
   onClose: closeSoloView
 });
 

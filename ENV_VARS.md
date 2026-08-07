@@ -54,6 +54,7 @@ OMBRE_DASHBOARD_PASSWORD=your-dashboard-password
 OMBRE_SOLO_ENABLED=0
 OMBRE_SOLO_PULSE_SECONDS=60
 OMBRE_SOLO_DECISION_SECONDS=180
+OMBRE_SOLO_ACTIVITY_MIN_SECONDS=5400
 OMBRE_SOLO_TIMEZONE=Asia/Taipei
 ```
 
@@ -63,9 +64,12 @@ OMBRE_SOLO_TIMEZONE=Asia/Taipei
 
 独处系统第一阶段默认关闭。设置 `OMBRE_SOLO_ENABLED=1` 后，服务端每隔
 `OMBRE_SOLO_PULSE_SECONDS` 秒更新时间状态，并约每隔
-`OMBRE_SOLO_DECISION_SECONDS` 秒记录一次行动判断；第一阶段的行动结果固定为
-`idle`，不会调用模型或发送主动消息。`POST /api/solo/wake` 可手动触发一次判断，
-`GET /api/solo/state` 可查看运行状态，两者都沿用网关令牌鉴权。
+`OMBRE_SOLO_DECISION_SECONDS` 秒进行一次行动判断。为了让短间隔唤醒不把时间轴灌满，
+两条可见轨迹默认至少间隔 `OMBRE_SOLO_ACTIVITY_MIN_SECONDS` 秒。当前轨迹阶段只执行
+可验证的本地自发活动（发呆、休息、整理感受、照顾自己、草稿、谈话点和真实生成的
+井字棋记录），不会调用模型、联网或伪造外部经历。`POST /api/solo/wake` 可手动触发
+一次判断；`GET /api/solo/state`、`GET /api/solo/timeline` 和
+`GET /api/solo/activities` 可查看状态与轨迹，均沿用网关令牌鉴权。
 
 Use these for memory quality. `OMBRE_API_KEY` still works as a legacy shared key, but the split variables are clearer:
 

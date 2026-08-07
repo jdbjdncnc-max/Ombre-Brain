@@ -1460,6 +1460,28 @@ Zeta hidden memory protocol:
             return auth
         return JSONResponse({"ok": True, **(await self.solo.get_state())})
 
+    async def solo_timeline(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        try:
+            hours = int(str(request.query_params.get("hours") or "24"))
+        except ValueError:
+            hours = 24
+        return JSONResponse({"ok": True, **(await self.solo.get_timeline(hours=hours))})
+
+    async def solo_activities(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        try:
+            limit = int(str(request.query_params.get("limit") or "30"))
+        except ValueError:
+            limit = 30
+        before = str(request.query_params.get("before") or "").strip()
+        items = await self.solo.get_activities(limit=limit, before=before)
+        return JSONResponse({"ok": True, "items": items})
+
     async def solo_wake(self, request: Request) -> JSONResponse:
         auth = self._authorize(request)
         if auth is not None:
@@ -2113,6 +2135,24 @@ async def solo_state_route(request: Request) -> Response:
     return await gateway.solo_state(request)
 
 
+async def solo_timeline_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.solo_timeline(request)
+
+
+async def solo_activities_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.solo_activities(request)
+
+
 async def solo_wake_route(request: Request) -> Response:
     if gateway is None:
         return JSONResponse(
@@ -2145,6 +2185,8 @@ routes = [
     Route("/api/conversation-summary", conversation_summary_route, methods=["POST"]),
     Route("/api/reasoning-presentation", reasoning_presentation_route, methods=["POST"]),
     Route("/api/solo/state", solo_state_route, methods=["GET"]),
+    Route("/api/solo/timeline", solo_timeline_route, methods=["GET"]),
+    Route("/api/solo/activities", solo_activities_route, methods=["GET"]),
     Route("/api/solo/wake", solo_wake_route, methods=["POST"]),
 ]
 

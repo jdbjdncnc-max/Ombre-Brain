@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Companion 1.0</title>
   <link rel="stylesheet" href="/frontend/vendor/katex/katex.min.css">
-  <link rel="stylesheet" href="/frontend/styles.css?v=20260807">
+  <link rel="stylesheet" href="/frontend/styles.css?v=20260807.2">
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -185,9 +185,27 @@
               <p id="soloPanelStatus" class="solo-panel-status" role="status">正在连接独处系统</p>
             </section>
 
-            <section class="solo-next-card" aria-label="后续内容">
-              <span aria-hidden="true">⋯</span>
-              <div><strong>行动轨迹会接在这里</strong><p>下一阶段会把它独处时真正做过的事，和情绪变化放在同一条时间线上。</p></div>
+            <section class="solo-timeline-card" aria-labelledby="soloTimelineTitle">
+              <div class="solo-section-heading">
+                <div><p class="eyebrow">Last 24 hours</p><h2 id="soloTimelineTitle">情绪与轨迹</h2></div>
+                <small id="soloTimelineSummary">正在读取时间轴</small>
+              </div>
+              <div id="soloTimelineLegend" class="solo-timeline-legend" aria-label="情绪曲线图例"></div>
+              <div id="soloEmotionChart" class="solo-emotion-chart" aria-label="近二十四小时情绪曲线"></div>
+              <div class="solo-track-labels" aria-hidden="true"><span>24 小时前</span><span>现在</span></div>
+              <div id="soloActivityTrack" class="solo-activity-track" aria-label="行动时间点"></div>
+              <div id="soloActivityList" class="solo-activity-list" aria-live="polite"></div>
+
+              <div class="solo-notes-grid">
+                <section aria-labelledby="soloUnsentTitle">
+                  <h3 id="soloUnsentTitle">没发出去的话</h3>
+                  <div id="soloUnsentList" class="solo-note-list"></div>
+                </section>
+                <section aria-labelledby="soloTalkingTitle">
+                  <h3 id="soloTalkingTitle">下次想跟你说</h3>
+                  <div id="soloTalkingList" class="solo-note-list"></div>
+                </section>
+              </div>
             </section>
           </div>
         </section>
@@ -662,6 +680,6 @@
   <script src="/frontend/vendor/dompurify/purify.min.js"></script>
   <script src="/frontend/vendor/katex/katex.min.js"></script>
   <script src="/frontend/vendor/katex/auto-render.min.js"></script>
-  <script src="/frontend/app.js?v=20260807" type="module"></script>
+  <script src="/frontend/app.js?v=20260807.2" type="module"></script>
 </body>
 </html>
