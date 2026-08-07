@@ -1210,6 +1210,344 @@ button {
   font-weight: 750;
 }
 
+.mcp-manager {
+  display: grid;
+  gap: 12px;
+  scroll-margin-top: 12px;
+  padding: 15px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, white);
+  border-radius: 20px;
+  background: rgba(246, 251, 247, 0.68);
+  backdrop-filter: blur(18px);
+}
+
+.mcp-manager-heading,
+.mcp-manager-actions,
+.mcp-server-heading,
+.mcp-server-identity,
+.mcp-card-actions,
+.mcp-import-footer {
+  display: flex;
+  align-items: center;
+}
+
+.mcp-manager-heading,
+.mcp-server-heading,
+.mcp-import-footer {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mcp-manager-heading h2 {
+  margin: 2px 0 0;
+  font-size: 20px;
+}
+
+.mcp-manager-actions {
+  gap: 8px;
+}
+
+.mcp-global-status {
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: rgba(23, 33, 31, 0.62);
+  background: rgba(23, 33, 31, 0.07);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.mcp-global-status.enabled {
+  color: #236b51;
+  background: rgba(62, 160, 119, 0.14);
+}
+
+.mcp-import-card {
+  display: grid;
+  gap: 8px;
+}
+
+.mcp-import-card > label,
+.mcp-field > span,
+.mcp-category-field legend {
+  color: rgba(23, 33, 31, 0.68);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.mcp-import-card textarea,
+.mcp-field select,
+.mcp-secret-row input {
+  width: 100%;
+  border: 1px solid rgba(42, 94, 82, 0.17);
+  border-radius: 12px;
+  outline: none;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.mcp-import-card textarea {
+  min-height: 132px;
+  padding: 11px;
+  resize: vertical;
+  font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.mcp-import-card textarea:focus,
+.mcp-field select:focus,
+.mcp-secret-row input:focus {
+  border-color: color-mix(in srgb, var(--accent) 72%, white);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 13%, transparent);
+}
+
+.mcp-import-footer small {
+  max-width: 70%;
+  color: rgba(23, 33, 31, 0.52);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.mcp-manager-message {
+  min-height: 16px;
+  margin: 0;
+  color: #286b59;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.mcp-manager-message.error,
+.mcp-server-error {
+  color: #a13c4a;
+}
+
+.mcp-server-list {
+  display: grid;
+  gap: 12px;
+}
+
+.mcp-server-card,
+.mcp-empty-state {
+  display: grid;
+  gap: 11px;
+  padding: 13px;
+  border: 1px solid rgba(42, 94, 82, 0.13);
+  border-radius: 17px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.mcp-empty-state {
+  place-items: center;
+  padding: 28px 16px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.mcp-empty-state p {
+  max-width: 310px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.mcp-server-identity {
+  min-width: 0;
+  gap: 9px;
+}
+
+.mcp-server-identity > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.mcp-server-identity strong {
+  overflow: hidden;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-server-identity small,
+.mcp-server-count,
+.mcp-credential-state {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.mcp-status-dot {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: rgba(57, 67, 65, 0.25);
+  box-shadow: 0 0 0 3px rgba(57, 67, 65, 0.07);
+}
+
+.mcp-status-dot.connected {
+  background: #3ca579;
+  box-shadow: 0 0 0 3px rgba(60, 165, 121, 0.14);
+}
+
+.mcp-status-dot.error {
+  background: #c84b5e;
+  box-shadow: 0 0 0 3px rgba(200, 75, 94, 0.13);
+}
+
+.mcp-endpoint {
+  overflow: hidden;
+  padding: 7px 9px;
+  border-radius: 10px;
+  color: rgba(21, 58, 50, 0.72);
+  background: rgba(38, 104, 87, 0.07);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-server-error {
+  margin: 0;
+  padding: 8px 9px;
+  border-radius: 10px;
+  background: rgba(174, 49, 71, 0.07);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.mcp-policy-grid {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.42fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.mcp-field {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+}
+
+.mcp-field select {
+  min-height: 36px;
+  padding: 7px 9px;
+  font-size: 11px;
+}
+
+.mcp-category-field {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.mcp-category-field legend {
+  width: 100%;
+  margin-bottom: 1px;
+}
+
+.mcp-check-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 7px;
+  border-radius: 999px;
+  color: rgba(23, 33, 31, 0.68);
+  background: rgba(42, 94, 82, 0.07);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.mcp-check-chip input,
+.mcp-tool-row input {
+  accent-color: var(--accent);
+}
+
+.mcp-tools-details {
+  border-top: 1px solid rgba(42, 94, 82, 0.1);
+  padding-top: 9px;
+}
+
+.mcp-tools-details summary {
+  color: rgba(23, 33, 31, 0.72);
+  font-size: 11px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.mcp-tool-groups {
+  display: grid;
+  gap: 10px;
+  padding-top: 9px;
+}
+
+.mcp-tool-group {
+  display: grid;
+  gap: 6px;
+}
+
+.mcp-tool-group h4 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.mcp-tool-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 10px;
+  background: rgba(42, 94, 82, 0.045);
+  cursor: pointer;
+}
+
+.mcp-tool-row > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.mcp-tool-row strong {
+  overflow-wrap: anywhere;
+  font: 700 10px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.mcp-tool-row small,
+.mcp-tool-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.mcp-tool-row.blocked {
+  cursor: not-allowed;
+  opacity: 0.66;
+}
+
+.mcp-secret-row {
+  display: grid;
+  grid-template-columns: auto minmax(90px, 0.5fr) minmax(110px, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+}
+
+.mcp-secret-row input {
+  min-width: 0;
+  padding: 8px 9px;
+  font-size: 10px;
+}
+
+.mcp-card-actions {
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.small-button.danger {
+  color: #a13c4a;
+  border-color: rgba(161, 60, 74, 0.2);
+}
+
 .chat-header,
 .memory-header,
 .schedule-header,
@@ -2809,5 +3147,17 @@ output {
 
   .week-course span {
     font-size: 10px;
+  }
+
+  .mcp-policy-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mcp-secret-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .mcp-credential-state {
+    grid-column: 1 / -1;
   }
 }

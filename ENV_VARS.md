@@ -56,6 +56,8 @@ OMBRE_SOLO_PULSE_SECONDS=60
 OMBRE_SOLO_DECISION_SECONDS=180
 OMBRE_SOLO_ACTIVITY_MIN_SECONDS=5400
 OMBRE_SOLO_TIMEZONE=Asia/Taipei
+OMBRE_SOLO_MCP_ENABLED=0
+OMBRE_SOLO_MCP_DISCOVERY_TTL_HOURS=24
 ```
 
 `OMBRE_SUMMARY_BASE_URL`、`OMBRE_SUMMARY_API_KEY` 和 `OMBRE_SUMMARY_MODEL` 均可省略；省略时分别复用上游对话模型的地址、密钥和模型。前端设置页可覆盖总结模型 ID。总结提示词不会从环境变量读取，只保存在 Companion 当前设备的前端存储中。
@@ -70,6 +72,14 @@ OMBRE_SOLO_TIMEZONE=Asia/Taipei
 井字棋记录），不会调用模型、联网或伪造外部经历。`POST /api/solo/wake` 可手动触发
 一次判断；`GET /api/solo/state`、`GET /api/solo/timeline` 和
 `GET /api/solo/activities` 可查看状态与轨迹，均沿用网关令牌鉴权。
+
+MCP 客户端默认关闭。设置 `OMBRE_SOLO_MCP_ENABLED=1` 后，工具管理页才能测试并连接
+用户导入的 MCP 服务；配置和能力缓存保存在持久卷的 `gateway/solo/` 目录。远程服务优先
+使用 `streamable-http`，旧服务可以使用 `sse`。`stdio` 也受支持，但容器必须已经安装
+配置中所写的命令；当前 Python Docker 镜像默认没有 `node` / `npx`。
+
+MCP 配置中的凭据只能写成 `${ENV_VAR}` 或 `${secret:server.key}`。前一种在 Zeabur 环境
+变量中设置；后一种通过工具管理页写入持久卷里的私密文件，API 永远不会把明文读回。
 
 Use these for memory quality. `OMBRE_API_KEY` still works as a legacy shared key, but the split variables are clearer:
 

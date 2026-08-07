@@ -32,6 +32,7 @@ from .emotion_model import (
     public_buckets,
     strongest_drive,
 )
+from .mcp_bridge import SoloMcpBridge
 
 
 logger = logging.getLogger("ombre_brain.solo")
@@ -148,6 +149,13 @@ class SoloService:
         self.jitter_ratio = max(0.0, min(0.5, float(jitter_ratio)))
         configured_timezone = timezone_name or os.environ.get("OMBRE_SOLO_TIMEZONE", "Asia/Taipei")
         self.timezone_name = normalize_timezone_name(configured_timezone, "Asia/Taipei")
+        self.mcp = SoloMcpBridge(
+            self.solo_dir,
+            enabled=_truthy(os.environ.get("OMBRE_SOLO_MCP_ENABLED", "0")),
+            discovery_ttl_hours=_bounded_int(
+                os.environ.get("OMBRE_SOLO_MCP_DISCOVERY_TTL_HOURS"), 24, 1, 168
+            ),
+        )
         self._rng = rng or random.Random()
         self._owner = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
         self._task: asyncio.Task | None = None
@@ -168,6 +176,7 @@ class SoloService:
             "decisionSeconds": self.decision_seconds,
             "activityMinSeconds": self.activity_min_seconds,
             "timezone": self.timezone_name,
+            "mcpEnabled": self.mcp.enabled,
         }
 
     async def start(self) -> bool:
@@ -198,6 +207,10 @@ class SoloService:
             await self._expire_lease()
         except Exception:
             logger.exception("Unable to expire solo heartbeat lease cleanly")
+        try:
+            await self.mcp.close_all()
+        except Exception:
+            logger.exception("Unable to close solitude MCP connections cleanly")
 
     async def _run(self) -> None:
         while True:

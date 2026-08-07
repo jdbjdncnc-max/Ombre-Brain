@@ -230,11 +230,36 @@
               <span class="tool-management-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 6h8M7 8l4 8M17 8l-4 8"/></svg></span>
               <strong>工作流</strong><small>编排自动流程和定时动作</small><em>待接入</em>
             </button>
-            <button type="button" data-tool-placeholder="tools">
+            <button id="mcpManagerButton" type="button">
               <span class="tool-management-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h16v11H4zM8 8V5h8v3M4 12h16M10 12v2h4v-2"/></svg></span>
-              <strong>工具</strong><small>查看可用能力与调用状态</small><em>待接入</em>
+              <strong>MCP 工具</strong><small>配置服务、能力和自主权限</small><em>可配置</em>
             </button>
           </div>
+
+          <section id="mcpManager" class="mcp-manager" aria-labelledby="mcpManagerTitle">
+            <div class="mcp-manager-heading">
+              <div>
+                <p class="eyebrow">Model Context Protocol</p>
+                <h2 id="mcpManagerTitle">MCP 服务</h2>
+              </div>
+              <div class="mcp-manager-actions">
+                <span id="mcpGlobalStatus" class="mcp-global-status">尚未读取</span>
+                <button id="refreshMcpButton" class="small-button" type="button">刷新</button>
+              </div>
+            </div>
+
+            <form id="mcpImportForm" class="mcp-import-card">
+              <label for="mcpImportText">粘贴 MCP 配置</label>
+              <textarea id="mcpImportText" rows="7" spellcheck="false" placeholder='{"mcpServers":{"my-server":{"transport":"streamable-http","url":"https://example.com/mcp"}}}'></textarea>
+              <div class="mcp-import-footer">
+                <small>新服务默认只能在对话中使用；凭据请使用 ${ENV_VAR} 或 ${secret:server.key}。</small>
+                <button id="importMcpButton" class="primary-button" type="submit">导入配置</button>
+              </div>
+            </form>
+
+            <p id="mcpManagerMessage" class="mcp-manager-message" aria-live="polite"></p>
+            <div id="mcpServerList" class="mcp-server-list" aria-live="polite"></div>
+          </section>
         </section>
 
         <section id="memoryView" class="view" aria-label="记忆">
@@ -680,6 +705,6 @@
   <script src="/frontend/vendor/dompurify/purify.min.js"></script>
   <script src="/frontend/vendor/katex/katex.min.js"></script>
   <script src="/frontend/vendor/katex/auto-render.min.js"></script>
-  <script src="/frontend/app.js?v=20260807.2" type="module"></script>
+  <script src="/frontend/app.js?v=20260807.3" type="module"></script>
 </body>
 </html>

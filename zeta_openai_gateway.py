@@ -26,6 +26,7 @@ from dehydrator import Dehydrator
 from embedding_engine import EmbeddingEngine
 from gateway_system_prompt import GatewaySystemPromptStore, inject_gateway_messages
 from solo.appraisal import APPRAISAL_SYSTEM_PROMPT, build_appraisal_user_text, parse_appraisal_response
+from solo.mcp_bridge import McpConfigurationError, McpConnectionError, McpPermissionError
 from solo.service import SoloService, normalize_timezone_name, timezone_info
 from utils import load_config, setup_logging
 from zeta_gateway import ZetaMemoryGateway
@@ -1630,6 +1631,79 @@ Zeta hidden memory protocol:
         status_code = 200 if result.get("ok") else 409
         return JSONResponse(result, status_code=status_code)
 
+    async def solo_mcp_servers(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        if request.method == "GET":
+            return JSONResponse(self.solo.mcp.public_snapshot())
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False, "error": "Request body must be valid JSON"}, status_code=400)
+        try:
+            return JSONResponse(await self.solo.mcp.import_servers(body))
+        except McpConfigurationError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    async def solo_mcp_delete_server(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        try:
+            return JSONResponse(await self.solo.mcp.delete_server(request.path_params.get("name")))
+        except McpConfigurationError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+
+    async def solo_mcp_test_server(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        name = str(request.path_params.get("name") or "")
+        try:
+            capabilities = await self.solo.mcp.discover(name, force=True)
+            return JSONResponse({"ok": True, "server": name, **capabilities})
+        except McpConfigurationError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        except McpConnectionError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+
+    async def solo_mcp_update_policy(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False, "error": "Request body must be valid JSON"}, status_code=400)
+        try:
+            result = await self.solo.mcp.update_policy(request.path_params.get("name"), body)
+            return JSONResponse(result)
+        except McpPermissionError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+        except McpConfigurationError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    async def solo_mcp_set_secret(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False, "error": "Request body must be valid JSON"}, status_code=400)
+        try:
+            result = await self.solo.mcp.set_secret(request.path_params.get("name"), body)
+            return JSONResponse(result)
+        except McpConfigurationError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    async def solo_mcp_status(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        return JSONResponse(self.solo.mcp.status_snapshot())
+
     def _schedule_reflection(
         self,
         *,
@@ -2295,6 +2369,60 @@ async def solo_wake_route(request: Request) -> Response:
     return await gateway.solo_wake(request)
 
 
+async def solo_mcp_servers_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.solo_mcp_servers(request)
+
+
+async def solo_mcp_delete_server_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.solo_mcp_delete_server(request)
+
+
+async def solo_mcp_test_server_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.solo_mcp_test_server(request)
+
+
+async def solo_mcp_update_policy_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.solo_mcp_update_policy(request)
+
+
+async def solo_mcp_set_secret_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.solo_mcp_set_secret(request)
+
+
+async def solo_mcp_status_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.solo_mcp_status(request)
+
+
 @asynccontextmanager
 async def lifespan(app):
     try:
@@ -2321,6 +2449,12 @@ routes = [
     Route("/api/solo/timeline", solo_timeline_route, methods=["GET"]),
     Route("/api/solo/activities", solo_activities_route, methods=["GET"]),
     Route("/api/solo/wake", solo_wake_route, methods=["POST"]),
+    Route("/api/solo/mcp/servers", solo_mcp_servers_route, methods=["GET", "POST"]),
+    Route("/api/solo/mcp/servers/{name}", solo_mcp_delete_server_route, methods=["DELETE"]),
+    Route("/api/solo/mcp/servers/{name}/test", solo_mcp_test_server_route, methods=["POST"]),
+    Route("/api/solo/mcp/servers/{name}/autonomy", solo_mcp_update_policy_route, methods=["POST"]),
+    Route("/api/solo/mcp/servers/{name}/secret", solo_mcp_set_secret_route, methods=["PUT"]),
+    Route("/api/solo/mcp/status", solo_mcp_status_route, methods=["GET"]),
 ]
 
 app = Starlette(routes=routes, lifespan=lifespan)

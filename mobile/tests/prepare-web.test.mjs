@@ -13,6 +13,7 @@ test("prepared frontend contains the web app and platform adapters", async () =>
   assert.match(index, /<head(?:\s|>)/i);
   assert.match(index, /id="soloEmotionChart"/);
   assert.match(index, /id="soloActivityTrack"/);
+  assert.match(index, /id="mcpManager"/);
   assert.match(solo, /requestTimeline/);
   assert.equal((await stat(path.join(outputDir, "app.js"))).isFile(), true);
   assert.equal((await stat(path.join(outputDir, "solo.js"))).isFile(), true);

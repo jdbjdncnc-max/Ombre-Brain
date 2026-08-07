@@ -145,6 +145,8 @@ const state = {
   editingMessageId: "",
   systemPromptConfigured: false,
   systemPromptError: "",
+  mcpLoaded: false,
+  mcpServers: [],
   sessionId: platform.storage.getString(storageKeys.sessionId) || crypto.randomUUID(),
   loadedMemoryPanels: new Set()
 };
@@ -222,6 +224,15 @@ const els = {
   toolPlaceholderButtons: [...document.querySelectorAll("[data-tool-placeholder]")],
   toolsBackButton: document.querySelector("#toolsBackButton"),
   toolsIntro: document.querySelector("#toolsIntro"),
+  mcpManagerButton: document.querySelector("#mcpManagerButton"),
+  mcpManager: document.querySelector("#mcpManager"),
+  mcpGlobalStatus: document.querySelector("#mcpGlobalStatus"),
+  refreshMcpButton: document.querySelector("#refreshMcpButton"),
+  mcpImportForm: document.querySelector("#mcpImportForm"),
+  mcpImportText: document.querySelector("#mcpImportText"),
+  importMcpButton: document.querySelector("#importMcpButton"),
+  mcpManagerMessage: document.querySelector("#mcpManagerMessage"),
+  mcpServerList: document.querySelector("#mcpServerList"),
   backendUrl: document.querySelector("#backendUrl"),
   duettoUrl: document.querySelector("#duettoUrl"),
   gatewayToken: document.querySelector("#gatewayToken"),
@@ -357,6 +368,12 @@ function bindEvents() {
   });
 
   els.toolsBackButton.addEventListener("click", () => setActiveTab("home"));
+  els.mcpManagerButton.addEventListener("click", () => {
+    els.mcpManager.scrollIntoView({ behavior: "smooth", block: "start" });
+    loadMcpServers(true);
+  });
+  els.refreshMcpButton.addEventListener("click", () => loadMcpServers(true));
+  els.mcpImportForm.addEventListener("submit", importMcpServers);
 
   els.memorySegments.forEach((button) => {
     button.addEventListener("click", () => setMemoryPanel(button.dataset.memoryPanel));
@@ -3143,6 +3160,339 @@ function openToolsPage(section) {
   setActiveTab("tools");
 }
 
+const MCP_CATEGORY_LABELS = {
+  forum: "论坛",
+  peer: "同类",
+  game: "游戏",
+  read: "阅读",
+  search: "搜索",
+  music: "音乐",
+  misc: "其他"
+};
+
+const MCP_AUTONOMY_LABELS = {
+  full: "完全自主",
+  allowlist: "仅白名单",
+  chat_only: "仅对话可用",
+  off: "停用"
+};
+
+async function loadMcpServers(force = false) {
+  if (state.mcpLoaded && !force) {
+    renderMcpServers();
+    return;
+  }
+  els.mcpGlobalStatus.textContent = "正在读取…";
+  setMcpManagerMessage("");
+  try {
+    const data = await requestMcpApi("/api/solo/mcp/servers");
+    state.mcpServers = Array.isArray(data.servers) ? data.servers : [];
+    state.mcpLoaded = true;
+    els.mcpGlobalStatus.textContent = data.enabled
+      ? `已开启 · ${state.mcpServers.length} 个服务`
+      : "总开关未开启";
+    els.mcpGlobalStatus.classList.toggle("enabled", Boolean(data.enabled));
+    if (!data.enabled && data.hint) {
+      setMcpManagerMessage(data.hint, true);
+    }
+    renderMcpServers();
+  } catch (error) {
+    state.mcpLoaded = false;
+    els.mcpGlobalStatus.textContent = "读取失败";
+    setMcpManagerMessage(error instanceof Error ? error.message : String(error), true);
+  }
+}
+
+async function importMcpServers(event) {
+  event.preventDefault();
+  const raw = els.mcpImportText.value.trim();
+  if (!raw) {
+    setMcpManagerMessage("请先粘贴一段 mcpServers JSON。", true);
+    return;
+  }
+  try {
+    JSON.parse(raw);
+  } catch (error) {
+    setMcpManagerMessage(`JSON 无法解析：${error instanceof Error ? error.message : String(error)}`, true);
+    return;
+  }
+  els.importMcpButton.disabled = true;
+  setMcpManagerMessage("正在导入配置…");
+  try {
+    const data = await requestMcpApi("/api/solo/mcp/servers", {
+      method: "POST",
+      body: JSON.stringify({ config: raw })
+    });
+    state.mcpServers = Array.isArray(data.servers) ? data.servers : [];
+    state.mcpLoaded = true;
+    els.mcpImportText.value = "";
+    els.mcpGlobalStatus.textContent = data.enabled
+      ? `已开启 · ${state.mcpServers.length} 个服务`
+      : "已保存 · 总开关未开启";
+    setMcpManagerMessage(`已导入 ${state.mcpServers.length} 个 MCP 服务。`);
+    renderMcpServers();
+  } catch (error) {
+    setMcpManagerMessage(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    els.importMcpButton.disabled = false;
+  }
+}
+
+function renderMcpServers() {
+  els.mcpServerList.replaceChildren();
+  if (!state.mcpServers.length) {
+    const empty = createMcpElement("div", "mcp-empty-state");
+    empty.append(
+      createMcpElement("strong", "", "还没有 MCP 服务"),
+      createMcpElement("p", "", "从论坛或游戏的说明页复制 mcpServers 配置，粘贴到上方即可。")
+    );
+    els.mcpServerList.append(empty);
+    return;
+  }
+  state.mcpServers.forEach((server) => {
+    els.mcpServerList.append(renderMcpServerCard(server));
+  });
+}
+
+function renderMcpServerCard(server) {
+  const card = createMcpElement("article", "mcp-server-card");
+  card.dataset.serverName = server.name;
+
+  const heading = createMcpElement("div", "mcp-server-heading");
+  const identity = createMcpElement("div", "mcp-server-identity");
+  const dot = createMcpElement("span", `mcp-status-dot ${server.connected ? "connected" : server.status === "error" ? "error" : ""}`);
+  dot.title = server.lastError || (server.connected ? "已连接" : "当前未连接");
+  const titleWrap = createMcpElement("div");
+  titleWrap.append(
+    createMcpElement("strong", "", server.name),
+    createMcpElement(
+      "small",
+      "",
+      `${(server.categories || []).map((key) => MCP_CATEGORY_LABELS[key] || key).join(" · ") || "未分类"} · ${server.transport || "未知传输"}`
+    )
+  );
+  identity.append(dot, titleWrap);
+  const counts = createMcpElement("span", "mcp-server-count", `工具 ${server.toolCount || 0} · 今日 ${server.todayCalls || 0} 次`);
+  heading.append(identity, counts);
+  card.append(heading);
+
+  if (server.endpoint) {
+    card.append(createMcpElement("code", "mcp-endpoint", server.endpoint));
+  }
+  if (server.lastError) {
+    card.append(createMcpElement("p", "mcp-server-error", `最近失败：${server.lastError}`));
+  }
+
+  const policy = createMcpElement("div", "mcp-policy-grid");
+  const autonomyLabel = createMcpElement("label", "mcp-field");
+  autonomyLabel.append(createMcpElement("span", "", "自主权"));
+  const autonomy = document.createElement("select");
+  autonomy.className = "mcp-autonomy-select";
+  Object.entries(MCP_AUTONOMY_LABELS).forEach(([value, label]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    option.selected = value === server.autonomy;
+    autonomy.append(option);
+  });
+  autonomyLabel.append(autonomy);
+
+  const categoryField = createMcpElement("fieldset", "mcp-category-field");
+  categoryField.append(createMcpElement("legend", "", "分类"));
+  Object.entries(MCP_CATEGORY_LABELS).forEach(([key, label]) => {
+    const item = createMcpElement("label", "mcp-check-chip");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = key;
+    input.checked = (server.categories || []).includes(key);
+    input.dataset.mcpCategory = key;
+    item.append(input, document.createTextNode(label));
+    categoryField.append(item);
+  });
+  policy.append(autonomyLabel, categoryField);
+  card.append(policy);
+
+  const toolsDetails = document.createElement("details");
+  toolsDetails.className = "mcp-tools-details";
+  toolsDetails.open = Boolean(server.lastError) || Boolean(server.tools?.length);
+  const toolsSummary = document.createElement("summary");
+  toolsSummary.textContent = server.tools?.length ? `发现的工具（${server.tools.length}）` : "尚未发现工具";
+  toolsDetails.append(toolsSummary);
+  const toolGroups = createMcpElement("div", "mcp-tool-groups");
+  [
+    ["read", "读"],
+    ["write", "写"],
+    ["unknown", "待确认"]
+  ].forEach(([kind, label]) => {
+    const tools = (server.tools || []).filter((tool) => (tool.kind || "unknown") === kind);
+    if (!tools.length) {
+      return;
+    }
+    const group = createMcpElement("section", "mcp-tool-group");
+    group.append(createMcpElement("h4", "", `${label}（${tools.length}）`));
+    tools.forEach((tool) => {
+      const row = createMcpElement("label", `mcp-tool-row ${tool.hardBlocked ? "blocked" : ""}`);
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = Boolean(tool.allowed);
+      checkbox.disabled = Boolean(tool.hardBlocked);
+      checkbox.dataset.mcpTool = tool.name;
+      const text = createMcpElement("span");
+      text.append(
+        createMcpElement("strong", "", tool.name),
+        createMcpElement("small", "", tool.hardBlocked ? tool.blockedReason : tool.desc || "没有说明")
+      );
+      row.append(checkbox, text);
+      group.append(row);
+    });
+    toolGroups.append(group);
+  });
+  if (!toolGroups.childElementCount) {
+    toolGroups.append(createMcpElement("p", "mcp-tool-empty", "点击“测试连接”后会读取工具清单。"));
+  }
+  toolsDetails.append(toolGroups);
+  card.append(toolsDetails);
+
+  const credentials = createMcpElement("div", "mcp-secret-row");
+  const credentialState = createMcpElement("span", "mcp-credential-state", server.credentialConfigured ? "凭据 ••••••" : "尚未配置凭据");
+  const secretKey = document.createElement("input");
+  secretKey.type = "text";
+  secretKey.placeholder = "字段名，如 token";
+  secretKey.className = "mcp-secret-key";
+  const secretValue = document.createElement("input");
+  secretValue.type = "password";
+  secretValue.placeholder = "新凭据（不会回显）";
+  secretValue.className = "mcp-secret-value";
+  const secretButton = createMcpElement("button", "small-button", "更新凭据");
+  secretButton.type = "button";
+  secretButton.addEventListener("click", () => saveMcpSecret(server.name, secretKey, secretValue, secretButton));
+  credentials.append(credentialState, secretKey, secretValue, secretButton);
+  card.append(credentials);
+
+  const actions = createMcpElement("div", "mcp-card-actions");
+  const saveButton = createMcpElement("button", "small-button", "保存权限");
+  saveButton.type = "button";
+  saveButton.addEventListener("click", () => saveMcpPolicy(server.name, card, saveButton));
+  const testButton = createMcpElement("button", "small-button", "测试连接");
+  testButton.type = "button";
+  testButton.addEventListener("click", () => testMcpServer(server.name, testButton));
+  const deleteButton = createMcpElement("button", "small-button danger", "删除");
+  deleteButton.type = "button";
+  deleteButton.addEventListener("click", () => deleteMcpServer(server.name, deleteButton));
+  actions.append(saveButton, testButton, deleteButton);
+  card.append(actions);
+  return card;
+}
+
+async function saveMcpPolicy(name, card, button) {
+  button.disabled = true;
+  const body = {
+    autonomy: card.querySelector(".mcp-autonomy-select").value,
+    categories: [...card.querySelectorAll("[data-mcp-category]:checked")].map((input) => input.value),
+    allowedTools: [...card.querySelectorAll("[data-mcp-tool]:checked")].map((input) => input.dataset.mcpTool)
+  };
+  try {
+    const data = await requestMcpApi(`/api/solo/mcp/servers/${encodeURIComponent(name)}/autonomy`, {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+    state.mcpServers = Array.isArray(data.servers) ? data.servers : state.mcpServers;
+    setMcpManagerMessage(`${name} 的权限已保存。`);
+    renderMcpServers();
+  } catch (error) {
+    setMcpManagerMessage(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function testMcpServer(name, button) {
+  button.disabled = true;
+  setMcpManagerMessage(`正在连接 ${name}…`);
+  try {
+    const data = await requestMcpApi(`/api/solo/mcp/servers/${encodeURIComponent(name)}/test`, { method: "POST" });
+    setMcpManagerMessage(`${name} 已连接，发现 ${data.tools?.length || 0} 个工具。`);
+    state.mcpLoaded = false;
+    await loadMcpServers(true);
+  } catch (error) {
+    setMcpManagerMessage(error instanceof Error ? error.message : String(error), true);
+    state.mcpLoaded = false;
+    await loadMcpServers(true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function saveMcpSecret(name, keyInput, valueInput, button) {
+  const key = keyInput.value.trim();
+  const value = valueInput.value;
+  if (!key || !value) {
+    setMcpManagerMessage("请填写凭据字段名和新凭据。", true);
+    return;
+  }
+  button.disabled = true;
+  try {
+    await requestMcpApi(`/api/solo/mcp/servers/${encodeURIComponent(name)}/secret`, {
+      method: "PUT",
+      body: JSON.stringify({ key, value })
+    });
+    keyInput.value = "";
+    valueInput.value = "";
+    setMcpManagerMessage(`${name} 的凭据已更新；页面不会读取或回显它。`);
+    state.mcpLoaded = false;
+    await loadMcpServers(true);
+  } catch (error) {
+    setMcpManagerMessage(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function deleteMcpServer(name, button) {
+  if (!window.confirm(`确定删除 MCP 服务“${name}”吗？对应的能力缓存和本地凭据也会删除。`)) {
+    return;
+  }
+  button.disabled = true;
+  try {
+    const data = await requestMcpApi(`/api/solo/mcp/servers/${encodeURIComponent(name)}`, { method: "DELETE" });
+    state.mcpServers = Array.isArray(data.servers) ? data.servers : [];
+    setMcpManagerMessage(`${name} 已删除。`);
+    renderMcpServers();
+  } catch (error) {
+    setMcpManagerMessage(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function requestMcpApi(path, options = {}) {
+  const response = await platform.request(apiUrl(path), {
+    ...options,
+    headers: { ...buildGatewayHeaders(), ...(options.headers || {}) }
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error?.message || data.error || data.message || `MCP 请求失败：${response.status}`);
+  }
+  return data;
+}
+
+function setMcpManagerMessage(message, error = false) {
+  els.mcpManagerMessage.textContent = message;
+  els.mcpManagerMessage.classList.toggle("error", error);
+}
+
+function createMcpElement(tag, className = "", text = "") {
+  const element = document.createElement(tag);
+  if (className) {
+    element.className = className;
+  }
+  if (text) {
+    element.textContent = text;
+  }
+  return element;
+}
+
 function showHomeNotice(message) {
   els.homeNotice.textContent = message;
 }
@@ -3195,6 +3545,9 @@ function setActiveTab(tab) {
   if (tab === "schedule") {
     renderSchedule();
     checkScheduleNudges();
+  }
+  if (tab === "tools") {
+    loadMcpServers();
   }
 }
 
