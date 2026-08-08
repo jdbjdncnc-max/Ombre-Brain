@@ -450,6 +450,7 @@ class BucketManager:
         query_valence: float = None,
         query_arousal: float = None,
         use_embedding: bool = True,
+        candidate_buckets: list[dict] | None = None,
     ) -> list[dict]:
         """
         Multi-dimensional indexed search for memory buckets.
@@ -459,12 +460,18 @@ class BucketManager:
         query_valence/arousal: emotion coordinates for resonance scoring
         use_embedding: disable the vector pre-filter when the caller already
             has a dedicated semantic-search channel
+        candidate_buckets: reuse an already loaded bucket snapshot instead of
+            reading every Markdown file again for each expanded keyword
         """
         if not query or not query.strip():
             return []
 
         limit = limit or self.max_results
-        all_buckets = await self.list_all(include_archive=False)
+        all_buckets = (
+            [dict(bucket) for bucket in candidate_buckets]
+            if candidate_buckets is not None
+            else await self.list_all(include_archive=False)
+        )
 
         if not all_buckets:
             return []

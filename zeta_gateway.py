@@ -562,13 +562,18 @@ class ZetaMemoryGateway:
         buckets = []
         keyword_terms = self._keyword_terms(query)
         keyword_query = " ".join(keyword_terms)
+        all_buckets = await self.bucket_mgr.list_all(include_archive=False)
         natural_limit = min(self.natural_limit, max_results)
         semantic_target = min(semantic_limit, max(0, max_results - natural_limit))
         keyword_budget = max(0, max_results - semantic_target - natural_limit)
 
         if self.include_legacy and self.legacy_keyword_limit and keyword_limit and keyword_budget:
             legacy_target = min(self.legacy_keyword_limit, max(1, keyword_budget // 3), keyword_budget)
-            legacy_hits = await self._keyword_search(keyword_terms, limit=max(max_results * 12, legacy_target * 8))
+            legacy_hits = await self._keyword_search(
+                keyword_terms,
+                limit=max(max_results * 12, legacy_target * 8),
+                buckets=all_buckets,
+            )
             legacy_added = 0
             for bucket in legacy_hits:
                 if bucket["id"] in seen or not self._is_legacy_memory(bucket):
@@ -587,6 +592,7 @@ class ZetaMemoryGateway:
                 keyword_terms,
                 limit=max(keyword_limit * 4, gateway_target * 4, keyword_limit),
                 domain_filter=[GATEWAY_DOMAIN],
+                buckets=all_buckets,
             )
             gateway_added = 0
             for bucket in keyword_hits:
@@ -620,7 +626,7 @@ class ZetaMemoryGateway:
                     break
 
         if natural_limit and len(buckets) < max_results:
-            natural_hits = await self._natural_float(seen, natural_limit)
+            natural_hits = await self._natural_float(seen, natural_limit, buckets=all_buckets)
             for bucket in natural_hits:
                 buckets.append(bucket)
                 seen.add(bucket["id"])
@@ -628,7 +634,12 @@ class ZetaMemoryGateway:
                     break
 
         if len(buckets) < max_results:
-            fill_hits = await self._keyword_search(keyword_terms, limit=max_results * 4, domain_filter=[GATEWAY_DOMAIN])
+            fill_hits = await self._keyword_search(
+                keyword_terms,
+                limit=max_results * 4,
+                domain_filter=[GATEWAY_DOMAIN],
+                buckets=all_buckets,
+            )
             for bucket in fill_hits:
                 if self._is_gateway_memory(bucket) and bucket["id"] not in seen:
                     bucket["gateway_source"] = "fill"
@@ -639,7 +650,7 @@ class ZetaMemoryGateway:
                     break
 
         if self.include_legacy and len(buckets) < max_results:
-            legacy_hits = await self._keyword_search(keyword_terms, limit=max_results * 8)
+            legacy_hits = await self._keyword_search(keyword_terms, limit=max_results * 8, buckets=all_buckets)
             for bucket in legacy_hits:
                 if bucket["id"] in seen or not self._is_legacy_memory(bucket):
                     continue
@@ -660,6 +671,7 @@ class ZetaMemoryGateway:
         max_results: int,
     ) -> list[dict]:
         keyword_terms = self._keyword_terms(query)
+        all_buckets = await self.bucket_mgr.list_all(include_archive=False)
         candidates: dict[str, dict[str, Any]] = {}
 
         def allowed(bucket: dict[str, Any]) -> bool:
@@ -702,6 +714,7 @@ class ZetaMemoryGateway:
             keyword_hits = await self._keyword_search(
                 keyword_terms,
                 limit=max(max_results * 8, keyword_limit * 8, 20),
+                buckets=all_buckets,
             )
             for bucket in keyword_hits:
                 source = "keyword" if self._is_gateway_memory(bucket) else "legacy_keyword"
@@ -709,13 +722,22 @@ class ZetaMemoryGateway:
 
         natural_target = max(self.natural_limit, max_results if not candidates else self.natural_limit)
         if natural_target:
-            natural_hits = await self._natural_float(set(), min(max_results * 2, max(natural_target, 1)))
+            natural_hits = await self._natural_float(
+                set(),
+                min(max_results * 2, max(natural_target, 1)),
+                buckets=all_buckets,
+            )
             for bucket in natural_hits:
                 natural_score = float(bucket.get("natural_score") or self._natural_score(bucket.get("metadata", {})))
                 remember(bucket, "natural", "recent/emotional/important memory", natural_score * 100.0)
 
         if not candidates and keyword_terms:
-            fill_hits = await self._keyword_search(keyword_terms, limit=max_results * 8, domain_filter=[GATEWAY_DOMAIN])
+            fill_hits = await self._keyword_search(
+                keyword_terms,
+                limit=max_results * 8,
+                domain_filter=[GATEWAY_DOMAIN],
+                buckets=all_buckets,
+            )
             for bucket in fill_hits:
                 remember(bucket, "fill", "gateway keyword fallback", float(bucket.get("score") or 0.0))
 
@@ -746,7 +768,14 @@ class ZetaMemoryGateway:
         multi_source_bonus = min(8.0, max(0, len(scores) - 1) * 3.0)
         return base + spread + semantic_presence + multi_source_bonus + self._importance_bonus(bucket)
 
-    async def _keyword_search(self, terms: list[str], limit: int, domain_filter: list[str] | None = None) -> list[dict]:
+    async def _keyword_search(
+        self,
+        terms: list[str],
+        limit: int,
+        domain_filter: list[str] | None = None,
+        buckets: list[dict] | None = None,
+    ) -> list[dict]:
+        source_buckets = buckets if buckets is not None else await self.bucket_mgr.list_all(include_archive=False)
         merged = {}
         for term in terms[:6]:
             # Hybrid recall already performs one semantic search for the full
@@ -758,12 +787,18 @@ class ZetaMemoryGateway:
                 limit=max(limit, 4),
                 domain_filter=domain_filter,
                 use_embedding=False,
+                candidate_buckets=source_buckets,
             )
             for bucket in hits:
                 existing = merged.get(bucket["id"])
                 if not existing or float(bucket.get("score") or 0) > float(existing.get("score") or 0):
                     merged[bucket["id"]] = bucket
-        content_hits = await self._content_search(terms, limit=max(limit, 4), domain_filter=domain_filter)
+        content_hits = await self._content_search(
+            terms,
+            limit=max(limit, 4),
+            domain_filter=domain_filter,
+            buckets=source_buckets,
+        )
         for bucket in content_hits:
             existing = merged.get(bucket["id"])
             if not existing or float(bucket.get("score") or 0) > float(existing.get("score") or 0):
@@ -772,11 +807,21 @@ class ZetaMemoryGateway:
         ranked.sort(key=self._ranking_score, reverse=True)
         return ranked[:limit]
 
-    async def _content_search(self, terms: list[str], limit: int, domain_filter: list[str] | None = None) -> list[dict]:
+    async def _content_search(
+        self,
+        terms: list[str],
+        limit: int,
+        domain_filter: list[str] | None = None,
+        buckets: list[dict] | None = None,
+    ) -> list[dict]:
         terms = [str(term).strip() for term in terms if str(term).strip()]
         if not terms:
             return []
-        all_buckets = await self.bucket_mgr.list_all(include_archive=False)
+        all_buckets = (
+            [dict(bucket) for bucket in buckets]
+            if buckets is not None
+            else await self.bucket_mgr.list_all(include_archive=False)
+        )
         domain_set = {d.lower() for d in domain_filter or []}
         scored = []
         for bucket in all_buckets:
@@ -854,8 +899,17 @@ class ZetaMemoryGateway:
             base_score = 0.0
         return base_score + self._importance_bonus(bucket)
 
-    async def _natural_float(self, seen: set[str], limit: int) -> list[dict]:
-        all_buckets = await self.bucket_mgr.list_all(include_archive=False)
+    async def _natural_float(
+        self,
+        seen: set[str],
+        limit: int,
+        buckets: list[dict] | None = None,
+    ) -> list[dict]:
+        all_buckets = (
+            [dict(bucket) for bucket in buckets]
+            if buckets is not None
+            else await self.bucket_mgr.list_all(include_archive=False)
+        )
         candidates = []
         for bucket in all_buckets:
             if bucket["id"] in seen:

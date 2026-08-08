@@ -14,7 +14,10 @@ class RecallEmbeddingBudgetTests(unittest.IsolatedAsyncioTestCase):
             enabled=True,
             search_similar=AsyncMock(return_value=[]),
         )
-        gateway.bucket_mgr = SimpleNamespace(search=AsyncMock(return_value=[]))
+        gateway.bucket_mgr = SimpleNamespace(
+            list_all=AsyncMock(return_value=[]),
+            search=AsyncMock(return_value=[]),
+        )
         gateway._content_search = AsyncMock(return_value=[])
         gateway._natural_float = AsyncMock(return_value=[])
 
@@ -26,9 +29,11 @@ class RecallEmbeddingBudgetTests(unittest.IsolatedAsyncioTestCase):
         )
 
         gateway.embedding_engine.search_similar.assert_awaited_once()
+        gateway.bucket_mgr.list_all.assert_awaited_once_with(include_archive=False)
         self.assertGreater(gateway.bucket_mgr.search.await_count, 1)
         for call in gateway.bucket_mgr.search.await_args_list:
             self.assertIs(call.kwargs.get("use_embedding"), False)
+            self.assertIsNotNone(call.kwargs.get("candidate_buckets"))
 
 
 if __name__ == "__main__":
