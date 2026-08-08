@@ -1187,10 +1187,25 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
                 memory_headers=memory_headers,
             )
 
+        upstream_started_at = time.monotonic()
         try:
             first_response = await self._forward_upstream(forward_payload)
         except httpx.RequestError as exc:
+            if logger:
+                logger.warning(
+                    "Ombre chat upstream request failed | session=%s elapsed_ms=%s error=%s",
+                    session_id,
+                    int((time.monotonic() - upstream_started_at) * 1000),
+                    exc,
+                )
             return self._upstream_request_error(exc)
+        if logger:
+            logger.info(
+                "Ombre chat upstream complete | session=%s status=%s elapsed_ms=%s",
+                session_id,
+                first_response.status_code,
+                int((time.monotonic() - upstream_started_at) * 1000),
+            )
 
         if not 200 <= first_response.status_code < 300:
             return self._proxy_response(first_response, extra_headers=memory_headers)

@@ -2719,7 +2719,15 @@ Return strict JSON with this shape:
         headers = {
             key: value
             for key, value in response.headers.items()
-            if key.lower() not in {"content-length", "transfer-encoding", "connection"}
+            if key.lower() not in {
+                "content-length",
+                "transfer-encoding",
+                "connection",
+                "content-encoding",
+                "content-md5",
+                "accept-ranges",
+                "etag",
+            }
         }
         if extra_headers:
             headers.update(extra_headers)
@@ -2748,7 +2756,15 @@ Return strict JSON with this shape:
         headers = {
             key: value
             for key, value in response.headers.items()
-            if key.lower() not in {"content-length", "transfer-encoding", "connection"}
+            if key.lower() not in {
+                "content-length",
+                "transfer-encoding",
+                "connection",
+                "content-encoding",
+                "content-md5",
+                "accept-ranges",
+                "etag",
+            }
         }
         if extra_headers:
             headers.update(extra_headers)
