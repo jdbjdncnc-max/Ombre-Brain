@@ -449,6 +449,7 @@ class BucketManager:
         domain_filter: list[str] = None,
         query_valence: float = None,
         query_arousal: float = None,
+        use_embedding: bool = True,
     ) -> list[dict]:
         """
         Multi-dimensional indexed search for memory buckets.
@@ -456,6 +457,8 @@ class BucketManager:
 
         domain_filter: pre-filter by domain (None = search all)
         query_valence/arousal: emotion coordinates for resonance scoring
+        use_embedding: disable the vector pre-filter when the caller already
+            has a dedicated semantic-search channel
         """
         if not query or not query.strip():
             return []
@@ -483,7 +486,7 @@ class BucketManager:
 
         # --- Layer 1.5: embedding pre-filter (optional, reduces multi-dim ranking set) ---
         # --- 第1.5层：embedding 预筛（可选，缩小精排候选集）---
-        if self.embedding_engine and self.embedding_engine.enabled:
+        if use_embedding and self.embedding_engine and self.embedding_engine.enabled:
             try:
                 vector_results = await self.embedding_engine.search_similar(query, top_k=50)
                 if vector_results:

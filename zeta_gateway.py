@@ -749,7 +749,16 @@ class ZetaMemoryGateway:
     async def _keyword_search(self, terms: list[str], limit: int, domain_filter: list[str] | None = None) -> list[dict]:
         merged = {}
         for term in terms[:6]:
-            hits = await self.bucket_mgr.search(term, limit=max(limit, 4), domain_filter=domain_filter)
+            # Hybrid recall already performs one semantic search for the full
+            # query. Keyword expansion must stay local; otherwise every term
+            # triggers another paid embedding request (up to 12 per turn when
+            # fallback search runs as well).
+            hits = await self.bucket_mgr.search(
+                term,
+                limit=max(limit, 4),
+                domain_filter=domain_filter,
+                use_embedding=False,
+            )
             for bucket in hits:
                 existing = merged.get(bucket["id"])
                 if not existing or float(bucket.get("score") or 0) > float(existing.get("score") or 0):
