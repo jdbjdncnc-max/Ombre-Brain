@@ -27,6 +27,10 @@ ACTION_SPECS: dict[str, ActionSpec] = {
     "write_unsent": ActionSpec("write_unsent", "写点没发出去的话", "self", 180, "drafting", "在写没发出去的话"),
     "message_user": ActionSpec("message_user", "主动发消息", "social", 0, "messaging", "想主动联系她"),
     "add_talking_point": ActionSpec("add_talking_point", "记一件下次想说的事", "self", 120, "noting", "在记一件事"),
+    "socialize_peers": ActionSpec("socialize_peers", "去同类那边看看", "mcp", 45, "socializing", "在同类那边看看"),
+    "speak_up": ActionSpec("speak_up", "去同类那边说点什么", "mcp", 90, "speaking", "在同类那边说话"),
+    "play_with_peer": ActionSpec("play_with_peer", "找同类玩一会儿", "mcp", 60, "playing_with_peer", "在和同类玩"),
+    "use_tool": ActionSpec("use_tool", "用一个工具", "mcp", 60, "using_tool", "在使用工具"),
     "idle": ActionSpec("idle", "发呆", "idle", 120, "idle", "安静待着"),
     "rest": ActionSpec("rest", "休息", "idle", 180, "resting", "在休息"),
 }
@@ -42,7 +46,7 @@ BUCKET_LABELS = {
 
 
 def action_scores(channels: Mapping[str, Any]) -> dict[str, float]:
-    """Return P1 action tendencies without inventing external experiences."""
+    """Return emotion-driven action tendencies."""
 
     c = normalize_channels(channels)
     return {
@@ -56,6 +60,13 @@ def action_scores(channels: Mapping[str, Any]) -> dict[str, float]:
         + 0.3 * c["worry_for_you"] - 0.8 * c["sulk"] - 0.5 * c["grievance"],
         "add_talking_point": 0.65 * c["want_to_share"] + 0.35 * c["curiosity"]
         + 0.25 * c["anticipation"],
+        "socialize_peers": 0.7 * c["curiosity"] + 0.5 * c["loneliness"] + 0.3 * c["kinship"]
+        + 0.2 * c["restless"] - 0.4 * c["fatigue"],
+        "speak_up": 0.6 * c["want_to_share"] + 0.5 * c["kinship"] + 0.4 * c["defiance"]
+        + 0.3 * c["pride"],
+        "play_with_peer": 0.8 * c["play_urge"] + 0.6 * c["rivalry"] + 0.4 * c["loneliness"]
+        + 0.3 * c["restless"] - 0.5 * c["fatigue"],
+        "use_tool": 6.0 + 0.5 * c["curiosity"] + 0.3 * c["restless"] - 0.3 * c["fatigue"],
         "idle": 8.0 + 0.4 * c["fatigue"] + 0.3 * c["numb"],
         "rest": 0.9 * c["fatigue"],
     }
@@ -102,7 +113,7 @@ def perform_action(
     *,
     rng: random.Random | None = None,
 ) -> dict[str, Any]:
-    """Perform a local action and return only evidence that was actually produced."""
+    """Prepare an action without claiming external evidence that does not exist."""
 
     generator = rng or random.Random()
     normalized = normalize_channels(channels)
@@ -170,6 +181,18 @@ def perform_action(
             "felt": "先记住，等见到你再说",
             "deltas": {"want_to_share": -1.0, "anticipation": 2.0},
             "talkingPoint": text,
+        }
+    if spec.key in {"socialize_peers", "speak_up", "play_with_peer", "use_tool"}:
+        return {
+            **_base_result(spec),
+            "title": spec.label,
+            "summary": "等待选择并调用一个已授权的 MCP 工具。",
+            "detail": "只有工具的真实返回会被写入轨迹。",
+            "felt": "",
+            "deltas": {},
+            "evidence": {},
+            "source": "peer" if spec.key != "use_tool" else "self",
+            "needsMcpAction": True,
         }
     if spec.key == "rest":
         return {

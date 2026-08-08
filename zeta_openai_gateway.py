@@ -33,6 +33,13 @@ from solo.duetto import (
     normalize_duetto_event,
 )
 from solo.mcp_bridge import McpConfigurationError, McpConnectionError, McpPermissionError
+from solo.mcp_agent import (
+    MCP_APPRAISAL_SYSTEM_PROMPT,
+    MCP_SELECTION_SYSTEM_PROMPT,
+    build_mcp_appraisal_user_text,
+    build_mcp_selection_user_text,
+    parse_mcp_selection_response,
+)
 from solo.proactive import PROACTIVE_SYSTEM_PROMPT, build_proactive_user_text, parse_proactive_response
 from solo.service import SOLO_STATE_RULES, SoloService, normalize_timezone_name, timezone_info
 from utils import load_config, setup_logging
@@ -232,6 +239,10 @@ class ZetaOpenAIGateway:
         self.http = httpx.AsyncClient(timeout=120.0)
         if self.upstream_chat_url and self.upstream_api_key and self.upstream_model:
             self.solo.set_proactive_generator(self._generate_proactive_messages)
+            self.solo.set_mcp_handlers(
+                self._select_solo_mcp_call,
+                self._appraise_solo_mcp_result,
+            )
 
     async def close(self) -> None:
         try:
@@ -608,6 +619,89 @@ class ZetaOpenAIGateway:
             logger.warning("Proactive message provider returned no usable messages")
             return {"called": True, "messages": []}
         return {"called": True, **parsed}
+
+    async def _select_solo_mcp_call(self, context: dict[str, Any]) -> dict[str, Any]:
+        main_prompt = self._read_system_prompt()
+        if not main_prompt:
+            logger.warning("Autonomous MCP selection skipped because the main system prompt is not configured")
+            return {"called": False, "stop": True}
+        timezone_name = normalize_timezone_name(
+            context.get("timezone"),
+            getattr(self.solo, "timezone_name", "UTC"),
+        )
+        ombre_layer = self._compose_ombre_system_layer(
+            solo_context=str(context.get("state") or "").strip(),
+            current_local_time=self._current_local_time(timezone_name),
+            timezone_name=timezone_name,
+            message_timeline="（我正在独处，不是在回复新消息）",
+            summary_context="（本次工具选择不附带前端本地摘要）",
+            schedule_context="（暂无）",
+        )
+        payload = {
+            "model": self.upstream_model,
+            "messages": [
+                {"role": "system", "content": main_prompt},
+                {"role": "system", "content": ombre_layer},
+                {"role": "system", "content": MCP_SELECTION_SYSTEM_PROMPT},
+                {"role": "user", "content": build_mcp_selection_user_text(context)},
+            ],
+            "temperature": 0.7,
+            "max_tokens": 600,
+            "stream": False,
+        }
+        try:
+            response = await self.http.post(
+                self.upstream_chat_url,
+                headers=self._upstream_headers(self.upstream_api_key),
+                json=payload,
+                timeout=min(120.0, max(15.0, self.summary_timeout)),
+            )
+        except httpx.RequestError as exc:
+            logger.warning("Autonomous MCP selector request failed: %s", exc)
+            return {"called": True, "stop": True}
+        if not 200 <= response.status_code < 300:
+            logger.warning(
+                "Autonomous MCP selector returned HTTP %s | body=%s",
+                response.status_code,
+                _preview_text(response.text),
+            )
+            return {"called": True, "stop": True}
+        parsed = parse_mcp_selection_response(self._assistant_text_from_response(response))
+        if parsed is None:
+            logger.warning("Autonomous MCP selector returned no usable call")
+            return {"called": True, "stop": True}
+        return {"called": True, **parsed}
+
+    async def _appraise_solo_mcp_result(self, context: dict[str, Any]) -> dict[str, Any]:
+        if not self.summary_chat_url or not self.summary_api_key or not self.summary_model:
+            return {"called": False, "appraisal": {}}
+        payload = {
+            "model": self.summary_model,
+            "messages": [
+                {"role": "system", "content": MCP_APPRAISAL_SYSTEM_PROMPT},
+                {"role": "user", "content": build_mcp_appraisal_user_text(context)},
+            ],
+            "stream": False,
+        }
+        try:
+            response = await self.http.post(
+                self.summary_chat_url,
+                headers=self._upstream_headers(self.summary_api_key),
+                json=payload,
+                timeout=self.summary_timeout,
+            )
+        except httpx.RequestError as exc:
+            logger.warning("Autonomous MCP appraisal request failed: %s", exc)
+            return {"called": True, "appraisal": {}}
+        if not 200 <= response.status_code < 300:
+            logger.warning(
+                "Autonomous MCP appraisal returned HTTP %s | body=%s",
+                response.status_code,
+                _preview_text(response.text),
+            )
+            return {"called": True, "appraisal": {}}
+        parsed = parse_appraisal_response(self._assistant_text_from_response(response))
+        return {"called": True, "appraisal": parsed or {}}
 
     async def conversation_summary(self, request: Request) -> JSONResponse:
         auth = self._authorize(request)
