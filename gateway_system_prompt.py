@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -58,6 +59,7 @@ class GatewaySystemPromptStore:
             "filename": str(metadata.get("filename") or ("system_prompt.md" if content else "")),
             "characters": len(content),
             "bytes": len(content.encode("utf-8")),
+            "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest() if content else "",
             "updated_at": str(metadata.get("updated_at") or ""),
         }
 

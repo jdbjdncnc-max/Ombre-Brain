@@ -9,12 +9,16 @@ const outputDir = path.join(mobileRoot, "www");
 
 test("prepared frontend contains the web app and platform adapters", async () => {
   const index = await readFile(path.join(outputDir, "index.html"), "utf8");
+  const app = await readFile(path.join(outputDir, "app.js"), "utf8");
   const solo = await readFile(path.join(outputDir, "solo.js"), "utf8");
   assert.match(index, /<head(?:\s|>)/i);
   assert.match(index, /id="soloEmotionChart"/);
   assert.match(index, /id="soloActivityTrack"/);
   assert.match(index, /id="mcpManager"/);
   assert.match(solo, /requestTimeline/);
+  assert.match(app, /ombre_context_kind: "conversation_summary"/);
+  assert.match(app, /网关已保存 · 本轮已注入/);
+  assert.doesNotMatch(app, /\[Ombre 消息信息\]/);
   assert.equal((await stat(path.join(outputDir, "app.js"))).isFile(), true);
   assert.equal((await stat(path.join(outputDir, "solo.js"))).isFile(), true);
   assert.equal((await stat(path.join(outputDir, "platform.js"))).isFile(), true);

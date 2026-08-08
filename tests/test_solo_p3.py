@@ -82,17 +82,16 @@ class SoloPromptContextTests(unittest.TestCase):
         gateway.hidden_memory_enabled = False
         gateway.solo = SimpleNamespace(model_context_text=lambda: expected)
 
-        self.assertEqual(gateway._build_gateway_system_text({}), expected)
+        main_context = gateway._build_gateway_system_text({})
+        self.assertTrue(main_context.startswith("[Ombre 系统层｜内部资料]"))
+        self.assertEqual(main_context.count(SOLO_STATE_RULES), 1)
+        self.assertIn("思念 76", main_context)
 
         patched = build_patched_gateway_system_text(
-            SimpleNamespace(
-                _hidden_memory_instruction=lambda: "",
-                _build_injection_text=lambda recalled: "",
-                _solo_system_context=lambda: expected,
-            ),
+            gateway,
             {},
         )
-        self.assertEqual(patched, expected)
+        self.assertEqual(patched, main_context)
 
 
 class SoloAppraisalTests(unittest.IsolatedAsyncioTestCase):

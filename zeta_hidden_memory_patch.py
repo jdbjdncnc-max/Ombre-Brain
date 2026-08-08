@@ -156,20 +156,25 @@ def _build_gateway_system_text(
     recalled: dict[str, Any],
     active_recall: dict[str, Any] | None = None,
 ) -> str:
-    parts = []
     hidden_instruction = self._hidden_memory_instruction()
-    if hidden_instruction:
-        parts.append(hidden_instruction)
+    memory_parts = []
     if isinstance(active_recall, dict) and active_recall.get("injection_text"):
-        parts.append(str(active_recall.get("injection_text") or ""))
+        memory_parts.append(str(active_recall.get("injection_text") or "").strip())
     memory_context = self._build_injection_text(recalled)
     if memory_context:
-        parts.append(memory_context)
+        memory_parts.append(memory_context)
     solo_context_builder = getattr(self, "_solo_system_context", None)
     solo_context = solo_context_builder() if callable(solo_context_builder) else ""
-    if solo_context:
-        parts.append(solo_context)
-    return "\n\n".join(parts).strip()
+    composer = getattr(self, "_compose_ombre_system_layer", None)
+    if callable(composer):
+        return composer(
+            hidden_instruction=hidden_instruction,
+            memory_context="\n\n".join(memory_parts).strip(),
+            solo_context=solo_context,
+        )
+    return "\n\n".join(
+        part for part in [hidden_instruction, *memory_parts, solo_context] if part
+    ).strip()
 
 
 def _extract_zeta_memory_request(self: Any, assistant_text: str) -> tuple[str, list[dict[str, Any]]]:
@@ -553,7 +558,19 @@ async def _hidden_chat_completions(self: Any, request: Any) -> Response:
     self._log_recall(session_id, recalled)
     self._remember_recall_debug(session_id=session_id, user_text=user_text, recalled=recalled)
     injected_text = self._build_gateway_system_text(recalled, active_recalled)
-    forward_payload = self._prepare_forward_payload(payload, injected_text)
+    system_prompt = self._read_system_prompt()
+    client_timezone = str(
+        request.headers.get("X-Ombre-Client-Timezone")
+        or getattr(getattr(self, "solo", None), "timezone_name", "UTC")
+        or "UTC"
+    ).strip()
+    forward_payload = self._prepare_forward_payload(
+        payload,
+        injected_text,
+        system_prompt,
+        client_timezone,
+    )
+    memory_headers.update(self._system_prompt_debug_headers(forward_payload, system_prompt))
 
     if forward_payload.get("stream") is True:
         return await self._stream_upstream(

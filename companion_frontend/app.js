@@ -144,6 +144,7 @@ const state = {
   busy: false,
   editingMessageId: "",
   systemPromptConfigured: false,
+  systemPromptSha256: "",
   systemPromptError: "",
   mcpLoaded: false,
   mcpServers: [],
@@ -584,6 +585,8 @@ async function generateAssistantReply() {
       throw new Error(error.error?.message || error.message || `请求失败：${response.status}`);
     }
 
+    updateSystemPromptInjectionStatus(response);
+
     if (!response.body) {
       throw new Error("后端没有返回流式内容。");
     }
@@ -745,16 +748,16 @@ function buildRequestMessages() {
   if (latestSummary?.content) {
     systemMessages.push({
       role: "system",
-      content: [
-        "以下是此前对话的累计摘要，用来延续被压缩的上下文。",
-        "摘要之后的原始消息优先级更高；若两者冲突，以原始消息为准。",
-        "",
-        latestSummary.content
-      ].join("\n")
+      ombre_context_kind: "conversation_summary",
+      content: latestSummary.content
     });
   }
   if (scheduleContext) {
-    systemMessages.push({ role: "system", content: scheduleContext });
+    systemMessages.push({
+      role: "system",
+      ombre_context_kind: "schedule",
+      content: scheduleContext
+    });
   }
 
   return [...systemMessages, ...messages];
@@ -1011,6 +1014,7 @@ async function loadSystemPrompt() {
       });
     }
     state.systemPromptConfigured = Boolean(status.configured);
+    state.systemPromptSha256 = String(status.sha256 || "");
     state.systemPromptError = "";
     if (status.configured) {
       delete state.settings.systemPromptMarkdown;
@@ -1023,12 +1027,38 @@ async function loadSystemPrompt() {
     return status;
   } catch (error) {
     state.systemPromptConfigured = false;
+    state.systemPromptSha256 = "";
     state.systemPromptError = error instanceof Error ? error.message : String(error);
     els.systemPromptFileName.textContent = "无法读取网关提示词";
     els.systemPromptStatus.textContent = "连接失败";
     els.systemPromptStatus.classList.remove("ready");
     return null;
   }
+}
+
+function updateSystemPromptInjectionStatus(response) {
+  const included = response.headers.get("X-Ombre-System-Prompt-Included");
+  const layerIncluded = response.headers.get("X-Ombre-System-Layer-Included");
+  const forwardedSha256 = response.headers.get("X-Ombre-System-Prompt-SHA256") || "";
+  if (included === null && layerIncluded === null && !forwardedSha256) {
+    return;
+  }
+
+  const fingerprintMatches = !state.systemPromptSha256
+    || !forwardedSha256
+    || state.systemPromptSha256 === forwardedSha256;
+  if (included === "1" && layerIncluded === "1" && fingerprintMatches) {
+    els.systemPromptStatus.textContent = "网关已保存 · 本轮已注入";
+    els.systemPromptStatus.classList.add("ready");
+    return;
+  }
+  if (included === "1" && layerIncluded === "1" && !fingerprintMatches) {
+    els.systemPromptStatus.textContent = "网关已保存 · 注入指纹不一致";
+    els.systemPromptStatus.classList.remove("ready");
+    return;
+  }
+  els.systemPromptStatus.textContent = "网关已保存 · 本轮未注入";
+  els.systemPromptStatus.classList.remove("ready");
 }
 
 async function importSystemPromptFile() {
@@ -1056,6 +1086,7 @@ async function importSystemPromptFile() {
       body: JSON.stringify({ filename: file.name, content: prompt })
     });
     state.systemPromptConfigured = Boolean(status.configured);
+    state.systemPromptSha256 = String(status.sha256 || "");
     state.systemPromptError = "";
     delete state.settings.systemPromptMarkdown;
     delete state.settings.systemPromptFileName;
@@ -1812,8 +1843,6 @@ function buildScheduleInjection() {
     return "";
   }
   return [
-    "以下是由日程 tab 注入的当前日程附件。请只在相关时使用；如果课程或待办临近，可以主动监督用户按时去上课或完成任务。",
-    `当前时间：${formatPromptDateTime(now)}`,
     ...uniqueItems.map((item, index) => `${index + 1}. ${schedulePromptLine(item, today)}`)
   ].join("\n");
 }
@@ -2459,18 +2488,6 @@ function formatScheduleDate(value) {
     month: "2-digit",
     day: "2-digit",
     weekday: "short"
-  }).format(date);
-}
-
-function formatPromptDateTime(date) {
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
   }).format(date);
 }
 

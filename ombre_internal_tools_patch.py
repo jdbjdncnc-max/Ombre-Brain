@@ -1161,11 +1161,14 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
         memory_headers = self._memory_debug_headers(recalled)
         self._log_recall(session_id, recalled)
         injected_text = self._build_gateway_system_text(recalled)
+        system_prompt = self._read_system_prompt()
         forward_payload = self._prepare_forward_payload(
             payload,
             injected_text,
+            system_prompt,
             client_timezone=client_timezone,
         )
+        memory_headers.update(self._system_prompt_debug_headers(forward_payload, system_prompt))
         wants_stream = forward_payload.get("stream") is True
         if wants_stream:
             return await self._ombre_stream_upstream(

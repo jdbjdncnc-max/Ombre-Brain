@@ -11,7 +11,7 @@ class MessageTimeContextTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.gateway = object.__new__(ZetaOpenAIGateway)
 
-    def test_adds_local_time_and_removes_custom_context_fields(self):
+    def test_keeps_message_bodies_clean_and_removes_custom_context_fields(self):
         messages = [
             {"role": "system", "content": "system text"},
             {
@@ -33,9 +33,9 @@ class MessageTimeContextTests(unittest.IsolatedAsyncioTestCase):
         result = self.gateway._inject_message_time_context(messages, "UTC")
 
         self.assertEqual(result[0], messages[0])
-        self.assertIn("发送时间：2026-08-06 21:36:00", result[1]["content"])
-        self.assertIn("时区：Asia/Taipei", result[1]["content"])
-        self.assertTrue(result[1]["content"].endswith("今天好累"))
+        self.assertEqual(result[1]["content"], "今天好累")
+        self.assertEqual(result[2]["content"], "先休息一下。")
+        self.assertNotIn("[Ombre 消息信息]", result[1]["content"])
         self.assertNotIn("context", result[1])
         self.assertNotIn("createdAt", result[2])
         self.assertNotIn("timezone", result[2])
@@ -51,6 +51,83 @@ class MessageTimeContextTests(unittest.IsolatedAsyncioTestCase):
         result = self.gateway._inject_message_time_context(messages, "Asia/Taipei")
 
         self.assertEqual(result, [{"role": "user", "content": "正文"}])
+
+    def test_removes_only_legacy_info_blocks_copied_at_start_of_assistant_message(self):
+        messages = [{
+            "role": "assistant",
+            "content": (
+                "[Ombre 消息信息]\n"
+                "发送时间：2026-08-08 01:43:??\n"
+                "时区：Asia/Taipei\n"
+                "[/Ombre 消息信息]\n\n"
+                "真正的回复"
+            ),
+        }]
+
+        result = self.gateway._inject_message_time_context(messages, "Asia/Taipei")
+
+        self.assertEqual(result[0]["content"], "真正的回复")
+
+    def test_prepare_payload_builds_one_timeline_in_the_ombre_system_layer(self):
+        payload = {
+            "messages": [
+                {"role": "system", "content": "外部场景补丁"},
+                {
+                    "role": "system",
+                    "ombre_context_kind": "conversation_summary",
+                    "content": "她此前说最近很忙。",
+                },
+                {
+                    "role": "system",
+                    "ombre_context_kind": "schedule",
+                    "content": "1. 20:00｜todo｜交作业",
+                },
+                {
+                    "role": "user",
+                    "content": "今天好累",
+                    "context": {
+                        "sentAt": "2026-08-06T13:36:00Z",
+                        "timezone": "Asia/Taipei",
+                    },
+                },
+                {
+                    "role": "assistant",
+                    "content": "我还在生气。",
+                    "context": {
+                        "sentAt": "2026-08-06T13:37:00Z",
+                        "timezone": "Asia/Taipei",
+                    },
+                },
+            ]
+        }
+        layer = self.gateway._compose_ombre_system_layer(memory_context="一条召回记忆")
+
+        forwarded = self.gateway._prepare_forward_payload(
+            payload,
+            layer,
+            "主 Prompt 哨兵",
+            "Asia/Taipei",
+        )
+
+        messages = forwarded["messages"]
+        self.assertEqual([message["role"] for message in messages], [
+            "system", "system", "system", "user", "assistant"
+        ])
+        self.assertEqual(messages[0]["content"], "主 Prompt 哨兵")
+        self.assertEqual(messages[1]["content"], "外部场景补丁")
+        system_layer = messages[2]["content"]
+        self.assertIn("[Ombre 系统层｜内部资料]", system_layer)
+        self.assertIn("1. 她｜2026-08-06 21:36:00｜Asia/Taipei", system_layer)
+        self.assertIn("2. 我｜2026-08-06 21:37:00｜Asia/Taipei", system_layer)
+        self.assertIn("她此前说最近很忙。", system_layer)
+        self.assertIn("1. 20:00｜todo｜交作业", system_layer)
+        self.assertIn("一条召回记忆", system_layer)
+        self.assertNotIn("除非她主动询问时间", system_layer)
+        self.assertNotIn("这一层由 Ombre 系统提供", system_layer)
+        self.assertNotIn("位于我的主 Prompt 之后", system_layer)
+        self.assertEqual(messages[3]["content"], "今天好累")
+        self.assertEqual(messages[4]["content"], "我还在生气。")
+        self.assertNotIn("[Ombre 消息信息]", messages[3]["content"])
 
     async def test_raw_turn_keeps_sent_and_received_metadata(self):
         self.gateway.memory_gateway = SimpleNamespace(
