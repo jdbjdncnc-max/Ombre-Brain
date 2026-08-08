@@ -76,16 +76,29 @@
               </span>
             </button>
 
-            <button class="home-card" type="button" data-home-feature="health">
-              <span class="home-card-icon" aria-hidden="true">
+            <button id="healthCard" class="home-card health-card" type="button" data-home-feature="health" aria-label="今天的身体，点按同步健康数据">
+              <span class="home-card-icon health-card-icon" aria-hidden="true">
                 <svg viewBox="0 0 32 32">
                   <path d="M16 26.8S5.5 20.5 5.5 12.8A5.6 5.6 0 0 1 16 10a5.6 5.6 0 0 1 10.5 2.8C26.5 20.5 16 26.8 16 26.8z"/>
                   <path d="M10.2 16h3.2l1.5-3.1 2.5 6.1 1.6-3h3"/>
                 </svg>
               </span>
-              <span class="home-card-copy">
-                <strong>今天的身体</strong>
-                <small class="home-card-stats"><span>步数 <b>----</b></span><span>睡眠 <b>—</b> 小时</span></small>
+              <span class="home-card-copy health-card-copy">
+                <span class="health-card-heading">
+                  <strong>今天的身体</strong>
+                  <small id="healthStatus">等待同步</small>
+                </span>
+                <span class="health-chart" aria-label="最近二十四小时心率曲线">
+                  <span class="health-chart-label">心率 <b id="healthHeartRate">—</b> bpm</span>
+                  <svg viewBox="0 0 180 46" preserveAspectRatio="none" aria-hidden="true">
+                    <path class="health-chart-guide" d="M3 23 H177"/>
+                    <path id="healthHeartRatePath" class="health-chart-line is-empty" d=""/>
+                  </svg>
+                </span>
+                <small class="home-card-stats health-card-stats">
+                  <span>步数 <b id="healthSteps">—</b></span>
+                  <span>睡眠 <b id="healthSleep">—</b> 小时</span>
+                </small>
               </span>
             </button>
 

@@ -2,6 +2,7 @@
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -49,6 +50,7 @@ OMBRE_TIMEZONE_SLOT = "[[OMBRE_CURRENT_TIMEZONE]]"
 OMBRE_TIMELINE_SLOT = "[[OMBRE_MESSAGE_TIMELINE]]"
 OMBRE_SUMMARY_SLOT = "[[OMBRE_CONVERSATION_SUMMARY]]"
 OMBRE_SCHEDULE_SLOT = "[[OMBRE_SCHEDULE_CONTEXT]]"
+OMBRE_HEALTH_SLOT = "[[OMBRE_HEALTH_CONTEXT]]"
 OMBRE_SUMMARY_KIND = "conversation_summary"
 OMBRE_SCHEDULE_KIND = "schedule"
 OMBRE_LEGACY_SUMMARY_PREFIX = "以下是此前对话的累计摘要，用来延续被压缩的上下文。"
@@ -563,6 +565,7 @@ class ZetaOpenAIGateway:
             message_timeline="（这不是对新消息的回复）",
             summary_context="（本次主动消息不附带前端本地摘要）",
             schedule_context="（暂无）",
+            health_context="（本次主动消息没有随附健康数据）",
         )
         messages = []
         main_prompt = self._read_system_prompt()
@@ -1589,6 +1592,7 @@ class ZetaOpenAIGateway:
         source_messages, summary_context, schedule_context = self._extract_ombre_context_messages(
             source_messages
         )
+        health_context = self._latest_health_context_text(source_messages)
         message_timeline = self._build_message_timeline(source_messages, client_timezone)
         contextual_messages = self._inject_message_time_context(
             source_messages,
@@ -1600,6 +1604,7 @@ class ZetaOpenAIGateway:
             message_timeline=message_timeline,
             summary_context=summary_context,
             schedule_context=schedule_context,
+            health_context=health_context,
         )
         forward["messages"] = inject_gateway_messages(
             contextual_messages,
@@ -1717,6 +1722,7 @@ class ZetaOpenAIGateway:
         message_timeline: str = OMBRE_TIMELINE_SLOT,
         summary_context: str = OMBRE_SUMMARY_SLOT,
         schedule_context: str = OMBRE_SCHEDULE_SLOT,
+        health_context: str = OMBRE_HEALTH_SLOT,
     ) -> str:
         solo_state = str(solo_context or "").strip()
         if solo_state.startswith(SOLO_STATE_RULES):
@@ -1742,6 +1748,8 @@ class ZetaOpenAIGateway:
 
 时间资料只用于判断日期、昼夜、消息间隔和作息。它不是她说的话，也不是我过去说过的话。
 
+健康数据是设备随本轮消息附加的参考资料，不是她亲口说的话，也不是医学诊断。只在疲劳、活动、睡眠或身体状态等当前话题相关时自然参考；不猜测缺失数据，不把单个数值扩大成结论，数据过旧时降低可信度。
+
 【独处状态使用规则】
 
 {SOLO_STATE_RULES}
@@ -1765,6 +1773,9 @@ class ZetaOpenAIGateway:
 〈当前日程〉
 {schedule_context}
 
+〈随本轮消息附加的健康数据〉
+{health_context}
+
 〈当前独处状态〉
 {solo_state or '（暂无）'}
 
@@ -1778,10 +1789,17 @@ class ZetaOpenAIGateway:
         message_timeline: str,
         summary_context: str,
         schedule_context: str,
+        health_context: str,
     ) -> str:
         layer = str(injected_text or "").strip()
         if not layer.startswith(OMBRE_SYSTEM_LAYER_OPEN):
             layer = self._compose_ombre_system_layer(memory_context=layer)
+        if OMBRE_HEALTH_SLOT not in layer and OMBRE_SYSTEM_LAYER_CLOSE in layer:
+            health_block = (
+                "〈随本轮消息附加的健康数据〉\n"
+                f"{health_context or '（本轮消息未附加健康数据）'}\n\n"
+            )
+            layer = layer.replace(OMBRE_SYSTEM_LAYER_CLOSE, health_block + OMBRE_SYSTEM_LAYER_CLOSE)
         timezone_name = normalize_timezone_name(client_timezone, "UTC")
         replacements = {
             OMBRE_CURRENT_TIME_SLOT: self._current_local_time(timezone_name),
@@ -1789,6 +1807,7 @@ class ZetaOpenAIGateway:
             OMBRE_TIMELINE_SLOT: message_timeline or "（本轮没有带时间的对话消息）",
             OMBRE_SUMMARY_SLOT: summary_context or "（暂无）",
             OMBRE_SCHEDULE_SLOT: schedule_context or "（暂无）",
+            OMBRE_HEALTH_SLOT: health_context or "（本轮消息未附加健康数据）",
         }
         for slot, value in replacements.items():
             layer = layer.replace(slot, value)
@@ -2083,6 +2102,129 @@ Zeta hidden memory protocol:
             },
         )
         return user_text, user_raw_refs, client_timezone
+
+    def _latest_health_context_text(self, messages: list[Any]) -> str:
+        for message in reversed(messages):
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            raw_context = message.get("context") if isinstance(message.get("context"), dict) else {}
+            health = raw_context.get("health")
+            return self._format_health_context(health) if isinstance(health, dict) else ""
+        return ""
+
+    def _format_health_context(self, health: dict[str, Any]) -> str:
+        continuous = health.get("continuous") if isinstance(health.get("continuous"), dict) else {}
+        discrete = health.get("discrete") if isinstance(health.get("discrete"), dict) else {}
+        heart = continuous.get("heartRate") if isinstance(continuous.get("heartRate"), dict) else {}
+        steps = discrete.get("steps") if isinstance(discrete.get("steps"), dict) else {}
+        sleep = discrete.get("sleep") if isinstance(discrete.get("sleep"), dict) else {}
+        metric_lines: list[str] = []
+
+        latest_bpm = self._health_number(heart.get("latestValue"), 20, 300)
+        average_bpm = self._health_number(heart.get("averageValue"), 20, 300)
+        minimum_bpm = self._health_number(heart.get("minValue"), 20, 300)
+        maximum_bpm = self._health_number(heart.get("maxValue"), 20, 300)
+        sample_count = self._health_number(heart.get("sampleCount"), 0, 100000)
+        heart_window = self._health_number(heart.get("windowHours"), 1, 168)
+        if any(value is not None for value in (latest_bpm, average_bpm, minimum_bpm, maximum_bpm)):
+            pieces = []
+            if latest_bpm is not None:
+                pieces.append(f"最新 {self._health_value_text(latest_bpm)} bpm")
+            if average_bpm is not None:
+                pieces.append(f"平均 {self._health_value_text(average_bpm)} bpm")
+            if minimum_bpm is not None and maximum_bpm is not None:
+                pieces.append(
+                    f"范围 {self._health_value_text(minimum_bpm)}–{self._health_value_text(maximum_bpm)} bpm"
+                )
+            if sample_count is not None:
+                pieces.append(f"{int(round(sample_count))} 个样本")
+            trend = heart.get("trend") if isinstance(heart.get("trend"), dict) else {}
+            direction = str(trend.get("direction") or "").strip().lower()
+            if direction in {"rising", "falling", "stable"}:
+                trend_text = {"rising": "上升", "falling": "下降", "stable": "稳定"}[direction]
+                delta = self._health_number(trend.get("delta"), -300, 300)
+                window_minutes = self._health_number(trend.get("windowMinutes"), 1, 1440)
+                if delta is not None and window_minutes is not None:
+                    trend_text += (
+                        f"（{self._health_value_text(delta, signed=True)} bpm / "
+                        f"{int(round(window_minutes))} 分钟）"
+                    )
+                pieces.append(f"趋势 {trend_text}")
+            window_label = f"近 {self._health_value_text(heart_window)} 小时" if heart_window else "近期"
+            metric_lines.append(f"- 心率（{window_label}）：" + "；".join(pieces))
+
+        step_value = self._health_number(steps.get("value"), 0, 2000000)
+        if step_value is not None:
+            window = self._health_number(steps.get("windowHours"), 1, 168) or 24
+            metric_lines.append(
+                f"- 步数（近 {self._health_value_text(window)} 小时）：{int(round(step_value))} 步"
+            )
+
+        sleep_minutes = self._health_number(sleep.get("value"), 0, 2880)
+        if sleep_minutes is not None:
+            window = self._health_number(sleep.get("windowHours"), 1, 168) or 48
+            sleep_text = (
+                f"- 睡眠（近 {self._health_value_text(window)} 小时内最近一次）："
+                f"{int(round(sleep_minutes))} 分钟（约 {sleep_minutes / 60:.1f} 小时）"
+            )
+            stages = sleep.get("stages") if isinstance(sleep.get("stages"), dict) else {}
+            stage_names = {
+                "deep": "深睡",
+                "light": "浅睡",
+                "rem": "快速眼动",
+                "awake": "清醒",
+                "sleeping": "睡眠",
+                "unknown": "未分类",
+            }
+            stage_parts = []
+            for key, label in stage_names.items():
+                value = self._health_number(stages.get(key), 0, 2880)
+                if value is not None:
+                    stage_parts.append(f"{label} {int(round(value))} 分钟")
+            if stage_parts:
+                sleep_text += "；阶段：" + "、".join(stage_parts)
+            metric_lines.append(sleep_text)
+
+        if not metric_lines:
+            return ""
+
+        metadata = []
+        source = re.sub(r"[^A-Za-z0-9._:-]+", "", str(health.get("source") or ""))[:64]
+        captured_at = self._health_timestamp(health.get("capturedAt"))
+        latest_data_at = self._health_timestamp(health.get("latestDataAt"))
+        data_age = self._health_number(health.get("dataAgeMinutes"), 0, 5256000)
+        if source:
+            metadata.append(f"来源 {source}")
+        if captured_at:
+            metadata.append(f"采集于 {captured_at}")
+        if latest_data_at:
+            metadata.append(f"最新数据 {latest_data_at}")
+        if data_age is not None:
+            metadata.append(f"数据约 {int(round(data_age))} 分钟前更新")
+        heading = "；".join(metadata) if metadata else "设备健康快照"
+        return heading + "\n" + "\n".join(metric_lines)
+
+    @staticmethod
+    def _health_number(value: Any, minimum: float, maximum: float) -> float | None:
+        if isinstance(value, bool) or value is None:
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) and minimum <= number <= maximum else None
+
+    @staticmethod
+    def _health_value_text(value: float, signed: bool = False) -> str:
+        prefix = "+" if signed and value > 0 else ""
+        rounded = round(value)
+        return prefix + (str(rounded) if abs(value - rounded) < 0.05 else f"{value:.1f}")
+
+    def _health_timestamp(self, value: Any) -> str:
+        parsed = self._parse_message_time(value)
+        if parsed is None:
+            return ""
+        return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
     def _last_user_message_context(
         self,
