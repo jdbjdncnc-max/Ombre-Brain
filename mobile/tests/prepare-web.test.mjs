@@ -18,6 +18,9 @@ test("prepared frontend contains the web app and platform adapters", async () =>
   assert.match(solo, /requestTimeline/);
   assert.match(app, /ombre_context_kind: "conversation_summary"/);
   assert.match(app, /网关已保存 · 本轮已注入/);
+  assert.match(app, /event\.key === "Enter" && event\.ctrlKey/);
+  assert.match(app, /\/api\/emotion-appraisal/);
+  assert.match(app, /skip_emotion_appraisal: true/);
   assert.doesNotMatch(app, /\[Ombre 消息信息\]/);
   assert.equal((await stat(path.join(outputDir, "app.js"))).isFile(), true);
   assert.equal((await stat(path.join(outputDir, "solo.js"))).isFile(), true);

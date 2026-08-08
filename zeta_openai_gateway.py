@@ -589,16 +589,159 @@ class ZetaOpenAIGateway:
         except ValueError:
             response_body = {}
         response_model = str(response_body.get("model") or model).strip() if isinstance(response_body, dict) else model
-        appraisal_scheduled = self._schedule_emotion_appraisal(
-            summary=summary,
-            new_messages=messages,
-            model=model,
-            user_reference=user_reference,
-        )
+        appraisal_scheduled = False
+        if not _truthy(str(payload.get("skip_emotion_appraisal") or "")):
+            appraisal_scheduled = self._schedule_emotion_appraisal(
+                summary=summary,
+                new_messages=messages,
+                model=model,
+                user_reference=user_reference,
+            )
         return JSONResponse({
             "summary": summary,
             "model": response_model,
             "emotion_appraisal_scheduled": appraisal_scheduled,
+        })
+
+    async def emotion_appraisal(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        if not self.summary_chat_url or not self.summary_api_key:
+            return JSONResponse(
+                {
+                    "error": {
+                        "message": "Emotion appraisal model is not configured",
+                        "type": "server_error",
+                        "hint": "Emotion appraisal reuses the conversation summary model credentials.",
+                    }
+                },
+                status_code=503,
+            )
+        solo = getattr(self, "solo", None)
+        if solo is None or not bool(getattr(solo, "enabled", False)):
+            return JSONResponse(
+                {"error": {"message": "Solitude emotion system is not enabled", "type": "server_error"}},
+                status_code=503,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"error": {"message": "Request body must be valid JSON", "type": "invalid_request_error"}},
+                status_code=400,
+            )
+        if not isinstance(payload, dict):
+            return JSONResponse(
+                {"error": {"message": "Request body must be an object", "type": "invalid_request_error"}},
+                status_code=400,
+            )
+
+        requested_model = str(payload.get("model") or "").strip()
+        model = requested_model or self.summary_model
+        if not model or len(model) > 200 or any(ord(char) < 32 for char in model):
+            return JSONResponse(
+                {"error": {"message": "Emotion appraisal model ID is invalid", "type": "invalid_request_error"}},
+                status_code=400,
+            )
+        user_reference = str(payload.get("user_reference") or "她").strip() or "她"
+        if len(user_reference) > 80 or any(ord(char) < 32 for char in user_reference):
+            return JSONResponse(
+                {"error": {"message": "user_reference is invalid", "type": "invalid_request_error"}},
+                status_code=400,
+            )
+
+        raw_messages = payload.get("messages")
+        if not isinstance(raw_messages, list) or not raw_messages or len(raw_messages) > 20:
+            return JSONResponse(
+                {
+                    "error": {
+                        "message": "messages must be a non-empty array with at most 20 items",
+                        "type": "invalid_request_error",
+                    }
+                },
+                status_code=400,
+            )
+        client_timezone = normalize_timezone_name(
+            request.headers.get("X-Ombre-Client-Timezone"),
+            getattr(solo, "timezone_name", "UTC"),
+        )
+        messages: list[dict[str, str]] = []
+        total_characters = 0
+        for item in raw_messages:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").strip().lower()
+            if role not in {"user", "assistant"}:
+                continue
+            content = self._message_content_to_text(item.get("content")).strip()
+            if not content:
+                continue
+            total_characters += len(content)
+            normalized_message = {"role": role, "content": content}
+            context = self._message_context(item, client_timezone)
+            if context.get("sentAt"):
+                normalized_message["sent_at"] = context["sentAt"]
+                normalized_message["timezone"] = context["timezone"]
+            messages.append(normalized_message)
+        if total_characters > 60000:
+            return JSONResponse(
+                {"error": {"message": "Emotion appraisal input is too large", "type": "invalid_request_error"}},
+                status_code=413,
+            )
+        user_turns = sum(1 for message in messages if message["role"] == "user")
+        assistant_turns = sum(1 for message in messages if message["role"] == "assistant")
+        if user_turns < 2 or assistant_turns < 2:
+            return JSONResponse(
+                {
+                    "error": {
+                        "message": "Emotion appraisal requires at least two completed conversation turns",
+                        "type": "invalid_request_error",
+                    }
+                },
+                status_code=400,
+            )
+
+        try:
+            current_state = solo.appraisal_snapshot()
+        except Exception as exc:
+            logger.warning("Unable to read solitude state for semantic appraisal: %s", exc)
+            current_state = {}
+        if not current_state:
+            return JSONResponse(
+                {"error": {"message": "Emotion state is not ready", "type": "server_error"}},
+                status_code=503,
+            )
+        fingerprint_source = json.dumps(
+            {"messages": messages, "user_reference": user_reference},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        appraisal_id = "turns_" + hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()[:24]
+        try:
+            result = await self._run_emotion_appraisal(
+                summary="",
+                new_messages=messages,
+                current_state=current_state,
+                model=model,
+                user_reference=user_reference,
+                appraisal_id=appraisal_id,
+            )
+        except Exception as exc:
+            logger.warning("Conversation emotion appraisal failed | id=%s error=%s", appraisal_id, exc)
+            result = None
+        if result is None:
+            return JSONResponse(
+                {"error": {"message": "Emotion appraisal model returned no usable result", "type": "upstream_error"}},
+                status_code=502,
+            )
+        return JSONResponse({
+            "ok": True,
+            "appraisal_id": appraisal_id,
+            "duplicate": bool(result.get("duplicate")),
+            "applied": result.get("applied", {}),
         })
 
     def _schedule_emotion_appraisal(
@@ -653,10 +796,10 @@ class ZetaOpenAIGateway:
         model: str,
         user_reference: str,
         appraisal_id: str,
-    ) -> None:
+    ) -> dict[str, Any] | None:
         solo = getattr(self, "solo", None)
         if solo is None or not bool(getattr(solo, "enabled", False)):
-            return
+            return None
         payload = {
             "model": model,
             "messages": [
@@ -682,7 +825,7 @@ class ZetaOpenAIGateway:
             )
         except httpx.RequestError as exc:
             logger.warning("Emotion appraisal provider request failed | id=%s error=%s", appraisal_id, exc)
-            return
+            return None
         if not 200 <= response.status_code < 300:
             logger.warning(
                 "Emotion appraisal provider returned HTTP %s | id=%s body=%s",
@@ -690,11 +833,11 @@ class ZetaOpenAIGateway:
                 appraisal_id,
                 _preview_text(response.text),
             )
-            return
+            return None
         appraisal = parse_appraisal_response(self._assistant_text_from_response(response))
         if appraisal is None:
             logger.warning("Emotion appraisal returned invalid JSON | id=%s", appraisal_id)
-            return
+            return None
         result = await solo.apply_conversation_appraisal(
             appraisal,
             appraisal_id=appraisal_id,
@@ -705,6 +848,7 @@ class ZetaOpenAIGateway:
             bool(result.get("duplicate")),
             result.get("applied", {}),
         )
+        return result
 
     async def reasoning_presentation(self, request: Request) -> JSONResponse:
         auth = self._authorize(request)
@@ -2520,6 +2664,15 @@ async def conversation_summary_route(request: Request) -> Response:
     return await gateway.conversation_summary(request)
 
 
+async def emotion_appraisal_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.emotion_appraisal(request)
+
+
 async def reasoning_presentation_route(request: Request) -> Response:
     if gateway is None:
         return JSONResponse(
@@ -2649,6 +2802,7 @@ routes = [
     Route("/api/system-prompt", system_prompt_route, methods=["GET", "PUT"]),
     Route("/api/duetto/context", duetto_context_route, methods=["POST"]),
     Route("/api/conversation-summary", conversation_summary_route, methods=["POST"]),
+    Route("/api/emotion-appraisal", emotion_appraisal_route, methods=["POST"]),
     Route("/api/reasoning-presentation", reasoning_presentation_route, methods=["POST"]),
     Route("/api/solo/state", solo_state_route, methods=["GET"]),
     Route("/api/solo/timeline", solo_timeline_route, methods=["GET"]),

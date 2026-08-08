@@ -69,6 +69,7 @@ const storageKeys = {
   messages: "companion.messages.v1",
   settings: "companion.settings.v1",
   sessionId: "companion.sessionId.v1",
+  emotionAppraisalCursor: "companion.emotionAppraisalCursor.v1",
   schedule: "companion.schedule.v1",
   scheduleSettings: "companion.scheduleSettings.v1",
   scheduleNudges: "companion.scheduleNudges.v1"
@@ -143,6 +144,7 @@ const state = {
   scheduleSyncStatus: "本地日程",
   busy: false,
   editingMessageId: "",
+  emotionAppraisalUserCount: 0,
   systemPromptConfigured: false,
   systemPromptSha256: "",
   systemPromptError: "",
@@ -152,6 +154,7 @@ const state = {
   loadedMemoryPanels: new Set()
 };
 
+initializeEmotionAppraisalCursor();
 platform.storage.setString(storageKeys.sessionId, state.sessionId);
 
 const els = {
@@ -319,7 +322,7 @@ function bindEvents() {
   });
 
   els.messageInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && event.ctrlKey && !event.isComposing) {
       event.preventDefault();
       sendMessage();
     }
@@ -431,6 +434,7 @@ function bindEvents() {
 
   els.clearChatButton.addEventListener("click", () => {
     state.messages = [];
+    setEmotionAppraisalCursor(0);
     saveMessages();
     renderMessages();
   });
@@ -628,6 +632,7 @@ async function generateAssistantReply() {
     renderMessages();
     try {
       if (replySucceeded) {
+        await maybeAppraiseConversationEmotion();
         await maybePresentReasoning(assistantMessage);
         await maybeSummarizeConversation();
       }
@@ -921,6 +926,89 @@ function reasoningPresentationContext(messageId) {
   return { conversationSummary, messages };
 }
 
+function initializeEmotionAppraisalCursor() {
+  const currentUserCount = conversationUserMessageCount();
+  const stored = platform.storage.getString(storageKeys.emotionAppraisalCursor);
+  const parsed = Number.parseInt(stored, 10);
+  state.emotionAppraisalUserCount = stored && Number.isFinite(parsed)
+    ? Math.max(0, Math.min(currentUserCount, parsed))
+    : currentUserCount;
+  platform.storage.setString(
+    storageKeys.emotionAppraisalCursor,
+    state.emotionAppraisalUserCount
+  );
+}
+
+function setEmotionAppraisalCursor(userCount) {
+  const normalized = Math.max(0, Math.round(Number(userCount) || 0));
+  state.emotionAppraisalUserCount = normalized;
+  platform.storage.setString(storageKeys.emotionAppraisalCursor, normalized);
+}
+
+function conversationUserMessageCount() {
+  return state.messages.filter((message) => (
+    message.role === "user"
+    && !message.pending
+    && typeof message.content === "string"
+    && message.content.trim()
+  )).length;
+}
+
+function emotionAppraisalMessagesAfter(userCursor) {
+  let seenUsers = 0;
+  const messages = [];
+  for (const message of state.messages) {
+    if (message.role !== "user" && message.role !== "assistant") {
+      continue;
+    }
+    if (message.pending || typeof message.content !== "string" || !message.content.trim()) {
+      continue;
+    }
+    if (message.role === "user") {
+      seenUsers += 1;
+    }
+    if (seenUsers > userCursor) {
+      messages.push(messageForGateway(message));
+    }
+  }
+  return messages.slice(-12);
+}
+
+async function maybeAppraiseConversationEmotion() {
+  const userCount = conversationUserMessageCount();
+  if (userCount < state.emotionAppraisalUserCount) {
+    setEmotionAppraisalCursor(userCount);
+    return;
+  }
+  if (userCount - state.emotionAppraisalUserCount < 2) {
+    return;
+  }
+
+  const messages = emotionAppraisalMessagesAfter(state.emotionAppraisalUserCount);
+  if (messages.filter((message) => message.role === "user").length < 2) {
+    return;
+  }
+  try {
+    const response = await platform.request(apiUrl("/api/emotion-appraisal"), {
+      method: "POST",
+      headers: buildGatewayHeaders(),
+      body: JSON.stringify({
+        model: String(state.settings.summaryModel || "").trim(),
+        user_reference: summaryUserReference(),
+        messages
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error?.message || data.message || `情绪评估失败：${response.status}`);
+    }
+    setEmotionAppraisalCursor(userCount);
+    await soloPanel.refresh({ silent: true });
+  } catch (error) {
+    console.warn("Conversation emotion appraisal failed", error);
+  }
+}
+
 async function maybeSummarizeConversation() {
   const summaryPrompt = String(state.settings.summaryPrompt || "").trim();
   const summaryInterval = normalizeSummaryInterval(state.settings.summaryInterval);
@@ -957,6 +1045,7 @@ async function maybeSummarizeConversation() {
         prompt: summaryPrompt,
         user_reference: summaryUserReference(),
         previous_summary: previousSummary,
+        skip_emotion_appraisal: true,
         messages: newMessages.map(messageForGateway)
       })
     });

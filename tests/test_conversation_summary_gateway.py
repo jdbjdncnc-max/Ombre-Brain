@@ -1,7 +1,7 @@
 import json
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 from starlette.requests import Request
@@ -61,6 +61,23 @@ def _gateway(response_body=None, *, gateway_token=""):
 
 
 class ConversationSummaryGatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_can_skip_old_summary_coupled_emotion_appraisal(self):
+        gateway = _gateway()
+        gateway._schedule_emotion_appraisal = Mock(return_value=True)
+
+        response = await gateway.conversation_summary(_request({
+            "prompt": "总结",
+            "skip_emotion_appraisal": True,
+            "messages": [
+                {"role": "user", "content": "新问题"},
+                {"role": "assistant", "content": "新回答"},
+            ],
+        }))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(json.loads(response.body)["emotion_appraisal_scheduled"])
+        gateway._schedule_emotion_appraisal.assert_not_called()
+
     async def test_uses_frontend_prompt_and_environment_model(self):
         gateway = _gateway()
         request = _request(
