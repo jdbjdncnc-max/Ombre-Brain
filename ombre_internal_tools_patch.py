@@ -1149,16 +1149,23 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
             payload.get("messages", []),
             session_id,
         )
-        recall_context = self._recall_context_text(payload.get("messages", []))
-        recalled = await self.memory_gateway.recall({
-            "current_text": user_text,
-            "recent_context": recall_context,
-            "max_results": self.recall_max_results,
-            "keyword_limit": self.keyword_limit,
-            "semantic_limit": self.semantic_limit,
-            "track_usage": True,
-        })
+        recall_mode = str(request.headers.get("X-Ombre-Recall-Mode") or "").strip().lower()
+        recall_injected = recall_mode == "injected"
+        if recall_injected:
+            recalled = {"memories": [], "injection_text": "", "mode": "injected"}
+        else:
+            recall_context = self._recall_context_text(payload.get("messages", []))
+            recalled = await self.memory_gateway.recall({
+                "current_text": user_text,
+                "recent_context": recall_context,
+                "max_results": self.recall_max_results,
+                "keyword_limit": self.keyword_limit,
+                "semantic_limit": self.semantic_limit,
+                "track_usage": True,
+            })
         memory_headers = self._memory_debug_headers(recalled)
+        if recall_injected:
+            memory_headers["X-Zeta-Recall-Mode"] = "injected"
         self._log_recall(session_id, recalled)
         injected_text = self._build_gateway_system_text(recalled)
         system_prompt = self._read_system_prompt()

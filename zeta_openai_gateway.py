@@ -377,6 +377,8 @@ class ZetaOpenAIGateway:
                 status_code=400,
             )
 
+        context_mode = str(payload.get("context_mode") or "full").strip().lower()
+        memory_only = context_mode == "memory_only"
         message = self._recall_context_piece(str(payload.get("message") or ""), 1800)
         kind = str(payload.get("kind") or "music").strip().lower()
         if kind not in {"music", "book"}:
@@ -427,10 +429,11 @@ class ZetaOpenAIGateway:
             memories = []
         memory_context = str(recalled.get("injection_text") or "").strip() if isinstance(recalled, dict) else ""
         solo_context = ""
-        try:
-            solo_context = self.solo.model_context_text(max_characters=1200)
-        except Exception as exc:
-            logger.warning("Unable to build Duetto solitude context: %s", exc)
+        if not memory_only:
+            try:
+                solo_context = self.solo.model_context_text(max_characters=1200)
+            except Exception as exc:
+                logger.warning("Unable to build Duetto solitude context: %s", exc)
         context_parts = []
         if solo_context:
             context_parts.append("[独处系统当前状态]\n" + solo_context)
@@ -441,6 +444,7 @@ class ZetaOpenAIGateway:
             "context": context[:4000],
             "memory_count": len(memories),
             "solitude_state": bool(solo_context),
+            "context_mode": "memory_only" if memory_only else "full",
         })
 
     async def duetto_event(self, request: Request) -> JSONResponse:
@@ -1242,16 +1246,23 @@ class ZetaOpenAIGateway:
             payload.get("messages", []),
             session_id,
         )
-        recall_context = self._recall_context_text(payload.get("messages", []))
-        recalled = await self.memory_gateway.recall({
-            "current_text": user_text,
-            "recent_context": recall_context,
-            "max_results": self.recall_max_results,
-            "keyword_limit": self.keyword_limit,
-            "semantic_limit": self.semantic_limit,
-            "track_usage": True,
-        })
+        recall_mode = str(request.headers.get("X-Ombre-Recall-Mode") or "").strip().lower()
+        recall_injected = recall_mode == "injected"
+        if recall_injected:
+            recalled = {"memories": [], "injection_text": "", "mode": "injected"}
+        else:
+            recall_context = self._recall_context_text(payload.get("messages", []))
+            recalled = await self.memory_gateway.recall({
+                "current_text": user_text,
+                "recent_context": recall_context,
+                "max_results": self.recall_max_results,
+                "keyword_limit": self.keyword_limit,
+                "semantic_limit": self.semantic_limit,
+                "track_usage": True,
+            })
         memory_headers = self._memory_debug_headers(recalled)
+        if recall_injected:
+            memory_headers["X-Zeta-Recall-Mode"] = "injected"
         self._log_recall(session_id, recalled)
         injected_text = self._build_gateway_system_text(recalled)
         system_prompt = self._read_system_prompt()

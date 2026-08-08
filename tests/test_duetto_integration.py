@@ -171,6 +171,20 @@ class DuettoGatewayTests(unittest.IsolatedAsyncioTestCase):
         recall_payload = gateway.memory_gateway.recall.await_args.args[0]
         self.assertIn("正在一起读书：《测试共读书》", recall_payload["current_text"])
 
+        memory_only_response = await gateway.duetto_context(_request("/api/duetto/context", {
+            "kind": "book",
+            "message": "我想在这里写批注",
+            "book": {"id": "book-1", "title": "测试共读书", "author": "作者", "chapter_title": "第一章"},
+            "user": "Eve",
+            "ai": "Zeta",
+            "context_mode": "memory_only",
+        }))
+        memory_only_body = json.loads(memory_only_response.body)
+        self.assertEqual(memory_only_body["context_mode"], "memory_only")
+        self.assertFalse(memory_only_body["solitude_state"])
+        self.assertNotIn("情绪：好奇 68", memory_only_body["context"])
+        self.assertIn("她以前也标过这一句", memory_only_body["context"])
+
     async def test_user_note_reuses_summary_provider_for_semantic_appraisal(self):
         gateway = object.__new__(ZetaOpenAIGateway)
         gateway.gateway_token = "secret"
