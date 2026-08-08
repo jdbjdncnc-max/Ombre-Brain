@@ -1,12 +1,12 @@
 import { createBrowserPlatform } from "./platform.browser.js";
 
-export function createAndroidPlatform(bridge) {
+export function createAndroidPlatform(bridge, { capacitorPlugin = false } = {}) {
   const fallback = createBrowserPlatform();
 
   return {
     kind: "android",
     storage: createBridgeStorageAdapter(bridge, fallback.storage),
-    notifications: createBridgeNotificationAdapter(bridge, fallback.notifications),
+    notifications: createBridgeNotificationAdapter(bridge, fallback.notifications, capacitorPlugin),
     getDefaultApiBaseUrl() {
       const bridgeUrl = callBridgeString(bridge, "getApiBaseUrl");
       return bridgeUrl || fallback.getDefaultApiBaseUrl();
@@ -67,26 +67,80 @@ function createBridgeStorageAdapter(bridge, fallback) {
   };
 }
 
-function createBridgeNotificationAdapter(bridge, fallback) {
+function createBridgeNotificationAdapter(bridge, fallback, capacitorPlugin) {
+  let cachedPermission = "prompt";
+
   return {
     isSupported() {
       return hasBridgeMethod(bridge, "showNotification") || fallback.isSupported();
     },
     permission() {
+      if (capacitorPlugin && hasBridgeMethod(bridge, "notificationPermission")) {
+        Promise.resolve(bridge.notificationPermission({}))
+          .then((value) => {
+            cachedPermission = permissionValue(value, cachedPermission);
+          })
+          .catch(() => {});
+        return cachedPermission;
+      }
       const value = callBridgeString(bridge, "notificationPermission");
       return value || fallback.permission();
     },
     async requestPermission() {
+      if (capacitorPlugin && hasBridgeMethod(bridge, "requestNotificationPermission")) {
+        try {
+          const value = await bridge.requestNotificationPermission({});
+          cachedPermission = permissionValue(value, cachedPermission);
+          return cachedPermission;
+        } catch {
+          return cachedPermission;
+        }
+      }
       const value = callBridgeString(bridge, "requestNotificationPermission");
       return value || fallback.requestPermission();
     },
     show(title, body, options = {}) {
+      if (capacitorPlugin && hasBridgeMethod(bridge, "showNotification")) {
+        bridge.showNotification({
+          title: String(title || ""),
+          body: String(body || ""),
+          options
+        }).catch(() => {});
+        return true;
+      }
       if (callBridgeVoid(bridge, "showNotification", String(title || ""), String(body || ""), JSON.stringify(options))) {
         return true;
       }
       return fallback.show(title, body, options);
+    },
+    async configureProactive({ backendUrl = "", gatewayToken = "", title = "" } = {}) {
+      if (!hasBridgeMethod(bridge, "configureProactiveNotifications")) {
+        return { configured: false, native: false };
+      }
+      if (capacitorPlugin) {
+        const result = await bridge.configureProactiveNotifications({
+          backendUrl: String(backendUrl || ""),
+          gatewayToken: String(gatewayToken || ""),
+          title: String(title || "")
+        });
+        return { ...(result || {}), native: true };
+      }
+      callBridgeVoid(
+        bridge,
+        "configureProactiveNotifications",
+        String(backendUrl || ""),
+        String(gatewayToken || ""),
+        String(title || "")
+      );
+      return { configured: Boolean(backendUrl), native: true };
     }
   };
+}
+
+function permissionValue(value, fallback = "prompt") {
+  const raw = typeof value === "string" ? value : value?.value;
+  const normalized = String(raw || "").trim().toLowerCase();
+  return ["granted", "denied", "prompt"].includes(normalized) ? normalized : fallback;
 }
 
 function hasBridgeMethod(bridge, method) {

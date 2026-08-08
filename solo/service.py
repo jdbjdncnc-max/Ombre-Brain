@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -10,6 +11,7 @@ import random
 import re
 import socket
 import uuid
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +22,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .actions import ACTION_SPECS, choose_action, perform_action
 from .appraisal import normalize_appraisal
 from .dynamics import advance_emotions
+from .duetto import BOOK_NOTE_CREATED, MUSIC_PLAYED
 from .emotion_model import (
     CHANNELS,
     CHANNEL_BY_KEY,
@@ -122,6 +125,7 @@ class SoloService:
         pulse_seconds: int | None = None,
         decision_seconds: int | None = None,
         activity_min_seconds: int | None = None,
+        daily_llm_budget: int | None = None,
         jitter_ratio: float = 0.2,
         timezone_name: str | None = None,
         rng: random.Random | None = None,
@@ -134,6 +138,8 @@ class SoloService:
         self.emotion_series_path = self.solo_dir / "emotion_series.jsonl"
         self.activities_path = self.solo_dir / "activities.jsonl"
         self.unsent_path = self.solo_dir / "unsent.jsonl"
+        self.proactive_path = self.solo_dir / "proactive_outbox.jsonl"
+        self.proactive_acks_path = self.solo_dir / "proactive_acks.json"
         self.talking_points_path = self.solo_dir / "talking_points.json"
         self.lease_path = self.solo_dir / "heartbeat.lock"
         self.enabled = _truthy(os.environ.get("OMBRE_SOLO_ENABLED", "0")) if enabled is None else bool(enabled)
@@ -145,6 +151,9 @@ class SoloService:
         )
         self.activity_min_seconds = activity_min_seconds if activity_min_seconds is not None else _bounded_int(
             os.environ.get("OMBRE_SOLO_ACTIVITY_MIN_SECONDS"), 5400, 300, 21600
+        )
+        self.daily_llm_budget = daily_llm_budget if daily_llm_budget is not None else _bounded_int(
+            os.environ.get("OMBRE_SOLO_DAILY_LLM_BUDGET"), 30, 1, 10000
         )
         self.jitter_ratio = max(0.0, min(0.5, float(jitter_ratio)))
         configured_timezone = timezone_name or os.environ.get("OMBRE_SOLO_TIMEZONE", "Asia/Taipei")
@@ -160,6 +169,7 @@ class SoloService:
         self._owner = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
         self._task: asyncio.Task | None = None
         self._state_lock = asyncio.Lock()
+        self._proactive_generator: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None
 
     @classmethod
     def from_gateway(cls, gateway: Any) -> "SoloService":
@@ -175,9 +185,17 @@ class SoloService:
             "pulseSeconds": self.pulse_seconds,
             "decisionSeconds": self.decision_seconds,
             "activityMinSeconds": self.activity_min_seconds,
+            "dailyLlmBudget": self.daily_llm_budget,
             "timezone": self.timezone_name,
             "mcpEnabled": self.mcp.enabled,
+            "proactiveReady": self._proactive_generator is not None,
         }
+
+    def set_proactive_generator(
+        self,
+        generator: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None,
+    ) -> None:
+        self._proactive_generator = generator
 
     async def start(self) -> bool:
         if not self.enabled:
@@ -236,6 +254,7 @@ class SoloService:
                 "pulseSeconds": self.pulse_seconds,
                 "decisionSeconds": self.decision_seconds,
                 "activityMinSeconds": self.activity_min_seconds,
+                "dailyLlmBudget": self.daily_llm_budget,
                 "timezone": self.timezone_name,
             }
             return self._public_state(runtime, emotion)
@@ -276,6 +295,34 @@ class SoloService:
                     if (_parse_time(item.get("ts")) or datetime.max.replace(tzinfo=timezone.utc)) < before_time
                 ]
             return sorted(items, key=lambda item: str(item.get("ts") or ""), reverse=True)[:safe_limit]
+
+    async def get_proactive_outbox(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(50, int(limit)))
+        async with self._state_lock:
+            acked = self._proactive_ack_ids()
+            items = [
+                deepcopy(item)
+                for item in self._read_jsonl(self.proactive_path, limit=1000)
+                if str(item.get("id") or "") not in acked
+            ]
+            return sorted(items, key=lambda item: str(item.get("ts") or ""))[:safe_limit]
+
+    async def ack_proactive_outbox(self, ids: list[Any]) -> dict[str, Any]:
+        clean_ids = {
+            self._context_text(value, 100)
+            for value in ids[:100]
+            if self._context_text(value, 100)
+        }
+        async with self._state_lock:
+            known = {
+                str(item.get("id") or "")
+                for item in self._read_jsonl(self.proactive_path, limit=1000)
+            }
+            accepted = sorted(clean_ids & known)
+            acked = self._proactive_ack_ids()
+            acked.update(accepted)
+            self._write_json(self.proactive_acks_path, {"ids": sorted(acked)[-1000:]})
+            return {"ok": True, "acked": accepted}
 
     def model_context_text(
         self,
@@ -452,6 +499,124 @@ class SoloService:
             self._write_json(self.emotion_path, emotion)
             return {"ok": True, "duplicate": False, "applied": applied}
 
+    async def duetto_event_seen(self, event: dict[str, Any]) -> bool:
+        """Return whether a source+id pair was already committed."""
+
+        event_key = self._duetto_event_key(event)
+        if not event_key:
+            return False
+        async with self._state_lock:
+            emotion = self._read_json(self.emotion_path)
+            if not isinstance(emotion, dict):
+                return False
+            return event_key in {
+                str(value) for value in emotion.get("appliedDuettoEventIds", [])
+                if str(value).strip()
+            }
+
+    async def apply_duetto_event(
+        self,
+        event: dict[str, Any],
+        *,
+        appraisal: dict[str, Any] | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Commit one real Duetto event to the trajectory and emotion state."""
+
+        if not self.enabled:
+            return {"ok": False, "enabled": False, "applied": {}}
+        event_key = self._duetto_event_key(event)
+        if not event_key:
+            return {"ok": False, "error": "invalid_event_id", "applied": {}}
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        occurred_at = _parse_time(event.get("time")) or current
+        if occurred_at > current + timedelta(minutes=5):
+            occurred_at = current
+        normalized = normalize_appraisal(appraisal or {})
+
+        async with self._state_lock:
+            runtime = self._read_json(self.state_path) or self._new_state(current)
+            emotion = self._advance_emotion_state(runtime, current)
+            applied_ids = [
+                str(value) for value in emotion.get("appliedDuettoEventIds", [])
+                if str(value).strip()
+            ][-199:]
+            if event_key in applied_ids:
+                return {"ok": True, "duplicate": True, "applied": {}}
+
+            channels = normalize_channels(emotion.get("channels") or {})
+            applied: dict[str, float] = {}
+            for key, raw_delta in normalized.get("emotion_deltas", {}).items():
+                if key not in CHANNEL_BY_KEY:
+                    continue
+                before = channels[key]
+                channels = apply_delta(channels, key, raw_delta)
+                change = channels[key] - before
+                if abs(change) >= 0.01:
+                    applied[key] = round(change, 3)
+
+            data = event.get("data") if isinstance(event.get("data"), dict) else {}
+            actor = str(data.get("actor") or "system")
+            if actor == "user":
+                previous_message = _parse_time(emotion.get("lastUserMessageAt"))
+                present_at = min(current, occurred_at)
+                if previous_message is None or present_at > previous_message:
+                    emotion["lastUserMessageAt"] = _iso(present_at)
+                    runtime["lastUserMessageAt"] = _iso(present_at)
+
+            if appraisal is not None:
+                budget = emotion.get("budget") if isinstance(emotion.get("budget"), dict) else {}
+                today = current.date().isoformat()
+                if str(budget.get("date") or "") != today:
+                    budget = {"date": today, "llmCalls": 0, "fetches": 0, "mcpCalls": 0, "proactive": 0}
+                budget["llmCalls"] = max(0, int(budget.get("llmCalls") or 0)) + 1
+                emotion["budget"] = budget
+
+            emotion["channels"] = channels
+            emotion["updatedAt"] = _iso(current)
+            applied_ids.append(event_key)
+            emotion["appliedDuettoEventIds"] = applied_ids[-200:]
+            emotion["lastDuettoEvent"] = {
+                "id": str(event.get("id") or "")[:160],
+                "type": str(event.get("type") or "")[:120],
+                "at": _iso(occurred_at),
+                "actor": actor[:16],
+                "deltas": applied,
+            }
+            self._refresh_emotion_derived(emotion)
+
+            activity = self._duetto_activity(event, occurred_at, emotion, applied, appraisal is not None)
+            self._append_jsonl(self.activities_path, activity)
+            if applied:
+                self._record_emotion_event(
+                    emotion,
+                    ts=occurred_at,
+                    source="you" if actor == "user" else "duetto",
+                    cause_key=str(event.get("type") or "duetto_event"),
+                    deltas=applied,
+                    reason=normalized.get("reason") or activity["title"],
+                    felt=normalized.get("felt") or activity.get("felt") or "这次共同活动改变了我的感受",
+                    activity_id=activity["id"],
+                )
+            self._record_hourly_series(emotion, current, force=True, activity_id=activity["id"])
+            self._write_json(self.emotion_path, emotion)
+
+            event_type = str(event.get("type") or "")
+            runtime["lastActivityAt"] = _iso(current)
+            runtime["updatedAt"] = _iso(current)
+            runtime["mode"] = (
+                {"key": "listening_music", "label": "在 Duetto 一起听歌"}
+                if event_type == MUSIC_PLAYED
+                else {"key": "reading_book", "label": "在 Duetto 一起读书"}
+            )
+            self._write_json(self.state_path, runtime)
+            return {
+                "ok": True,
+                "duplicate": False,
+                "applied": applied,
+                "activity_id": activity["id"],
+            }
+
     async def note_user_message(self, *, sent_at: Any = None, timezone_name: Any = None) -> None:
         if not self.enabled:
             return
@@ -504,6 +669,8 @@ class SoloService:
             return {"ok": False, "enabled": False, "error": "Solitude service is disabled."}
 
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        proactive_activity: dict[str, Any] | None = None
+        wake_id = ""
         async with self._state_lock:
             self.solo_dir.mkdir(parents=True, exist_ok=True)
             if not self._claim_lease(current):
@@ -530,6 +697,8 @@ class SoloService:
                 wake_id = f"wake_{current.strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
                 activity = self._maybe_run_activity(state, emotion, current)
                 result = str(activity.get("type") or "idle") if activity else "idle"
+                if activity and activity.get("type") == "message_user":
+                    proactive_activity = deepcopy(activity)
                 state["decisionCount"] = int(state.get("decisionCount") or 0) + 1
                 state["lastDecisionAt"] = _iso(current)
                 state["lastWakeId"] = wake_id
@@ -552,12 +721,24 @@ class SoloService:
                 )
 
             self._write_json(self.state_path, state)
-            return {
+            response_payload = {
                 "ok": True,
                 "enabled": True,
                 "decisionDue": decision_due,
                 "state": self._public_state(state, emotion),
             }
+
+        if proactive_activity is not None:
+            generated = await self._generate_proactive_outbox(
+                proactive_activity,
+                wake_id=wake_id,
+                now=current,
+            )
+            response_payload["proactiveQueued"] = int(generated.get("queued") or 0)
+            decision = response_payload.get("state", {}).get("lastDecision")
+            if isinstance(decision, dict):
+                decision["modelCalled"] = bool(generated.get("called"))
+        return response_payload
 
     def _new_state(self, now: datetime) -> dict[str, Any]:
         return {
@@ -706,15 +887,18 @@ class SoloService:
         now: datetime,
     ) -> dict[str, Any] | None:
         last_activity = _parse_time(runtime.get("lastActivityAt"))
-        if last_activity and (now - last_activity).total_seconds() < self.activity_min_seconds:
-            elapsed = (now - last_activity).total_seconds()
-            if elapsed >= min(1800, self.activity_min_seconds / 2):
-                runtime["mode"] = self._resting_or_idle_mode(emotion)
-            return None
 
         last_actions = runtime.get("lastActionAt") if isinstance(runtime.get("lastActionAt"), dict) else {}
+        budget = emotion.get("budget") if isinstance(emotion.get("budget"), dict) else {}
+        budget_used = 0 if str(budget.get("date") or "") != now.date().isoformat() else max(
+            0,
+            int(budget.get("llmCalls") or 0),
+        )
+        llm_budget_available = budget_used < self.daily_llm_budget
         available: list[str] = []
         for key, spec in ACTION_SPECS.items():
+            if key == "message_user" and (self._proactive_generator is None or not llm_budget_available):
+                continue
             last_action = _parse_time(last_actions.get(key))
             if last_action is None or now - last_action >= timedelta(minutes=spec.cooldown_minutes):
                 available.append(key)
@@ -728,6 +912,15 @@ class SoloService:
             available=available,
             rng=self._rng,
         )
+        if (
+            spec.key != "message_user"
+            and last_activity
+            and (now - last_activity).total_seconds() < self.activity_min_seconds
+        ):
+            elapsed = (now - last_activity).total_seconds()
+            if elapsed >= min(1800, self.activity_min_seconds / 2):
+                runtime["mode"] = self._resting_or_idle_mode(emotion)
+            return None
         outcome = perform_action(spec, emotion.get("channels") or {}, rng=self._rng)
         activity_id = f"act_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         drive = strongest_drive(emotion.get("channels") or {})
@@ -804,12 +997,160 @@ class SoloService:
         runtime["mode"] = deepcopy(outcome.get("mode") or {"key": spec.mode_key, "label": spec.mode_label})
         return activity
 
+    async def _generate_proactive_outbox(
+        self,
+        activity: dict[str, Any],
+        *,
+        wake_id: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        generator = self._proactive_generator
+        if generator is None:
+            return {"called": False, "queued": 0}
+        context = {
+            "triggered_at": _iso(now),
+            "timezone": self.timezone_name,
+            "activity": deepcopy(activity),
+            "state": self.model_context_text(now=now, max_characters=1200),
+        }
+        try:
+            generated = await generator(context)
+        except Exception as exc:
+            logger.warning("Proactive message generation failed | activity=%s error=%s", activity.get("id"), exc)
+            generated = {"called": True, "messages": []}
+        result = generated if isinstance(generated, dict) else {}
+        called = bool(result.get("called", True))
+        title = self._context_text(result.get("title"), 60)
+        messages = [
+            self._context_text(value, 240)
+            for value in (result.get("messages") if isinstance(result.get("messages"), list) else [])[:3]
+        ]
+        messages = [value for value in messages if value]
+
+        async with self._state_lock:
+            emotion = self._read_json(self.emotion_path)
+            if not isinstance(emotion, dict):
+                emotion = self._new_emotion_state(now, now)
+            budget = emotion.get("budget") if isinstance(emotion.get("budget"), dict) else {}
+            today = now.date().isoformat()
+            if str(budget.get("date") or "") != today:
+                budget = {"date": today, "llmCalls": 0, "fetches": 0, "mcpCalls": 0, "proactive": 0}
+            if called:
+                budget["llmCalls"] = max(0, int(budget.get("llmCalls") or 0)) + 1
+            if messages:
+                budget["proactive"] = max(0, int(budget.get("proactive") or 0)) + len(messages)
+            emotion["budget"] = budget
+            emotion["updatedAt"] = _iso(now)
+            self._write_json(self.emotion_path, emotion)
+
+            queued = 0
+            for message in messages:
+                self._append_jsonl(self.proactive_path, {
+                    "id": f"proactive_{uuid.uuid4().hex[:16]}",
+                    "ts": _iso(now),
+                    "title": title,
+                    "text": message,
+                    "activityId": str(activity.get("id") or "")[:80],
+                    "source": "solitude_model",
+                })
+                queued += 1
+
+            runtime = self._read_json(self.state_path)
+            if isinstance(runtime, dict):
+                decision = runtime.get("lastDecision")
+                if isinstance(decision, dict) and str(decision.get("id") or "") == wake_id:
+                    decision["modelCalled"] = called
+                    decision["proactiveQueued"] = queued
+                    runtime["lastDecision"] = decision
+                    runtime["updatedAt"] = _iso(now)
+                    self._write_json(self.state_path, runtime)
+            return {"called": called, "queued": queued}
+
     @staticmethod
     def _resting_or_idle_mode(emotion: dict[str, Any]) -> dict[str, str]:
         channels = normalize_channels(emotion.get("channels") or {})
         if channels.get("fatigue", 0) >= 55:
             return {"key": "resting", "label": "在休息"}
         return {"key": "idle", "label": "安静待着"}
+
+    @staticmethod
+    def _duetto_event_key(event: dict[str, Any]) -> str:
+        source = str(event.get("source") or "").strip()
+        event_id = str(event.get("id") or "").strip()
+        if not source or not event_id:
+            return ""
+        digest = hashlib.sha256(f"{source}\n{event_id}".encode("utf-8")).hexdigest()[:32]
+        return f"duetto_{digest}"
+
+    def _duetto_activity(
+        self,
+        event: dict[str, Any],
+        occurred_at: datetime,
+        emotion: dict[str, Any],
+        applied: dict[str, float],
+        used_model: bool,
+    ) -> dict[str, Any]:
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        actor = str(data.get("actor") or "system")
+        event_type = str(event.get("type") or "")
+        event_key = self._duetto_event_key(event)
+        activity_id = "act_" + event_key
+        title = "在 Duetto 一起待了一会儿"
+        summary = ""
+        detail = ""
+        kind = "duetto"
+
+        if event_type == MUSIC_PLAYED:
+            song = data.get("song") if isinstance(data.get("song"), dict) else {}
+            song_title = self._context_text(song.get("title") or song.get("id"), 120) or "一首歌"
+            artist = self._context_text(song.get("artist"), 80)
+            if actor == "ai":
+                title = f"我在 Duetto 放了《{song_title}》"
+            elif actor == "user":
+                title = f"她在 Duetto 放了《{song_title}》"
+            else:
+                title = f"在 Duetto 听《{song_title}》"
+            summary = f"和她一起听《{song_title}》" + (f" — {artist}" if artist else "")
+            detail = summary
+            kind = "music"
+        elif event_type == BOOK_NOTE_CREATED:
+            book = data.get("book") if isinstance(data.get("book"), dict) else {}
+            note = data.get("note") if isinstance(data.get("note"), dict) else {}
+            book_title = self._context_text(book.get("title") or book.get("id"), 120) or "这本书"
+            note_text = self._context_text(note.get("text"), 240)
+            passage = self._context_text(note.get("passage"), 180)
+            if actor == "ai":
+                title = f"我回应了《{book_title}》里的批注"
+            elif actor == "user":
+                title = f"她在《{book_title}》的页边写了批注"
+            else:
+                title = f"《{book_title}》新增了一条批注"
+            summary = note_text
+            detail = (f"原文：{passage}\n" if passage else "") + f"批注：{note_text}"
+            kind = "book"
+
+        drive = strongest_drive(emotion.get("channels") or {})
+        return {
+            "id": activity_id[:80],
+            "ts": _iso(occurred_at),
+            "type": event_type[:120],
+            "kind": kind,
+            "status": "ok",
+            "title": title[:120],
+            "summary": summary[:240],
+            "detail": detail[:1200],
+            "evidence": {
+                "kind": "local",
+                "provider": "Duetto",
+                "eventId": str(event.get("id") or "")[:160],
+                "source": str(event.get("source") or "")[:240],
+            },
+            "felt": "",
+            "drive": f"{drive['label']} {drive['value']:.0f}",
+            "deltas": applied,
+            "source": "duetto",
+            "llmCalls": 1 if used_model else 0,
+        }
 
     @staticmethod
     def _relationship_words(current_dimensions: dict[str, Any]) -> str:
@@ -931,6 +1272,11 @@ class SoloService:
 
     def _read_recent_events(self, limit: int) -> list[dict[str, Any]]:
         return list(reversed(self._read_jsonl(self.emotion_events_path, limit=limit)))
+
+    def _proactive_ack_ids(self) -> set[str]:
+        value = self._read_json(self.proactive_acks_path)
+        ids = value.get("ids") if isinstance(value.get("ids"), list) else []
+        return {str(item) for item in ids if str(item).strip()}
 
     @staticmethod
     def _absence_reason(hours: float) -> str:

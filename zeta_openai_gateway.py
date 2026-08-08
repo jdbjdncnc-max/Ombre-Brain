@@ -26,7 +26,14 @@ from dehydrator import Dehydrator
 from embedding_engine import EmbeddingEngine
 from gateway_system_prompt import GatewaySystemPromptStore, inject_gateway_messages
 from solo.appraisal import APPRAISAL_SYSTEM_PROMPT, build_appraisal_user_text, parse_appraisal_response
+from solo.duetto import (
+    BOOK_NOTE_CREATED,
+    DUETTO_APPRAISAL_SYSTEM_PROMPT,
+    build_duetto_appraisal_user_text,
+    normalize_duetto_event,
+)
 from solo.mcp_bridge import McpConfigurationError, McpConnectionError, McpPermissionError
+from solo.proactive import PROACTIVE_SYSTEM_PROMPT, build_proactive_user_text, parse_proactive_response
 from solo.service import SOLO_STATE_RULES, SoloService, normalize_timezone_name, timezone_info
 from utils import load_config, setup_logging
 from zeta_gateway import ZetaMemoryGateway
@@ -223,6 +230,8 @@ class ZetaOpenAIGateway:
         self.solo = SoloService.from_gateway(self)
 
         self.http = httpx.AsyncClient(timeout=120.0)
+        if self.upstream_chat_url and self.upstream_api_key and self.upstream_model:
+            self.solo.set_proactive_generator(self._generate_proactive_messages)
 
     async def close(self) -> None:
         try:
@@ -369,46 +378,232 @@ class ZetaOpenAIGateway:
             )
 
         message = self._recall_context_piece(str(payload.get("message") or ""), 1800)
+        kind = str(payload.get("kind") or "music").strip().lower()
+        if kind not in {"music", "book"}:
+            kind = "music"
         song = payload.get("song") if isinstance(payload.get("song"), dict) else {}
         song_title = self._recall_context_piece(str(song.get("title") or ""), 160)
         song_artist = self._recall_context_piece(str(song.get("artist") or ""), 120)
+        book = payload.get("book") if isinstance(payload.get("book"), dict) else {}
+        book_title = self._recall_context_piece(str(book.get("title") or ""), 180)
+        book_author = self._recall_context_piece(str(book.get("author") or ""), 120)
+        chapter_title = self._recall_context_piece(str(book.get("chapter_title") or ""), 180)
         user_name = self._recall_context_piece(str(payload.get("user") or ""), 80)
         ai_name = self._recall_context_piece(str(payload.get("ai") or ""), 80)
 
         query_parts = [message]
-        if song_title:
+        if kind == "music" and song_title:
             song_text = f"正在一起听歌：《{song_title}》"
             if song_artist:
                 song_text += f" - {song_artist}"
             query_parts.append(song_text)
+        if kind == "book" and book_title:
+            book_text = f"正在一起读书：《{book_title}》"
+            if book_author:
+                book_text += f" - {book_author}"
+            if chapter_title:
+                book_text += f"，{chapter_title}"
+            query_parts.append(book_text)
         current_text = "\n".join(part for part in query_parts if part).strip()
-        if not current_text:
-            return JSONResponse({"context": "", "memory_count": 0})
-
-        recent_parts = ["source: Duetto"]
-        if user_name:
-            recent_parts.append(f"user: {user_name}")
-        if ai_name:
-            recent_parts.append(f"ai: {ai_name}")
-
-        recalled = await self.memory_gateway.recall({
-            "current_text": current_text,
-            "recent_context": "\n".join(recent_parts),
-            "max_results": self.recall_max_results,
-            "keyword_limit": self.keyword_limit,
-            "semantic_limit": self.semantic_limit,
-            "track_usage": True,
-        })
-        self._log_recall("duetto", recalled)
+        recalled: dict[str, Any] = {}
+        if current_text:
+            recent_parts = [f"source: Duetto/{kind}"]
+            if user_name:
+                recent_parts.append(f"user: {user_name}")
+            if ai_name:
+                recent_parts.append(f"ai: {ai_name}")
+            recalled = await self.memory_gateway.recall({
+                "current_text": current_text,
+                "recent_context": "\n".join(recent_parts),
+                "max_results": self.recall_max_results,
+                "keyword_limit": self.keyword_limit,
+                "semantic_limit": self.semantic_limit,
+                "track_usage": True,
+            })
+            self._log_recall("duetto", recalled)
 
         memories = recalled.get("memories") if isinstance(recalled, dict) else []
         if not isinstance(memories, list):
             memories = []
-        context = str(recalled.get("injection_text") or "").strip() if isinstance(recalled, dict) else ""
+        memory_context = str(recalled.get("injection_text") or "").strip() if isinstance(recalled, dict) else ""
+        solo_context = ""
+        try:
+            solo_context = self.solo.model_context_text(max_characters=1200)
+        except Exception as exc:
+            logger.warning("Unable to build Duetto solitude context: %s", exc)
+        context_parts = []
+        if solo_context:
+            context_parts.append("[独处系统当前状态]\n" + solo_context)
+        if memory_context:
+            context_parts.append("[相关记忆]\n" + memory_context)
+        context = "\n\n".join(context_parts)
         return JSONResponse({
             "context": context[:4000],
             "memory_count": len(memories),
+            "solitude_state": bool(solo_context),
         })
+
+    async def duetto_event(self, request: Request) -> JSONResponse:
+        if not self.gateway_token:
+            return JSONResponse(
+                {
+                    "error": {
+                        "message": "OMBRE_GATEWAY_TOKEN must be configured for Duetto event sharing",
+                        "type": "gateway_auth_not_configured",
+                    }
+                },
+                status_code=503,
+            )
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        solo = getattr(self, "solo", None)
+        if solo is None or not bool(getattr(solo, "enabled", False)):
+            return JSONResponse(
+                {"error": {"message": "Solitude system is not enabled", "type": "server_error"}},
+                status_code=503,
+            )
+        try:
+            payload = await request.json()
+            event = normalize_duetto_event(payload)
+        except ValueError as exc:
+            return JSONResponse(
+                {"error": {"message": str(exc), "type": "invalid_request_error"}},
+                status_code=400,
+            )
+        except Exception:
+            return JSONResponse(
+                {"error": {"message": "Request body must be valid JSON", "type": "invalid_request_error"}},
+                status_code=400,
+            )
+
+        if await solo.duetto_event_seen(event):
+            return JSONResponse({"ok": True, "duplicate": True, "applied": {}})
+
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        appraisal = None
+        if event.get("type") == BOOK_NOTE_CREATED and data.get("actor") == "user":
+            if not self.summary_chat_url or not self.summary_api_key or not self.summary_model:
+                return JSONResponse(
+                    {
+                        "error": {
+                            "message": "Duetto note appraisal model is not configured",
+                            "type": "server_error",
+                            "hint": "Duetto note appraisal reuses the conversation summary model credentials.",
+                        }
+                    },
+                    status_code=503,
+                )
+            try:
+                current_state = solo.appraisal_snapshot()
+                appraisal = await self._run_duetto_event_appraisal(event, current_state)
+            except Exception as exc:
+                logger.warning("Duetto note appraisal failed | id=%s error=%s", event.get("id"), exc)
+                appraisal = None
+            if appraisal is None:
+                return JSONResponse(
+                    {"error": {"message": "Duetto note appraisal returned no usable result", "type": "upstream_error"}},
+                    status_code=502,
+                )
+
+        result = await solo.apply_duetto_event(event, appraisal=appraisal)
+        return JSONResponse({
+            "ok": bool(result.get("ok")),
+            "duplicate": bool(result.get("duplicate")),
+            "applied": result.get("applied", {}),
+            "activity_id": result.get("activity_id", ""),
+        })
+
+    async def _run_duetto_event_appraisal(
+        self,
+        event: dict[str, Any],
+        current_state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        payload = {
+            "model": self.summary_model,
+            "messages": [
+                {"role": "system", "content": DUETTO_APPRAISAL_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": build_duetto_appraisal_user_text(event, current_state),
+                },
+            ],
+            "stream": False,
+        }
+        try:
+            response = await self.http.post(
+                self.summary_chat_url,
+                headers=self._upstream_headers(self.summary_api_key),
+                json=payload,
+                timeout=self.summary_timeout,
+            )
+        except httpx.RequestError as exc:
+            logger.warning("Duetto appraisal provider request failed | id=%s error=%s", event.get("id"), exc)
+            return None
+        if not 200 <= response.status_code < 300:
+            logger.warning(
+                "Duetto appraisal provider returned HTTP %s | id=%s body=%s",
+                response.status_code,
+                event.get("id"),
+                _preview_text(response.text),
+            )
+            return None
+        return parse_appraisal_response(self._assistant_text_from_response(response))
+
+    async def _generate_proactive_messages(self, context: dict[str, Any]) -> dict[str, Any]:
+        timezone_name = normalize_timezone_name(
+            context.get("timezone"),
+            getattr(self.solo, "timezone_name", "UTC"),
+        )
+        solo_context = str(context.get("state") or "").strip()
+        ombre_layer = self._compose_ombre_system_layer(
+            solo_context=solo_context,
+            current_local_time=self._current_local_time(timezone_name),
+            timezone_name=timezone_name,
+            message_timeline="（这不是对新消息的回复）",
+            summary_context="（本次主动消息不附带前端本地摘要）",
+            schedule_context="（暂无）",
+        )
+        messages = []
+        main_prompt = self._read_system_prompt()
+        if not main_prompt:
+            logger.warning("Proactive message skipped because the main system prompt is not configured")
+            return {"called": False, "messages": []}
+        messages.append({"role": "system", "content": main_prompt})
+        messages.extend([
+            {"role": "system", "content": ombre_layer},
+            {"role": "system", "content": PROACTIVE_SYSTEM_PROMPT},
+            {"role": "user", "content": build_proactive_user_text(context)},
+        ])
+        payload = {
+            "model": self.upstream_model,
+            "messages": messages,
+            "temperature": 0.9,
+            "max_tokens": 700,
+            "stream": False,
+        }
+        try:
+            response = await self.http.post(
+                self.upstream_chat_url,
+                headers=self._upstream_headers(self.upstream_api_key),
+                json=payload,
+                timeout=min(120.0, max(15.0, self.summary_timeout)),
+            )
+        except httpx.RequestError as exc:
+            logger.warning("Proactive message provider request failed: %s", exc)
+            return {"called": True, "messages": []}
+        if not 200 <= response.status_code < 300:
+            logger.warning(
+                "Proactive message provider returned HTTP %s | body=%s",
+                response.status_code,
+                _preview_text(response.text),
+            )
+            return {"called": True, "messages": []}
+        parsed = parse_proactive_response(self._assistant_text_from_response(response))
+        if parsed is None:
+            logger.warning("Proactive message provider returned no usable messages")
+            return {"called": True, "messages": []}
+        return {"called": True, **parsed}
 
     async def conversation_summary(self, request: Request) -> JSONResponse:
         auth = self._authorize(request)
@@ -1965,6 +2160,30 @@ Zeta hidden memory protocol:
         items = await self.solo.get_activities(limit=limit, before=before)
         return JSONResponse({"ok": True, "items": items})
 
+    async def solo_outbox(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        try:
+            limit = int(str(request.query_params.get("limit") or "10"))
+        except ValueError:
+            limit = 10
+        items = await self.solo.get_proactive_outbox(limit=limit)
+        return JSONResponse({"ok": True, "items": items})
+
+    async def solo_outbox_ack(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False, "error": "Request body must be valid JSON"}, status_code=400)
+        ids = body.get("ids") if isinstance(body, dict) else None
+        if not isinstance(ids, list):
+            return JSONResponse({"ok": False, "error": "ids must be an array"}, status_code=400)
+        return JSONResponse(await self.solo.ack_proactive_outbox(ids))
+
     async def solo_wake(self, request: Request) -> JSONResponse:
         auth = self._authorize(request)
         if auth is not None:
@@ -2655,6 +2874,15 @@ async def duetto_context_route(request: Request) -> Response:
     return await gateway.duetto_context(request)
 
 
+async def duetto_event_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.duetto_event(request)
+
+
 async def conversation_summary_route(request: Request) -> Response:
     if gateway is None:
         return JSONResponse(
@@ -2716,6 +2944,24 @@ async def solo_activities_route(request: Request) -> Response:
             status_code=503,
         )
     return await gateway.solo_activities(request)
+
+
+async def solo_outbox_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.solo_outbox(request)
+
+
+async def solo_outbox_ack_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.solo_outbox_ack(request)
 
 
 async def solo_wake_route(request: Request) -> Response:
@@ -2801,12 +3047,15 @@ routes = [
     Route("/v1/chat/completions", chat_completions_route, methods=["POST"]),
     Route("/api/system-prompt", system_prompt_route, methods=["GET", "PUT"]),
     Route("/api/duetto/context", duetto_context_route, methods=["POST"]),
+    Route("/api/duetto/events", duetto_event_route, methods=["POST"]),
     Route("/api/conversation-summary", conversation_summary_route, methods=["POST"]),
     Route("/api/emotion-appraisal", emotion_appraisal_route, methods=["POST"]),
     Route("/api/reasoning-presentation", reasoning_presentation_route, methods=["POST"]),
     Route("/api/solo/state", solo_state_route, methods=["GET"]),
     Route("/api/solo/timeline", solo_timeline_route, methods=["GET"]),
     Route("/api/solo/activities", solo_activities_route, methods=["GET"]),
+    Route("/api/solo/outbox", solo_outbox_route, methods=["GET"]),
+    Route("/api/solo/outbox/ack", solo_outbox_ack_route, methods=["POST"]),
     Route("/api/solo/wake", solo_wake_route, methods=["POST"]),
     Route("/api/solo/mcp/servers", solo_mcp_servers_route, methods=["GET", "POST"]),
     Route("/api/solo/mcp/servers/{name}", solo_mcp_delete_server_route, methods=["DELETE"]),

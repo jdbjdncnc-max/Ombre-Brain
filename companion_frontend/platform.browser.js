@@ -67,6 +67,9 @@ function createBrowserNotificationAdapter() {
         ...options
       });
       return true;
+    },
+    async configureProactive() {
+      return { configured: false, native: false };
     }
   };
 }

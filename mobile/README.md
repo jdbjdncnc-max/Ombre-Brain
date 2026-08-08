@@ -12,9 +12,9 @@ application remains in `../companion_frontend` and is still the canonical UI.
 - No production `server.url` is used. A future web-bundle updater will download
   validated frontend bundles while retaining this built-in fallback.
 
-The first shell intentionally behaves like the browser version. Native storage,
-file exchange, background reminders, and live web-bundle updates are separate
-follow-up stages described in `../docs/android-capacitor-plan.md`.
+Most screens still behave like the browser version. Proactive solitude messages
+are the exception: the APK has a small native bridge and an Android WorkManager
+job, so receiving them does not depend on keeping the web screen open.
 
 ## Commands
 
@@ -34,6 +34,18 @@ npm run android:build:debug
 ```
 
 The APK output will be under `android/app/build/outputs/apk/debug/`.
+
+## Native proactive notifications
+
+The APK passes the backend URL and gateway token from Settings to Android's
+private app storage. WorkManager then retrieves `/api/solo/outbox`, displays each
+message as a native notification, and acknowledges it at `/api/solo/outbox/ack`.
+
+On Android 13 or newer, tap the existing notification button once to grant the
+notification permission. Android's reliable periodic-work minimum is about 15
+minutes, so this also works after the app is swiped away, but delivery is not
+guaranteed at an exact minute. The web app does not poll or insert these messages
+into chat history.
 
 Do not commit signing keys, passwords, gateway tokens, API keys, `www/`, or
 `node_modules/`.

@@ -55,6 +55,7 @@ OMBRE_SOLO_ENABLED=0
 OMBRE_SOLO_PULSE_SECONDS=60
 OMBRE_SOLO_DECISION_SECONDS=180
 OMBRE_SOLO_ACTIVITY_MIN_SECONDS=5400
+OMBRE_SOLO_DAILY_LLM_BUDGET=30
 OMBRE_SOLO_TIMEZONE=Asia/Taipei
 OMBRE_SOLO_MCP_ENABLED=0
 OMBRE_SOLO_MCP_DISCOVERY_TTL_HOURS=24
@@ -69,9 +70,24 @@ OMBRE_SOLO_MCP_DISCOVERY_TTL_HOURS=24
 `OMBRE_SOLO_DECISION_SECONDS` 秒进行一次行动判断。为了让短间隔唤醒不把时间轴灌满，
 两条可见轨迹默认至少间隔 `OMBRE_SOLO_ACTIVITY_MIN_SECONDS` 秒。当前轨迹阶段只执行
 可验证的本地自发活动（发呆、休息、整理感受、照顾自己、草稿、谈话点和真实生成的
-井字棋记录），不会调用模型、联网或伪造外部经历。`POST /api/solo/wake` 可手动触发
-一次判断；`GET /api/solo/state`、`GET /api/solo/timeline` 和
+井字棋记录），以及由对话模型真实生成的主动消息，不会伪造外部经历。
+`OMBRE_SOLO_DAILY_LLM_BUDGET` 是主动消息使用的每日成本线；它读取所有独处相关模型调用的
+共用计数，达到后当天不再选择主动消息行动，但不会停掉对话与 Duetto 的情绪评价。它不是按
+情绪、时段或消息条数设置的行为闸门。
+`POST /api/solo/wake` 可手动触发一次判断；`GET /api/solo/state`、`GET /api/solo/timeline` 和
 `GET /api/solo/activities` 可查看状态与轨迹，均沿用网关令牌鉴权。
+
+Duetto 双向联动也沿用 `OMBRE_GATEWAY_TOKEN`。在 Duetto 中把 `ai.context_url` 设为
+`https://你的 Ombre 域名/api/duetto/context`，并把 `ai.context_key` 设为该令牌：Duetto
+对话会取得当前独处状态和相关记忆；播放与共读批注会自动发往 `/api/duetto/events`。
+用户批注会复用 `OMBRE_SUMMARY_*`（未单独配置时复用上游对话模型）做一次语义情绪评估；
+播放事件只写入真实轨迹，不会仅凭歌名机械修改情绪。
+
+主动消息不需要新增模型变量：独处系统决定“想联系她”时，直接复用
+`OMBRE_UPSTREAM_*` 对话模型，并按“主 Prompt → Ombre 状态层 → 主动消息任务 → 数据”顺序
+生成 1～3 条消息。待领取消息保存在持久卷的 `gateway/solo/proactive_outbox.jsonl`；
+APK 使用同一个 `OMBRE_GATEWAY_TOKEN` 调用 `GET /api/solo/outbox`，显示原生通知后再调用
+`POST /api/solo/outbox/ack` 确认。网页端不会轮询或伪装这些消息。
 
 MCP 客户端默认关闭。设置 `OMBRE_SOLO_MCP_ENABLED=1` 后，工具管理页才能测试并连接
 用户导入的 MCP 服务；配置和能力缓存保存在持久卷的 `gateway/solo/` 目录。远程服务优先

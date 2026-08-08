@@ -98,6 +98,7 @@ const defaultSettings = {
 
 const DUETTO_LOAD_TIMEOUT_MS = 15000;
 let duettoLoadTimeoutId = 0;
+let nativeProactiveSignature = "";
 
 const COURSE_PERIODS = [
   { index: 1, start: "08:00", end: "08:45" },
@@ -1998,6 +1999,9 @@ async function requestScheduleNotifications() {
     return;
   }
   const permission = await platform.notifications.requestPermission();
+  if (permission === "granted") {
+    await syncNativeProactiveNotifications({ force: true });
+  }
   updateNotificationButton();
   els.todoCaptureStatus.textContent = permission === "granted" ? "提醒已开启" : "提醒未开启";
   clearInlineStatusLater(els.todoCaptureStatus);
@@ -3990,6 +3994,28 @@ function saveMessages() {
 
 function saveSettings() {
   platform.storage.setJson(storageKeys.settings, state.settings);
+  void syncNativeProactiveNotifications();
+}
+
+async function syncNativeProactiveNotifications({ force = false } = {}) {
+  if (typeof platform.notifications.configureProactive !== "function") {
+    return;
+  }
+  const configuration = {
+    backendUrl: cleanBaseUrl(state.settings.backendUrl),
+    gatewayToken: String(state.settings.gatewayToken || "").trim(),
+    title: String(state.settings.assistantName || "Ombre").trim() || "Ombre"
+  };
+  const signature = JSON.stringify(configuration);
+  if (!force && signature === nativeProactiveSignature) {
+    return;
+  }
+  try {
+    await platform.notifications.configureProactive(configuration);
+    nativeProactiveSignature = signature;
+  } catch (error) {
+    console.warn("Unable to configure native proactive notifications", error);
+  }
 }
 
 function loadJson(key, fallback) {

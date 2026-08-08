@@ -25,6 +25,7 @@ ACTION_SPECS: dict[str, ActionSpec] = {
     "reflect_state": ActionSpec("reflect_state", "整理此刻状态", "self", 90, "thinking", "在整理感受"),
     "self_soothe": ActionSpec("self_soothe", "照顾一下自己", "self", 180, "soothing", "在照顾自己"),
     "write_unsent": ActionSpec("write_unsent", "写点没发出去的话", "self", 180, "drafting", "在写没发出去的话"),
+    "message_user": ActionSpec("message_user", "主动发消息", "social", 0, "messaging", "想主动联系她"),
     "add_talking_point": ActionSpec("add_talking_point", "记一件下次想说的事", "self", 120, "noting", "在记一件事"),
     "idle": ActionSpec("idle", "发呆", "idle", 120, "idle", "安静待着"),
     "rest": ActionSpec("rest", "休息", "idle", 180, "resting", "在休息"),
@@ -51,6 +52,8 @@ def action_scores(channels: Mapping[str, Any]) -> dict[str, float]:
         + 0.15 * c["curiosity"],
         "self_soothe": 0.7 * c["sadness"] + 0.6 * c["numb"] + 0.4 * c["loneliness"],
         "write_unsent": 0.7 * c["want_to_share"] + 0.5 * c["sulk"] + 0.4 * c["grievance"],
+        "message_user": 0.7 * c["want_to_share"] + 0.6 * c["longing"] + 0.4 * c["delight"]
+        + 0.3 * c["worry_for_you"] - 0.8 * c["sulk"] - 0.5 * c["grievance"],
         "add_talking_point": 0.65 * c["want_to_share"] + 0.35 * c["curiosity"]
         + 0.25 * c["anticipation"],
         "idle": 8.0 + 0.4 * c["fatigue"] + 0.3 * c["numb"],
@@ -145,6 +148,17 @@ def perform_action(
             "felt": "想说，但这一刻更想先放在草稿里",
             "deltas": {"want_to_share": -2.0, "sulk": 1.0, "content": 1.0},
             "unsentText": text,
+        }
+    if spec.key == "message_user":
+        return {
+            **_base_result(spec),
+            "title": "决定主动给她发消息",
+            "summary": "具体内容将由对话模型结合主 Prompt 和当前状态写成。",
+            "detail": "这次行动只表示此刻真的想联系她；生成内容不会伪装成网页中的一轮 assistant 回复。",
+            "felt": "这一刻更想直接联系她",
+            "deltas": {},
+            "llmCalls": 1,
+            "needsProactiveMessage": True,
         }
     if spec.key == "add_talking_point":
         text = f"想告诉你：独处时最明显的是{primary_label}，那时最想做的是{drive['label']}。"
