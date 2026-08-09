@@ -1145,6 +1145,17 @@ try:
     app.router.routes.append(Route("/api/import/patterns", api_not_enabled, methods=["GET"]))
     app.router.routes.append(Route("/api/import/results", api_not_enabled, methods=["GET"]))
     app.router.routes.append(Route("/api/import/review", api_not_enabled, methods=["POST"]))
+    if companion_frontend_dir.exists():
+        # Keep this catch-all mount last so API and dashboard routes still win.
+        # It lets the same relative asset URLs work in both Zeabur and the
+        # bundled Capacitor frontend.
+        app.router.routes.append(
+            Mount(
+                "/",
+                StaticFiles(directory=str(companion_frontend_dir)),
+                name="companion_frontend_root",
+            )
+        )
 except Exception as exc:
     logger.exception("Failed to import zeta_openai_gateway")
     app = _startup_error_app(f"{type(exc).__name__}: {exc}")
