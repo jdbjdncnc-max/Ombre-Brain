@@ -193,6 +193,15 @@ const els = {
   scheduleView: document.querySelector("#scheduleView"),
   settingsView: document.querySelector("#settingsView"),
   messageList: document.querySelector("#messageList"),
+  chatLocatorButton: document.querySelector("#chatLocatorButton"),
+  chatLocatorDot: document.querySelector("#chatLocatorDot"),
+  chatLocatorModal: document.querySelector("#chatLocatorModal"),
+  closeChatLocatorButton: document.querySelector("#closeChatLocatorButton"),
+  chatLocatorSearchInput: document.querySelector("#chatLocatorSearchInput"),
+  chatLocatorJumpForm: document.querySelector("#chatLocatorJumpForm"),
+  chatLocatorJumpInput: document.querySelector("#chatLocatorJumpInput"),
+  chatLocatorMeta: document.querySelector("#chatLocatorMeta"),
+  chatLocatorResults: document.querySelector("#chatLocatorResults"),
   composer: document.querySelector("#composer"),
   editNotice: document.querySelector("#editNotice"),
   cancelEditButton: document.querySelector("#cancelEditButton"),
@@ -407,6 +416,25 @@ function bindEvents() {
   });
   els.chatImageFile.addEventListener("change", importChatImages);
   els.composerAttachmentTray.addEventListener("click", handleComposerTrayClick);
+  els.chatLocatorButton.addEventListener("click", openChatLocator);
+  els.messageList.addEventListener("scroll", scheduleChatLocatorRailUpdate, { passive: true });
+  els.closeChatLocatorButton.addEventListener("click", closeChatLocator);
+  els.chatLocatorModal.addEventListener("click", (event) => {
+    if (event.target === els.chatLocatorModal) {
+      closeChatLocator();
+    }
+  });
+  els.chatLocatorSearchInput.addEventListener("input", renderChatLocatorResults);
+  els.chatLocatorJumpForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    jumpToChatMessage(Number(els.chatLocatorJumpInput.value));
+  });
+  els.chatLocatorResults.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-locator-number]");
+    if (button) {
+      jumpToChatMessage(Number(button.dataset.locatorNumber));
+    }
+  });
   document.addEventListener("click", () => setComposerMenuOpen(false));
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") {
@@ -414,6 +442,7 @@ function bindEvents() {
     }
     setComposerMenuOpen(false);
     closeRecallModal();
+    closeChatLocator();
   });
 
   els.chooseSystemPromptButton.addEventListener("click", () => {
@@ -3633,21 +3662,230 @@ function identityInitial(name) {
   return Array.from(String(name || "?").trim())[0] || "?";
 }
 
+let chatLocatorScrollFrame = 0;
+let chatLocatorHighlightTimer = 0;
+
+function chatLocatorEntries() {
+  const entries = [];
+  for (const [stateIndex, message] of state.messages.entries()) {
+    if (message.role !== "user" && message.role !== "assistant") {
+      continue;
+    }
+    entries.push({
+      message,
+      stateIndex,
+      number: entries.length + 1
+    });
+  }
+  return entries;
+}
+
+function chatLocatorSearchText(message) {
+  return [
+    message.content,
+    message.userThinking,
+    message.reasoning,
+    message.reasoningSource,
+    ...normalizeUserImages(message.images).map((image) => image.name),
+    ...(Array.isArray(message.toolActivity)
+      ? message.toolActivity.flatMap((call) => [call.server, call.tool, call.result, call.error])
+      : [])
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .normalize("NFKC")
+    .toLocaleLowerCase("zh-CN")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function chatLocatorSnippet(message) {
+  const imageNames = normalizeUserImages(message.images)
+    .map((image) => image.name)
+    .filter(Boolean);
+  const source = [
+    message.content,
+    message.userThinking,
+    !message.content ? (message.reasoning || message.reasoningSource) : "",
+    imageNames.length ? `图片：${imageNames.join("、")}` : ""
+  ].filter(Boolean).join(" ");
+  const plain = String(source || "（没有文字内容）")
+    .replace(/```[\s\S]*?```/g, " [代码] ")
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/[>*_~`#]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return plain || "（没有文字内容）";
+}
+
+function currentChatLocatorNumber(entries = chatLocatorEntries()) {
+  if (!entries.length) {
+    return 0;
+  }
+  const listRect = els.messageList.getBoundingClientRect();
+  const centerY = listRect.top + listRect.height / 2;
+  let closestNumber = entries.at(-1).number;
+  let closestDistance = Number.POSITIVE_INFINITY;
+  for (const item of els.messageList.querySelectorAll(".message[data-locator-number]")) {
+    const rect = item.getBoundingClientRect();
+    const distance = Math.abs(rect.top + rect.height / 2 - centerY);
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      closestNumber = Number(item.dataset.locatorNumber);
+    }
+  }
+  return closestNumber;
+}
+
+function scheduleChatLocatorRailUpdate() {
+  if (chatLocatorScrollFrame) {
+    return;
+  }
+  chatLocatorScrollFrame = requestAnimationFrame(() => {
+    chatLocatorScrollFrame = 0;
+    updateChatLocatorRail();
+  });
+}
+
+function updateChatLocatorRail() {
+  const entries = chatLocatorEntries();
+  els.chatLocatorButton.hidden = entries.length < 2;
+  if (entries.length < 2) {
+    return;
+  }
+  const currentNumber = currentChatLocatorNumber(entries) || entries.length;
+  const progress = (currentNumber - 1) / Math.max(1, entries.length - 1);
+  els.chatLocatorDot.style.top = `${Math.max(0, Math.min(1, progress)) * 100}%`;
+  const label = `定位聊天记录，当前第 ${currentNumber} 条，共 ${entries.length} 条`;
+  els.chatLocatorButton.title = label;
+  els.chatLocatorButton.setAttribute("aria-label", label);
+}
+
+function openChatLocator() {
+  const entries = chatLocatorEntries();
+  if (!entries.length) {
+    return;
+  }
+  const currentNumber = currentChatLocatorNumber(entries) || entries.length;
+  els.chatLocatorSearchInput.value = "";
+  els.chatLocatorJumpInput.min = "1";
+  els.chatLocatorJumpInput.max = String(entries.length);
+  els.chatLocatorJumpInput.value = String(currentNumber);
+  els.chatLocatorMeta.classList.remove("error");
+  els.chatLocatorModal.hidden = false;
+  renderChatLocatorResults();
+  requestAnimationFrame(() => els.chatLocatorSearchInput.focus());
+}
+
+function closeChatLocator() {
+  els.chatLocatorModal.hidden = true;
+}
+
+function renderChatLocatorResults() {
+  const entries = chatLocatorEntries();
+  const currentNumber = currentChatLocatorNumber(entries) || entries.length;
+  const query = els.chatLocatorSearchInput.value
+    .normalize("NFKC")
+    .toLocaleLowerCase("zh-CN")
+    .replace(/\s+/g, " ")
+    .trim();
+  const matches = query
+    ? entries.filter((entry) => chatLocatorSearchText(entry.message).includes(query))
+    : entries;
+  const visibleMatches = matches.slice(0, 160);
+
+  els.chatLocatorMeta.classList.remove("error");
+  if (query) {
+    els.chatLocatorMeta.textContent = matches.length
+      ? `找到 ${matches.length} 条${matches.length > visibleMatches.length ? `，先显示前 ${visibleMatches.length} 条` : ""}`
+      : "没有找到包含这个关键词的聊天";
+  } else {
+    els.chatLocatorMeta.textContent = `当前第 ${currentNumber} 条 · 共 ${entries.length} 条`;
+  }
+
+  els.chatLocatorResults.innerHTML = "";
+  if (!visibleMatches.length) {
+    els.chatLocatorResults.append(emptyNode("换个关键词试试", "chat-locator-empty"));
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  for (const entry of visibleMatches) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `chat-locator-result${entry.number === currentNumber ? " current" : ""}`;
+    button.dataset.locatorNumber = String(entry.number);
+    button.setAttribute("role", "listitem");
+
+    const meta = document.createElement("span");
+    meta.className = "chat-locator-result-meta";
+    const number = document.createElement("strong");
+    number.textContent = `第 ${entry.number} 条`;
+    const speaker = document.createElement("span");
+    speaker.textContent = entry.message.role === "user" ? state.settings.userName : state.settings.assistantName;
+    meta.append(number, speaker);
+
+    const snippet = document.createElement("span");
+    snippet.className = "chat-locator-result-snippet";
+    snippet.textContent = chatLocatorSnippet(entry.message);
+    button.append(meta, snippet);
+    fragment.append(button);
+  }
+  els.chatLocatorResults.append(fragment);
+
+  if (!query) {
+    requestAnimationFrame(() => {
+      els.chatLocatorResults.querySelector(".chat-locator-result.current")
+        ?.scrollIntoView({ block: "center" });
+    });
+  }
+}
+
+function jumpToChatMessage(number) {
+  const entries = chatLocatorEntries();
+  if (!Number.isInteger(number) || number < 1 || number > entries.length) {
+    els.chatLocatorMeta.textContent = `请输入 1 到 ${entries.length} 之间的条数`;
+    els.chatLocatorMeta.classList.add("error");
+    els.chatLocatorJumpInput.focus();
+    els.chatLocatorJumpInput.select();
+    return;
+  }
+
+  const entry = entries[number - 1];
+  const target = els.messageList.querySelector(`[data-message-index="${entry.stateIndex}"]`);
+  if (!target) {
+    return;
+  }
+  closeChatLocator();
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+  target.classList.remove("locator-target");
+  requestAnimationFrame(() => target.classList.add("locator-target"));
+  clearTimeout(chatLocatorHighlightTimer);
+  chatLocatorHighlightTimer = setTimeout(() => target.classList.remove("locator-target"), 1800);
+  setTimeout(updateChatLocatorRail, 420);
+}
+
 function renderMessages(shouldScroll = true) {
   els.messageList.innerHTML = "";
 
   if (!state.messages.length) {
     els.messageList.append(emptyNode("今天想从哪里开始？", "empty-state"));
+    updateChatLocatorRail();
     return;
   }
 
-  for (const message of state.messages) {
+  let locatorNumber = 0;
+  for (const [messageIndex, message] of state.messages.entries()) {
     if (message.role === "summary") {
       els.messageList.append(createConversationSummary(message));
       continue;
     }
+    locatorNumber += 1;
     const item = document.createElement("article");
     item.className = `message ${message.role}${message.pending ? " pending" : ""}`;
+    item.dataset.messageIndex = String(messageIndex);
+    item.dataset.locatorNumber = String(locatorNumber);
 
     const body = document.createElement("div");
     body.className = `message-body message-${message.role}-body`;
@@ -3735,6 +3973,7 @@ function renderMessages(shouldScroll = true) {
   if (shouldScroll) {
     els.messageList.scrollTop = els.messageList.scrollHeight;
   }
+  updateChatLocatorRail();
 }
 
 function createUserImageGallery(images) {

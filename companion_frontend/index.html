@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Companion 1.0</title>
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
-  <link rel="stylesheet" href="styles.css?v=20260809.3">
+  <link rel="stylesheet" href="styles.css?v=20260809.4">
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -25,6 +25,20 @@
           </div>
 
           <div id="messageList" class="message-list" aria-live="polite"></div>
+
+          <button
+            id="chatLocatorButton"
+            class="chat-locator-rail"
+            type="button"
+            title="定位聊天记录"
+            aria-label="定位聊天记录"
+            aria-haspopup="dialog"
+            hidden
+          >
+            <span class="chat-locator-track" aria-hidden="true">
+              <span id="chatLocatorDot" class="chat-locator-dot"></span>
+            </span>
+          </button>
 
           <div class="composer-shell">
             <div id="editNotice" class="edit-notice" hidden>
@@ -795,10 +809,41 @@
     </section>
   </div>
 
+  <div id="chatLocatorModal" class="recall-modal chat-locator-modal" hidden>
+    <section class="recall-dialog chat-locator-dialog" role="dialog" aria-modal="true" aria-labelledby="chatLocatorTitle">
+      <header class="recall-dialog-header">
+        <div>
+          <p class="eyebrow">Chat locator</p>
+          <h2 id="chatLocatorTitle">定位聊天记录</h2>
+        </div>
+        <button id="closeChatLocatorButton" class="icon-button" type="button" title="关闭" aria-label="关闭聊天定位弹窗">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </header>
+
+      <label class="chat-locator-search">
+        <span>搜索聊天内容</span>
+        <input id="chatLocatorSearchInput" type="search" placeholder="输入关键词，例如：记忆系统" autocomplete="off">
+      </label>
+
+      <form id="chatLocatorJumpForm" class="chat-locator-jump-form">
+        <label>
+          <span>跳到第</span>
+          <input id="chatLocatorJumpInput" type="number" inputmode="numeric" min="1" step="1" aria-label="要跳转到的聊天条数">
+          <span>条</span>
+        </label>
+        <button class="primary-button" type="submit">跳转</button>
+      </form>
+
+      <p id="chatLocatorMeta" class="chat-locator-meta" aria-live="polite"></p>
+      <div id="chatLocatorResults" class="chat-locator-results" role="list"></div>
+    </section>
+  </div>
+
   <script src="vendor/marked/marked.umd.js"></script>
   <script src="vendor/dompurify/purify.min.js"></script>
   <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/katex/auto-render.min.js"></script>
-    <script src="app.js?v=20260809.6" type="module"></script>
+    <script src="app.js?v=20260809.7" type="module"></script>
 </body>
 </html>
