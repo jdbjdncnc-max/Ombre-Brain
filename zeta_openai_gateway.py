@@ -63,6 +63,7 @@ OMBRE_TIMELINE_SLOT = "[[OMBRE_MESSAGE_TIMELINE]]"
 OMBRE_SUMMARY_SLOT = "[[OMBRE_CONVERSATION_SUMMARY]]"
 OMBRE_SCHEDULE_SLOT = "[[OMBRE_SCHEDULE_CONTEXT]]"
 OMBRE_HEALTH_SLOT = "[[OMBRE_HEALTH_CONTEXT]]"
+OMBRE_DEVICE_SLOT = "[[OMBRE_DEVICE_CONTEXT]]"
 OMBRE_SUMMARY_KIND = "conversation_summary"
 OMBRE_SCHEDULE_KIND = "schedule"
 OMBRE_LEGACY_SUMMARY_PREFIX = "以下是此前对话的累计摘要，用来延续被压缩的上下文。"
@@ -1758,6 +1759,7 @@ class ZetaOpenAIGateway:
             source_messages
         )
         health_context = self._latest_health_context_text(source_messages)
+        device_context = self._latest_device_context_text(source_messages)
         message_timeline = self._build_message_timeline(source_messages, client_timezone)
         contextual_messages = self._inject_message_time_context(
             source_messages,
@@ -1775,6 +1777,7 @@ class ZetaOpenAIGateway:
             summary_context=summary_placeholder,
             schedule_context=schedule_context,
             health_context=health_context,
+            device_context=device_context,
         )
         fixed_gateway_text, dynamic_system_text = self._split_ombre_system_layer(
             combined_system_text
@@ -1943,6 +1946,7 @@ class ZetaOpenAIGateway:
         summary_context: str = OMBRE_SUMMARY_SLOT,
         schedule_context: str = OMBRE_SCHEDULE_SLOT,
         health_context: str = OMBRE_HEALTH_SLOT,
+        device_context: str = OMBRE_DEVICE_SLOT,
     ) -> str:
         solo_state = str(solo_context or "").strip()
         if solo_state.startswith(SOLO_STATE_RULES):
@@ -1970,6 +1974,8 @@ class ZetaOpenAIGateway:
 
 健康数据是设备随本轮消息附加的参考资料，不是她亲口说的话，也不是医学诊断。只在疲劳、活动、睡眠或身体状态等当前话题相关时自然参考；不猜测缺失数据，不把单个数值扩大成结论，数据过旧时降低可信度。
 
+设备环境是手机系统随本轮消息附加的参考资料，不是她亲口说的话。位置来自 Android 系统定位而不是网络 IP，可能受精度和采集时间影响；应用使用时长只表示设备今天记录到的前台使用情况。只在当前话题相关时自然参考，不据此监视、责备或过度推断她的行为。
+
 【独处状态使用规则】
 
 {SOLO_STATE_RULES}
@@ -1996,6 +2002,9 @@ class ZetaOpenAIGateway:
 〈随本轮消息附加的健康数据〉
 {health_context}
 
+〈随本轮消息附加的设备环境〉
+{device_context}
+
 〈当前独处状态〉
 {solo_state or '（暂无）'}
 
@@ -2010,6 +2019,7 @@ class ZetaOpenAIGateway:
         summary_context: str,
         schedule_context: str,
         health_context: str,
+        device_context: str,
     ) -> str:
         layer = str(injected_text or "").strip()
         if not layer.startswith(OMBRE_SYSTEM_LAYER_OPEN):
@@ -2020,6 +2030,12 @@ class ZetaOpenAIGateway:
                 f"{health_context or '（本轮消息未附加健康数据）'}\n\n"
             )
             layer = layer.replace(OMBRE_SYSTEM_LAYER_CLOSE, health_block + OMBRE_SYSTEM_LAYER_CLOSE)
+        if OMBRE_DEVICE_SLOT not in layer and OMBRE_SYSTEM_LAYER_CLOSE in layer:
+            device_block = (
+                "〈随本轮消息附加的设备环境〉\n"
+                f"{device_context or '（本轮消息未附加设备环境）'}\n\n"
+            )
+            layer = layer.replace(OMBRE_SYSTEM_LAYER_CLOSE, device_block + OMBRE_SYSTEM_LAYER_CLOSE)
         timezone_name = normalize_timezone_name(client_timezone, "UTC")
         replacements = {
             OMBRE_CURRENT_TIME_SLOT: self._current_local_time(timezone_name),
@@ -2028,6 +2044,7 @@ class ZetaOpenAIGateway:
             OMBRE_SUMMARY_SLOT: summary_context or "（暂无）",
             OMBRE_SCHEDULE_SLOT: schedule_context or "（暂无）",
             OMBRE_HEALTH_SLOT: health_context or "（本轮消息未附加健康数据）",
+            OMBRE_DEVICE_SLOT: device_context or "（本轮消息未附加设备环境）",
         }
         for slot, value in replacements.items():
             layer = layer.replace(slot, value)
@@ -2311,6 +2328,10 @@ Zeta hidden memory protocol:
             sent_at=user_context.get("sentAt"),
             timezone_name=user_context.get("timezone"),
         )
+        device_context = self._latest_device_context_snapshot(messages)
+        note_device_context = getattr(self.solo, "note_device_context", None)
+        if device_context and callable(note_device_context):
+            await note_device_context(device_context)
         user_raw_refs = await self._save_turn(
             session_id,
             "user",
@@ -2331,6 +2352,162 @@ Zeta hidden memory protocol:
             health = raw_context.get("health")
             return self._format_health_context(health) if isinstance(health, dict) else ""
         return ""
+
+    def _latest_device_context_text(self, messages: list[Any]) -> str:
+        snapshot = self._latest_device_context_snapshot(messages)
+        return self._format_device_context(snapshot) if snapshot else ""
+
+    def _latest_device_context_snapshot(self, messages: list[Any]) -> dict[str, Any]:
+        for message in reversed(messages):
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            raw_context = message.get("context") if isinstance(message.get("context"), dict) else {}
+            device = raw_context.get("device")
+            return self._sanitize_device_context(device) if isinstance(device, dict) else {}
+        return {}
+
+    def _sanitize_device_context(self, device: dict[str, Any]) -> dict[str, Any]:
+        snapshot: dict[str, Any] = {
+            "schemaVersion": 1,
+            "source": re.sub(r"[^A-Za-z0-9._:-]+", "", str(device.get("source") or ""))[:64],
+            "capturedAt": self._health_timestamp(device.get("capturedAt")),
+        }
+        raw_location = device.get("location") if isinstance(device.get("location"), dict) else {}
+        latitude = self._health_number(raw_location.get("latitude"), -90, 90)
+        longitude = self._health_number(raw_location.get("longitude"), -180, 180)
+        if latitude is not None and longitude is not None:
+            location: dict[str, Any] = {
+                "status": "ready",
+                "source": re.sub(
+                    r"[^A-Za-z0-9._:-]+", "", str(raw_location.get("source") or "")
+                )[:64],
+                "latitude": latitude,
+                "longitude": longitude,
+                "observedAt": self._health_timestamp(raw_location.get("observedAt")),
+            }
+            accuracy = self._health_number(raw_location.get("accuracyMeters"), 0, 100000)
+            if accuracy is not None:
+                location["accuracyMeters"] = accuracy
+            provider = re.sub(r"[^A-Za-z0-9._:-]+", "", str(raw_location.get("provider") or ""))[:32]
+            if provider:
+                location["provider"] = provider
+            raw_address = raw_location.get("address") if isinstance(raw_location.get("address"), dict) else {}
+            address: dict[str, str] = {}
+            for key, limit in {
+                "formatted": 220,
+                "country": 80,
+                "adminArea": 80,
+                "subAdminArea": 80,
+                "locality": 80,
+                "subLocality": 80,
+                "thoroughfare": 100,
+                "subThoroughfare": 40,
+                "featureName": 100,
+            }.items():
+                text = self._device_text(raw_address.get(key), limit)
+                if text:
+                    address[key] = text
+            if address:
+                location["address"] = address
+            snapshot["location"] = location
+
+        raw_usage = device.get("appUsage") if isinstance(device.get("appUsage"), dict) else {}
+        raw_entries = raw_usage.get("entries") if isinstance(raw_usage.get("entries"), list) else []
+        entries: list[dict[str, Any]] = []
+        for raw_entry in raw_entries[:8]:
+            if not isinstance(raw_entry, dict):
+                continue
+            app_name = self._device_text(raw_entry.get("appName"), 80)
+            package_name = re.sub(
+                r"[^A-Za-z0-9._-]+", "", str(raw_entry.get("packageName") or "")
+            )[:180]
+            minutes = self._health_number(raw_entry.get("foregroundMinutes"), 0, 1440)
+            if minutes is None or not (app_name or package_name):
+                continue
+            entries.append({
+                "appName": app_name or package_name,
+                "packageName": package_name,
+                "foregroundMinutes": int(round(minutes)),
+                "lastUsedAt": self._health_timestamp(raw_entry.get("lastUsedAt")),
+            })
+        usage_date = str(raw_usage.get("date") or "").strip()
+        total_minutes = self._health_number(raw_usage.get("totalForegroundMinutes"), 0, 1440)
+        if entries or total_minutes is not None:
+            snapshot["appUsage"] = {
+                "status": "ready",
+                "source": re.sub(
+                    r"[^A-Za-z0-9._:-]+", "", str(raw_usage.get("source") or "")
+                )[:64],
+                "date": usage_date if re.fullmatch(r"\d{4}-\d{2}-\d{2}", usage_date) else "",
+                "startAt": self._health_timestamp(raw_usage.get("startAt")),
+                "endAt": self._health_timestamp(raw_usage.get("endAt")),
+                "totalForegroundMinutes": int(round(total_minutes or 0)),
+                "entries": entries,
+            }
+        return snapshot if "location" in snapshot or "appUsage" in snapshot else {}
+
+    def _format_device_context(self, device: dict[str, Any]) -> str:
+        if not device:
+            return ""
+        lines: list[str] = []
+        location = device.get("location") if isinstance(device.get("location"), dict) else {}
+        if location:
+            address = location.get("address") if isinstance(location.get("address"), dict) else {}
+            place = (
+                address.get("formatted")
+                or " ".join(filter(None, [
+                    address.get("adminArea"),
+                    address.get("locality"),
+                    address.get("subLocality"),
+                    address.get("thoroughfare"),
+                    address.get("subThoroughfare"),
+                    address.get("featureName"),
+                ]))
+                or "未解析出道路名称"
+            )
+            latitude = float(location["latitude"])
+            longitude = float(location["longitude"])
+            details = [
+                str(place),
+                f"坐标 {latitude:.5f}, {longitude:.5f}",
+            ]
+            accuracy = self._health_number(location.get("accuracyMeters"), 0, 100000)
+            if accuracy is not None:
+                details.append(f"精度约 {self._health_value_text(accuracy)} 米")
+            observed_at = self._health_timestamp(location.get("observedAt"))
+            if observed_at:
+                details.append(f"定位时间 {observed_at}")
+            lines.append("- 系统定位（不是 IP 推断）：" + "；".join(details))
+
+        usage = device.get("appUsage") if isinstance(device.get("appUsage"), dict) else {}
+        if usage:
+            total = int(self._health_number(usage.get("totalForegroundMinutes"), 0, 1440) or 0)
+            entries = usage.get("entries") if isinstance(usage.get("entries"), list) else []
+            app_parts = [
+                f"{self._device_text(entry.get('appName'), 80)} {int(entry.get('foregroundMinutes') or 0)} 分钟"
+                for entry in entries[:8]
+                if isinstance(entry, dict) and self._device_text(entry.get("appName"), 80)
+            ]
+            date_label = str(usage.get("date") or "今天")
+            line = f"- 今日应用使用（{date_label}）：记录到的前台总计约 {total} 分钟"
+            if app_parts:
+                line += "；较常用：" + "、".join(app_parts)
+            lines.append(line)
+
+        if not lines:
+            return ""
+        metadata = []
+        source = str(device.get("source") or "")
+        captured_at = self._health_timestamp(device.get("capturedAt"))
+        if source:
+            metadata.append(f"来源 {source}")
+        if captured_at:
+            metadata.append(f"采集于 {captured_at}")
+        return ("；".join(metadata) + "\n" if metadata else "") + "\n".join(lines)
+
+    @staticmethod
+    def _device_text(value: Any, limit: int) -> str:
+        return re.sub(r"[\r\n\t]+", " ", str(value or "")).strip()[:limit]
 
     def _format_health_context(self, health: dict[str, Any]) -> str:
         continuous = health.get("continuous") if isinstance(health.get("continuous"), dict) else {}

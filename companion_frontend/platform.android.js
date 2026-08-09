@@ -8,6 +8,7 @@ export function createAndroidPlatform(bridge, { capacitorPlugin = false } = {}) 
     storage: createBridgeStorageAdapter(bridge, fallback.storage),
     notifications: createBridgeNotificationAdapter(bridge, fallback.notifications, capacitorPlugin),
     health: createBridgeHealthAdapter(bridge, fallback.health, capacitorPlugin),
+    deviceContext: createBridgeDeviceContextAdapter(bridge, fallback.deviceContext, capacitorPlugin),
     getDefaultApiBaseUrl() {
       const bridgeUrl = callBridgeString(bridge, "getApiBaseUrl");
       return bridgeUrl || fallback.getDefaultApiBaseUrl();
@@ -35,6 +36,50 @@ export function createAndroidPlatform(bridge, { capacitorPlugin = false } = {}) 
       onPause(handler) {
         window.CompanionOnPause = handler;
       }
+    }
+  };
+}
+
+function createBridgeDeviceContextAdapter(bridge, fallback, capacitorPlugin) {
+  const methodMap = {
+    deviceContextStatus: "status",
+    requestLocationPermission: "requestLocationPermission",
+    openUsageAccessSettings: "openUsageAccessSettings",
+    readDeviceContext: "readSnapshot"
+  };
+  const invoke = async (method) => {
+    if (!hasBridgeMethod(bridge, method)) {
+      return fallback[methodMap[method]]();
+    }
+    if (capacitorPlugin) {
+      return await bridge[method]({});
+    }
+    const value = callBridgeString(bridge, method);
+    if (!value) {
+      return {};
+    }
+    try {
+      return JSON.parse(value);
+    } catch {
+      return {};
+    }
+  };
+
+  return {
+    isSupported() {
+      return hasBridgeMethod(bridge, "readDeviceContext");
+    },
+    status() {
+      return invoke("deviceContextStatus");
+    },
+    requestLocationPermission() {
+      return invoke("requestLocationPermission");
+    },
+    openUsageAccessSettings() {
+      return invoke("openUsageAccessSettings");
+    },
+    readSnapshot() {
+      return invoke("readDeviceContext");
     }
   };
 }

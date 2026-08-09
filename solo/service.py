@@ -138,6 +138,7 @@ class SoloService:
         self.proactive_path = self.solo_dir / "proactive_outbox.jsonl"
         self.proactive_acks_path = self.solo_dir / "proactive_acks.json"
         self.talking_points_path = self.solo_dir / "talking_points.json"
+        self.device_context_path = self.solo_dir / "device_context.json"
         self.lease_path = self.solo_dir / "heartbeat.lock"
         self.enabled = _truthy(os.environ.get("OMBRE_SOLO_ENABLED", "0")) if enabled is None else bool(enabled)
         self.pulse_seconds = pulse_seconds if pulse_seconds is not None else _bounded_int(
@@ -656,6 +657,16 @@ class SoloService:
             runtime["userTimezone"] = user_timezone
             runtime["updatedAt"] = _iso(now)
             self._write_json(self.state_path, runtime)
+
+    async def note_device_context(self, snapshot: dict[str, Any]) -> None:
+        """Keep the latest gateway-sanitized phone context for later solitude continuity."""
+
+        if not isinstance(snapshot, dict) or not snapshot:
+            return
+        value = deepcopy(snapshot)
+        value["storedAt"] = _iso(datetime.now(timezone.utc))
+        async with self._state_lock:
+            self._write_json(self.device_context_path, value)
 
     async def wake(self, reason: str = "manual") -> dict[str, Any]:
         if not self.enabled:

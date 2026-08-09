@@ -1,8 +1,14 @@
 package io.github.jdbjdncncmax.ombrebrain;
 
 import android.Manifest;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
+import android.provider.Settings;
+
+import androidx.core.content.ContextCompat;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
@@ -33,6 +39,13 @@ import java.net.URI;
         @Permission(
             alias = "healthSleep",
             strings = { "android.permission.health.READ_SLEEP" }
+        ),
+        @Permission(
+            alias = "location",
+            strings = {
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            }
         )
     }
 )
@@ -152,6 +165,63 @@ public class CompanionNativePlugin extends Plugin {
     }
 
     @PluginMethod
+    public void deviceContextStatus(PluginCall call) {
+        call.resolve(deviceContextStatusResult());
+    }
+
+    @PluginMethod
+    public void requestLocationPermission(PluginCall call) {
+        if (preciseLocationGranted()) {
+            call.resolve(deviceContextStatusResult());
+            return;
+        }
+        requestPermissionForAlias("location", call, "locationPermissionCallback");
+    }
+
+    @PermissionCallback
+    private void locationPermissionCallback(PluginCall call) {
+        call.resolve(deviceContextStatusResult());
+    }
+
+    @PluginMethod
+    public void openUsageAccessSettings(PluginCall call) {
+        try {
+            Intent intent = new Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS);
+            intent.setData(Uri.parse("package:" + getContext().getPackageName()));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(intent);
+            JSObject result = deviceContextStatusResult();
+            result.put("opened", true);
+            call.resolve(result);
+        } catch (Exception error) {
+            call.reject("无法打开应用使用情况授权页面。", error);
+        }
+    }
+
+    @PluginMethod
+    public void readDeviceContext(PluginCall call) {
+        boolean locationGranted = preciseLocationGranted();
+        boolean usageGranted = DeviceContextReader.hasUsageAccess(getContext());
+        DeviceContextReader.read(
+            getContext(),
+            locationGranted,
+            usageGranted,
+            new DeviceContextReader.Callback() {
+                @Override
+                public void onSuccess(JSObject snapshot) {
+                    call.resolve(snapshot);
+                }
+
+                @Override
+                public void onError(Throwable error) {
+                    String message = error == null ? "暂时无法读取设备环境。" : clean(error.getMessage());
+                    call.reject(message.isEmpty() ? "暂时无法读取设备环境。" : message);
+                }
+            }
+        );
+    }
+
+    @PluginMethod
     public void showNotification(PluginCall call) {
         if (!notificationGranted()) {
             call.reject("通知权限尚未开启。");
@@ -211,6 +281,24 @@ public class CompanionNativePlugin extends Plugin {
             }
         }
         return "prompt";
+    }
+
+    private boolean preciseLocationGranted() {
+        return ContextCompat.checkSelfPermission(
+            getContext(),
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private JSObject deviceContextStatusResult() {
+        boolean locationGranted = preciseLocationGranted();
+        boolean usageGranted = DeviceContextReader.hasUsageAccess(getContext());
+        JSObject result = new JSObject();
+        result.put("supported", true);
+        result.put("status", locationGranted && usageGranted ? "ready" : "permission_required");
+        result.put("locationPermission", locationGranted ? "granted" : "required");
+        result.put("usageAccess", usageGranted ? "granted" : "required");
+        return result;
     }
 
     private JSObject healthStatusResult() {

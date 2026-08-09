@@ -13,6 +13,12 @@ import {
   formatHealthDurationHours,
   normalizeHealthSnapshot
 } from "./health.js?v=20260808.1";
+import {
+  buildDeviceMessageContext,
+  deviceLocationLabel,
+  deviceUsageLabel,
+  normalizeDeviceContextSnapshot
+} from "./device_context.js?v=20260810.1";
 
 const LEGACY_SUMMARY_PROMPT_V1 = `你负责为一段持续对话生成“累计上下文摘要”，供同一个对话模型在后续轮次继续使用。
 
@@ -86,7 +92,8 @@ const storageKeys = {
   schedule: "companion.schedule.v1",
   scheduleSettings: "companion.scheduleSettings.v1",
   scheduleNudges: "companion.scheduleNudges.v1",
-  healthSnapshot: "companion.healthSnapshot.v1"
+  healthSnapshot: "companion.healthSnapshot.v1",
+  deviceContextSnapshot: "companion.deviceContextSnapshot.v1"
 };
 
 const defaultBackend = platform.getDefaultApiBaseUrl();
@@ -160,6 +167,10 @@ const state = {
   healthSnapshot: normalizeHealthSnapshot(loadJson(storageKeys.healthSnapshot, null)),
   healthLoading: false,
   healthPermission: "unknown",
+  deviceContextSnapshot: normalizeDeviceContextSnapshot(loadJson(storageKeys.deviceContextSnapshot, null)),
+  deviceContextLoading: false,
+  deviceLocationPermission: "unknown",
+  deviceUsageAccess: "unknown",
   busy: false,
   imageProcessing: false,
   editingMessageId: "",
@@ -253,6 +264,9 @@ const els = {
   upcomingSummary: document.querySelector("#upcomingSummary"),
   upcomingScheduleList: document.querySelector("#upcomingScheduleList"),
   homeFeatureCards: [...document.querySelectorAll("[data-home-feature]")],
+  deviceContextCard: document.querySelector("#deviceContextCard"),
+  deviceLocationStatus: document.querySelector("#deviceLocationStatus"),
+  deviceUsageStatus: document.querySelector("#deviceUsageStatus"),
   healthCard: document.querySelector("#healthCard"),
   healthStatus: document.querySelector("#healthStatus"),
   healthHeartRate: document.querySelector("#healthHeartRate"),
@@ -364,6 +378,8 @@ updateClock();
 refreshHealth();
 renderHealthSnapshot();
 refreshHealthSnapshot({ silent: true });
+renderDeviceContextSnapshot();
+refreshDeviceContextSnapshot({ silent: true });
 soloPanel.start();
 loadSchedule().catch(() => {
   setScheduleSyncStatus("本地日程", "offline");
@@ -374,6 +390,7 @@ setInterval(() => refreshHealthSnapshot({ silent: true }), 60000);
 platform.lifecycle.onResume(() => {
   refreshHealth();
   refreshHealthSnapshot({ silent: true });
+  refreshDeviceContextSnapshot({ silent: true });
 });
 
 function bindEvents() {
@@ -676,7 +693,9 @@ async function sendMessage() {
     cancelMessageEdit({ clearInput: false });
   } else {
     await refreshHealthSnapshot({ silent: true });
+    await refreshDeviceContextSnapshot({ silent: true });
     const healthContext = buildHealthMessageContext(state.healthSnapshot);
+    const deviceContext = buildDeviceMessageContext(state.deviceContextSnapshot);
     state.messages.push({
       id: crypto.randomUUID(),
       role: "user",
@@ -685,7 +704,8 @@ async function sendMessage() {
       ...(images.length ? { images } : {}),
       createdAt: new Date().toISOString(),
       timezone: currentTimeZone(),
-      ...(healthContext ? { healthContext } : {})
+      ...(healthContext ? { healthContext } : {}),
+      ...(deviceContext ? { deviceContext } : {})
     });
   }
 
@@ -1569,14 +1589,20 @@ function messageForGateway(message) {
     && typeof message.healthContext === "object"
     ? message.healthContext
     : null;
+  const device = message.role === "user"
+    && message.deviceContext
+    && typeof message.deviceContext === "object"
+    ? message.deviceContext
+    : null;
   return {
     role: message.role,
     content: message.role === "user" ? buildUserMessageContent(message) : message.content,
-    ...(sentAt || health
+    ...(sentAt || health || device
       ? {
           context: {
             ...(sentAt ? { sentAt, timezone } : {}),
-            ...(health ? { health } : {})
+            ...(health ? { health } : {}),
+            ...(device ? { device } : {})
           }
         }
       : {})
@@ -4054,10 +4080,109 @@ function handleHomeFeature(feature) {
     return;
   }
 
+  if (feature === "device") {
+    handleDeviceContextFeature();
+    return;
+  }
+
   const messages = {
     reading: "共读会在后续对话中接入。"
   };
   showHomeNotice(messages[feature] || "这项功能会在后续对话中接入。");
+}
+
+async function handleDeviceContextFeature() {
+  if (!platform.deviceContext?.isSupported()) {
+    showHomeNotice("定位和应用时长需要在 Android 版里读取。");
+    return;
+  }
+
+  try {
+    let status = await platform.deviceContext.status();
+    updateDevicePermissionState(status);
+    if (state.deviceLocationPermission !== "granted") {
+      status = await platform.deviceContext.requestLocationPermission();
+      updateDevicePermissionState(status);
+      if (state.deviceLocationPermission !== "granted") {
+        renderDeviceContextSnapshot();
+        showHomeNotice("需要选择“精确位置”，AI 才能分辨不同道路。不会用网络 IP 猜位置。");
+        return;
+      }
+    }
+    if (state.deviceUsageAccess !== "granted") {
+      await platform.deviceContext.openUsageAccessSettings();
+      showHomeNotice("请在系统页面允许 Ombre 查看应用使用情况，返回后会自动刷新。");
+      return;
+    }
+    await refreshDeviceContextSnapshot({ silent: false });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error || "");
+    showHomeNotice(message || "暂时没能读取此刻环境。");
+  }
+}
+
+async function refreshDeviceContextSnapshot({ silent = true } = {}) {
+  if (!platform.deviceContext?.isSupported() || state.deviceContextLoading) {
+    renderDeviceContextSnapshot();
+    return state.deviceContextSnapshot;
+  }
+
+  state.deviceContextLoading = true;
+  renderDeviceContextSnapshot();
+  try {
+    const result = await platform.deviceContext.readSnapshot();
+    updateDevicePermissionState(result?.permissions || result);
+    const snapshot = normalizeDeviceContextSnapshot(result);
+    if (snapshot) {
+      state.deviceContextSnapshot = snapshot;
+      platform.storage.setJson(storageKeys.deviceContextSnapshot, snapshot);
+      if (!silent && buildDeviceMessageContext(snapshot)) {
+        showHomeNotice("定位和今天的应用时长已同步；发消息时会自动附上简短摘要。");
+      }
+    }
+    return state.deviceContextSnapshot;
+  } catch (error) {
+    if (!silent) {
+      const message = error instanceof Error ? error.message : String(error || "");
+      showHomeNotice(message || "暂时没能读取此刻环境。");
+    }
+    return state.deviceContextSnapshot;
+  } finally {
+    state.deviceContextLoading = false;
+    renderDeviceContextSnapshot();
+  }
+}
+
+function updateDevicePermissionState(value) {
+  const locationValue = value?.preciseLocation || value?.locationPermission;
+  const usageValue = value?.usageAccess;
+  if (locationValue) {
+    state.deviceLocationPermission = String(locationValue) === "granted" ? "granted" : "required";
+  }
+  if (usageValue) {
+    state.deviceUsageAccess = String(usageValue) === "granted" ? "granted" : "required";
+  }
+}
+
+function renderDeviceContextSnapshot() {
+  const snapshot = state.deviceContextSnapshot;
+  const locationReady = snapshot?.location?.status === "ready";
+  const usageReady = snapshot?.appUsage?.status === "ready";
+  els.deviceContextCard?.classList.toggle("feature-ready", locationReady || usageReady);
+  if (els.deviceLocationStatus) {
+    els.deviceLocationStatus.textContent = state.deviceContextLoading
+      ? "正在读取系统定位…"
+      : locationReady
+        ? deviceLocationLabel(snapshot.location)
+        : state.deviceLocationPermission === "granted" ? "暂时没有定位" : "点此允许精确位置";
+  }
+  if (els.deviceUsageStatus) {
+    els.deviceUsageStatus.textContent = state.deviceContextLoading
+      ? "正在统计今天用量…"
+      : usageReady
+        ? deviceUsageLabel(snapshot.appUsage)
+        : state.deviceUsageAccess === "granted" ? "今天暂无使用记录" : "点此允许应用时长";
+  }
 }
 
 async function handleHealthFeature() {

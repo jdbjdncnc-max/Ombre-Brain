@@ -4,6 +4,7 @@ export function createBrowserPlatform() {
     storage: createLocalStorageAdapter(),
     notifications: createBrowserNotificationAdapter(),
     health: createBrowserHealthAdapter(),
+    deviceContext: createBrowserDeviceContextAdapter(),
     getDefaultApiBaseUrl,
     request,
     readFileAsDataUrl,
@@ -12,6 +13,24 @@ export function createBrowserPlatform() {
       onResume() {},
       onPause() {}
     }
+  };
+}
+
+function createBrowserDeviceContextAdapter() {
+  const unsupported = async () => ({
+    status: "unsupported",
+    supported: false,
+    locationPermission: "unsupported",
+    usageAccess: "unsupported"
+  });
+  return {
+    isSupported() {
+      return false;
+    },
+    status: unsupported,
+    requestLocationPermission: unsupported,
+    openUsageAccessSettings: unsupported,
+    readSnapshot: unsupported
   };
 }
 
