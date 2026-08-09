@@ -62,10 +62,11 @@ def sse_chunk(delta: dict, finish_reason=None, *, chunk_id: str = "chatcmpl-test
 
 
 class FakeResponse:
-    def __init__(self, lines=None, *, body=None, status_code=200, headers=None):
+    def __init__(self, lines=None, *, body=None, status_code=200, headers=None, stream_error=None):
         self.lines = list(lines or [])
         self.body = body
         self.status_code = status_code
+        self.stream_error = stream_error
         self.headers = headers or {
             "content-type": "text/event-stream",
             "content-encoding": "gzip",
@@ -80,6 +81,8 @@ class FakeResponse:
     async def aiter_lines(self):
         for line in self.lines:
             yield line
+        if self.stream_error:
+            raise self.stream_error
 
     async def aread(self):
         return json.dumps(self.body or {}, ensure_ascii=False).encode("utf-8")
@@ -418,6 +421,55 @@ class StreamingRegressionTests(unittest.IsolatedAsyncioTestCase):
         output = await consume(await self.call_stream(gateway))
 
         self.assertIn(PATCH.EMPTY_STREAM_FALLBACK, output)
+        self.assertEqual(output.count("data: [DONE]"), 1)
+
+    async def test_stops_reading_as_soon_as_upstream_done_arrives(self):
+        response = FakeResponse([
+            sse_chunk({"content": "完整回答"}),
+            sse_chunk({}, "stop"),
+            "data: [DONE]",
+        ], stream_error=RuntimeError("broken HTTP framing after DONE"))
+        gateway = self.make_gateway([response])
+
+        output = await consume(await self.call_stream(gateway))
+
+        self.assertEqual(delta_values(output, "content"), ["完整回答"])
+        self.assertNotIn("ombre_stream_warning", output)
+        self.assertEqual(output.count("data: [DONE]"), 1)
+        self.assertTrue(gateway.http.contexts[0].closed)
+
+    async def test_recovers_midstream_disconnect_and_preserves_partial_reply(self):
+        response = FakeResponse([
+            sse_chunk({"content": "已经收到的半截回答"}),
+        ], stream_error=RuntimeError("upstream disconnected"))
+        gateway = self.make_gateway([response])
+
+        result = await self.call_stream(gateway)
+        output = await consume(result)
+
+        self.assertEqual(delta_values(output, "content"), ["已经收到的半截回答"])
+        self.assertIn("ombre_stream_warning", output)
+        self.assertIn(PATCH.STREAM_INTERRUPTION_NOTICE, output)
+        self.assertEqual(output.count("data: [DONE]"), 1)
+        self.assertEqual(gateway.saved_turns[-1][2], "已经收到的半截回答")
+        self.assertTrue(result.headers["x-ombre-stream-id"].startswith("ombre-"))
+
+    async def test_finalization_failure_does_not_break_completed_stream(self):
+        response = FakeResponse([
+            sse_chunk({"content": "回答已经完成"}),
+            sse_chunk({}, "stop"),
+            "data: [DONE]",
+        ])
+        gateway = self.make_gateway([response])
+
+        async def fail_save_turn(*args, **kwargs):
+            raise RuntimeError("database unavailable")
+
+        gateway._save_turn = fail_save_turn
+        output = await consume(await self.call_stream(gateway))
+
+        self.assertEqual(delta_values(output, "content"), ["回答已经完成"])
+        self.assertNotIn("ombre_stream_warning", output)
         self.assertEqual(output.count("data: [DONE]"), 1)
 
     async def test_json_fallback_keeps_reasoning_and_native_tool_calls(self):

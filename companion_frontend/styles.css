@@ -2127,6 +2127,17 @@ svg {
   animation: blink 0.9s infinite;
 }
 
+.message-stream-warning {
+  margin: 8px 0 0;
+  padding: 7px 9px;
+  border: 1px solid rgba(166, 91, 68, 0.2);
+  border-radius: 10px;
+  color: #8b4d3d;
+  background: rgba(255, 244, 235, 0.78);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
 @keyframes blink {
   0%,
   52% {

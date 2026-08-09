@@ -1,5 +1,6 @@
 import { platform } from "./platform.js";
 import { createSoloPanel } from "./solo.js?v=20260807.2";
+import { normalizeTokenUsage, readOpenAiStream } from "./openai_stream.js?v=20260809.1";
 import {
   buildHealthMessageContext,
   buildHealthSparklinePath,
@@ -652,6 +653,8 @@ async function generateAssistantReply() {
   let lastReasoningAt = 0;
   let firstContentAt = 0;
   let replySucceeded = false;
+  let streamStarted = false;
+  let streamResponse = null;
   const assistantMessage = {
     id: crypto.randomUUID(),
     role: "assistant",
@@ -683,6 +686,7 @@ async function generateAssistantReply() {
         stream: true
       })
     });
+    streamResponse = response;
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
@@ -696,7 +700,8 @@ async function generateAssistantReply() {
       throw new Error("后端没有返回流式内容。");
     }
 
-    await readOpenAiStream(response.body, ({ content, reasoning, model, usage }) => {
+    streamStarted = true;
+    await readOpenAiStream(response.body, ({ content, reasoning, model, usage, streamWarning }) => {
       const deltaAt = Date.now();
       if (reasoning) {
         lastReasoningAt = deltaAt;
@@ -708,12 +713,21 @@ async function generateAssistantReply() {
       assistantMessage.reasoningSource += reasoning;
       assistantMessage.model = model || assistantMessage.model;
       assistantMessage.usage = usage || assistantMessage.usage;
+      if (streamWarning) {
+        assistantMessage.streamInterrupted = true;
+        assistantMessage.streamError = streamWarning.message;
+        assistantMessage.streamId = streamWarning.streamId
+          || response.headers.get("x-ombre-stream-id")
+          || "";
+      }
       renderMessages(false);
     });
 
     assistantMessage.pending = false;
     if (!assistantMessage.content.trim()) {
-      assistantMessage.content = "我这边没有收到有效回复。";
+      assistantMessage.content = assistantMessage.streamInterrupted
+        ? "这次回复在传输途中断开了，请点“重新生成”再试一次。"
+        : "我这边没有收到有效回复。";
     } else {
       replySucceeded = true;
       assistantMessage.reasoningPresentationPending = Boolean(
@@ -722,7 +736,23 @@ async function generateAssistantReply() {
     }
   } catch (error) {
     assistantMessage.pending = false;
-    assistantMessage.content = error instanceof Error ? error.message : String(error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (streamStarted) {
+      const partialReceived = Boolean(assistantMessage.content.trim());
+      assistantMessage.streamInterrupted = true;
+      assistantMessage.streamError = errorMessage;
+      assistantMessage.streamId = streamResponse?.headers?.get("x-ombre-stream-id") || "";
+      if (partialReceived) {
+        replySucceeded = true;
+        assistantMessage.reasoningPresentationPending = Boolean(
+          assistantMessage.reasoningSource.trim()
+        );
+      } else {
+        assistantMessage.content = errorMessage;
+      }
+    } else {
+      assistantMessage.content = errorMessage;
+    }
     assistantMessage.reasoning = assistantMessage.reasoningSource;
   } finally {
     if (assistantMessage.reasoningSource.trim()) {
@@ -3174,153 +3204,6 @@ function pad2(value) {
   return String(value).padStart(2, "0");
 }
 
-async function readOpenAiStream(stream, onDelta) {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    let chunk;
-    try {
-      chunk = await reader.read();
-    } catch (error) {
-      throw new Error(streamReadErrorMessage(error));
-    }
-    const { value, done } = chunk;
-    if (done) {
-      break;
-    }
-
-    buffer += decoder.decode(value, { stream: true });
-    let boundary = buffer.indexOf("\n\n");
-    while (boundary >= 0) {
-      const block = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      dispatchOpenAiBlock(block, onDelta);
-      boundary = buffer.indexOf("\n\n");
-    }
-  }
-
-  if (buffer.trim()) {
-    dispatchOpenAiBlock(buffer, onDelta);
-  }
-}
-
-function dispatchOpenAiBlock(block, onDelta) {
-  const lines = block.split(/\r?\n/);
-  const dataLines = lines
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trim());
-
-  for (const rawData of dataLines) {
-    if (!rawData || rawData === "[DONE]") {
-      continue;
-    }
-
-    let parsed;
-    try {
-      parsed = JSON.parse(rawData);
-    } catch {
-      throw new Error(`流式响应格式异常：${rawData.slice(0, 160)}`);
-    }
-    if (parsed.error) {
-      throw new Error(parsed.error.message || "模型请求失败。");
-    }
-
-    const choice = parsed.choices?.[0] || {};
-    const delta = choice.delta || choice.message || {};
-    const content = typeof delta.content === "string" ? delta.content : "";
-    const reasoning = firstReasoningText(
-      delta.reasoning,
-      delta.reasoning_content,
-      delta.reasoning_details,
-      choice.reasoning,
-      choice.reasoning_content,
-      choice.reasoning_details
-    );
-    const model = typeof parsed.model === "string" ? parsed.model.trim() : "";
-    const usage = normalizeTokenUsage(parsed.usage);
-    if (content || reasoning || model || usage) {
-      onDelta({ content, reasoning, model, usage });
-    }
-  }
-}
-
-function normalizeTokenUsage(value) {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-  const inputTokens = tokenCount(value.inputTokens, value.prompt_tokens, value.input_tokens);
-  const outputTokens = tokenCount(value.outputTokens, value.completion_tokens, value.output_tokens);
-  const totalTokens = tokenCount(
-    value.totalTokens,
-    value.total_tokens,
-    inputTokens !== null || outputTokens !== null
-      ? (inputTokens || 0) + (outputTokens || 0)
-      : null
-  );
-  const cachedTokens = tokenCount(
-    value.cachedTokens,
-    value.prompt_tokens_details?.cached_tokens,
-    value.input_tokens_details?.cached_tokens,
-    value.cache_read_input_tokens,
-    value.cached_tokens
-  );
-  if (inputTokens === null && outputTokens === null && totalTokens === null && cachedTokens === null) {
-    return null;
-  }
-  return { inputTokens, outputTokens, totalTokens, cachedTokens };
-}
-
-function tokenCount(...values) {
-  for (const value of values) {
-    const number = Number(value);
-    if (Number.isFinite(number) && number >= 0) {
-      return Math.round(number);
-    }
-  }
-  return null;
-}
-
-function firstReasoningText(...values) {
-  for (const value of values) {
-    const text = reasoningText(value);
-    if (text) {
-      return text;
-    }
-  }
-  return "";
-}
-
-function reasoningText(value) {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value.map(reasoningText).join("");
-  }
-  if (!value || typeof value !== "object") {
-    return "";
-  }
-  for (const key of ["text", "content", "reasoning", "summary"]) {
-    const text = reasoningText(value[key]);
-    if (text) {
-      return text;
-    }
-  }
-  return "";
-}
-
-function streamReadErrorMessage(error) {
-  const detail = error instanceof Error ? error.message : String(error || "");
-  return [
-    "流式响应中断。",
-    "上游模型可能已经完成请求，但浏览器/WebView 读取网关返回流时失败。",
-    "如果 OpenRouter 有请求日志，优先检查网关返回头和 SSE 转发。",
-    detail ? `底层错误：${detail}` : ""
-  ].filter(Boolean).join("\n");
-}
-
 function renderMarkdown(element, source) {
   const markdown = String(source || "");
   if (!markdown) {
@@ -3614,6 +3497,23 @@ function renderMessages(shouldScroll = true) {
     }
     if (message.role === "assistant" || String(message.content || "").trim()) {
       body.append(content);
+    }
+    if (message.role === "assistant" && message.streamInterrupted) {
+      const warning = document.createElement("p");
+      warning.className = "message-stream-warning";
+      const hasPartial = Boolean(String(message.content || "").trim())
+        && !String(message.content || "").startsWith("流式响应中断。")
+        && !String(message.content || "").startsWith("这次回复在传输途中断开了");
+      warning.textContent = hasPartial
+        ? "连接中断，这条回复可能没有写完。你可以点下方按钮重新生成。"
+        : "连接中断，本次没有收到完整回复。你可以点下方按钮重新生成。";
+      if (message.streamId) {
+        warning.textContent += ` 连接编号：${message.streamId}`;
+      }
+      if (message.streamError) {
+        warning.title = message.streamError;
+      }
+      body.append(warning);
     }
     if (!message.pending) {
       body.append(createMessageFooter(message));

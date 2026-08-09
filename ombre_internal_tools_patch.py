@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import uuid
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,7 @@ READ_ACTIONS = {"memory.search", "diary.search", "profile.read"}
 WRITE_ACTIONS = {"memory.write", "profile.patch"}
 MCP_ACTION = "mcp.call"
 EMPTY_STREAM_FALLBACK = "模型没有返回可见内容，请重试一次。"
+STREAM_INTERRUPTION_NOTICE = "连接中断，这条回复可能没有写完。"
 
 
 def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
@@ -851,11 +853,14 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
         memory_headers: dict[str, str],
         internal_round: int = 0,
     ) -> Response:
+        stream_id = f"ombre-{uuid.uuid4().hex[:12]}"
+        upstream_headers = self._upstream_headers(self.upstream_api_key)
+        upstream_headers["Accept-Encoding"] = "identity"
         try:
             first_context = self.http.stream(
                 "POST",
                 self.upstream_chat_url,
-                headers=self._upstream_headers(self.upstream_api_key),
+                headers=upstream_headers,
                 json=self._payload_for_upstream(payload),
             )
             first_response = await first_context.__aenter__()
@@ -874,7 +879,8 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
         content_type = first_response.headers.get("content-type", "").lower()
         if logger:
             logger.info(
-                "Ombre SSE upstream connected | session=%s status=%s content_type=%s content_encoding=%s",
+                "Ombre SSE upstream connected | stream=%s session=%s status=%s content_type=%s content_encoding=%s",
+                stream_id,
                 session_id,
                 first_response.status_code,
                 content_type or "missing",
@@ -953,6 +959,18 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
             base["choices"] = [{"index": 0, "delta": {}, "finish_reason": finish_reason}]
             return encode_chunk(base)
 
+        def interruption_chunk() -> bytes:
+            return encode_chunk({
+                "id": stream_id,
+                "object": "ombre.stream.warning",
+                "created": int(time.time()),
+                "model": getattr(self, "public_model", "ombre"),
+                "ombre_stream_warning": {
+                    "message": STREAM_INTERRUPTION_NOTICE,
+                    "stream_id": stream_id,
+                },
+            })
+
         def has_client_payload(chunk: dict[str, Any]) -> bool:
             choices = chunk.get("choices") if isinstance(chunk, dict) else None
             if not isinstance(choices, list):
@@ -981,6 +999,8 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
                 terminal_events: list[bytes] = []
                 last_chunk: dict[str, Any] = {}
                 native_tool_seen = False
+                upstream_done_seen = False
+                relay_error: Exception | None = None
 
                 try:
                     async for line in upstream_response.aiter_lines():
@@ -990,8 +1010,11 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
                             yield (line + "\n\n").encode("utf-8")
                             continue
                         data = line[5:].strip()
-                        if not data or data == "[DONE]":
+                        if not data:
                             continue
+                        if data == "[DONE]":
+                            upstream_done_seen = True
+                            break
                         try:
                             chunk = json.loads(data)
                         except json.JSONDecodeError:
@@ -1027,8 +1050,30 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
                             terminal_events.append(encoded)
                         elif has_client_payload(chunk):
                             yield encoded
+                except Exception as exc:
+                    relay_error = exc
+                    if logger:
+                        logger.exception(
+                            "Ombre SSE upstream read failed | stream=%s session=%s round=%s error_type=%s",
+                            stream_id,
+                            session_id,
+                            tool_round,
+                            type(exc).__name__,
+                        )
                 finally:
-                    await stream_context.__aexit__(None, None, None)
+                    try:
+                        await stream_context.__aexit__(None, None, None)
+                    except Exception as exc:
+                        if logger:
+                            logger.exception(
+                                "Ombre SSE upstream close failed | stream=%s session=%s round=%s error_type=%s",
+                                stream_id,
+                                session_id,
+                                tool_round,
+                                type(exc).__name__,
+                            )
+                        if relay_error is None and not upstream_done_seen and not terminal_events:
+                            relay_error = exc
 
                 tail = stream_filter.flush()
                 if tail:
@@ -1037,8 +1082,26 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
 
                 visible_text = "".join(assistant_parts).strip()
                 entries = stream_filter.entries[:MAX_TOOL_CALLS]
+                if logger:
+                    logger.info(
+                        "Ombre SSE upstream finished | stream=%s session=%s round=%s done=%s visible_chars=%s tool_requests=%s native_tool=%s interrupted=%s",
+                        stream_id,
+                        session_id,
+                        tool_round,
+                        upstream_done_seen,
+                        len(visible_text),
+                        len(entries),
+                        native_tool_seen,
+                        relay_error is not None,
+                    )
+                if relay_error is not None and not terminal_events:
+                    if not visible_text and not native_tool_seen:
+                        visible_text = EMPTY_STREAM_FALLBACK
+                        yield content_chunk(last_chunk, visible_text)
+                    yield interruption_chunk()
                 if (
                     entries
+                    and relay_error is None
                     and self._ombre_has_read_tools(entries)
                     and not visible_text
                     and tool_round < MAX_INTERNAL_TOOL_ROUNDS
@@ -1056,7 +1119,7 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
                         stream_context = self.http.stream(
                             "POST",
                             self.upstream_chat_url,
-                            headers=self._upstream_headers(self.upstream_api_key),
+                            headers=upstream_headers,
                             json=self._payload_for_upstream(current_payload),
                         )
                         upstream_response = await stream_context.__aenter__()
@@ -1080,25 +1143,34 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
                     visible_text = EMPTY_STREAM_FALLBACK
                     yield content_chunk(last_chunk, visible_text)
 
-                assistant_raw_refs = await self._save_turn(session_id, "zeta", visible_text)
-                written = await self._write_zeta_memory_requests(
-                    session_id=session_id,
-                    entries=entries,
-                    default_raw_ref=user_raw_refs[0] if user_raw_refs else (
-                        assistant_raw_refs[0] if assistant_raw_refs else ""
-                    ),
-                )
-                self._augment_memory_headers(memory_headers, entries, written)
-                self._ombre_add_tool_headers(memory_headers, entries, [], written)
-                if self._should_run_reflection(written):
-                    self._schedule_reflection(
+                try:
+                    assistant_raw_refs = await self._save_turn(session_id, "zeta", visible_text)
+                    written = await self._write_zeta_memory_requests(
                         session_id=session_id,
-                        user_text=user_text,
-                        assistant_text=visible_text,
-                        user_raw_refs=user_raw_refs,
-                        assistant_raw_refs=assistant_raw_refs,
-                        recalled=recalled,
+                        entries=entries,
+                        default_raw_ref=user_raw_refs[0] if user_raw_refs else (
+                            assistant_raw_refs[0] if assistant_raw_refs else ""
+                        ),
                     )
+                    self._augment_memory_headers(memory_headers, entries, written)
+                    self._ombre_add_tool_headers(memory_headers, entries, [], written)
+                    if self._should_run_reflection(written):
+                        self._schedule_reflection(
+                            session_id=session_id,
+                            user_text=user_text,
+                            assistant_text=visible_text,
+                            user_raw_refs=user_raw_refs,
+                            assistant_raw_refs=assistant_raw_refs,
+                            recalled=recalled,
+                        )
+                except Exception as exc:
+                    if logger:
+                        logger.exception(
+                            "Ombre SSE finalization failed | stream=%s session=%s error_type=%s",
+                            stream_id,
+                            session_id,
+                            type(exc).__name__,
+                        )
 
                 if terminal_events:
                     for event in terminal_events:
@@ -1107,6 +1179,13 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
                     finish_reason = "tool_calls" if native_tool_seen else "stop"
                     yield final_chunk(last_chunk, finish_reason)
                 yield b"data: [DONE]\n\n"
+                if logger:
+                    logger.info(
+                        "Ombre SSE relay completed | stream=%s session=%s interrupted=%s",
+                        stream_id,
+                        session_id,
+                        relay_error is not None and not terminal_events,
+                    )
                 return
 
         hop_by_hop_or_body_headers = {
@@ -1131,7 +1210,11 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
             for key, value in first_response.headers.items()
             if key.lower() not in hop_by_hop_or_body_headers
         }
-        headers.update({"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        headers.update({
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "X-Ombre-Stream-Id": stream_id,
+        })
         headers.update(memory_headers)
         return StreamingResponse(
             stream_body(),
