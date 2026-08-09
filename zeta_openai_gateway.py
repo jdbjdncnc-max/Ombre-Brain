@@ -1361,6 +1361,7 @@ class ZetaOpenAIGateway:
         if recall_injected:
             memory_headers["X-Zeta-Recall-Mode"] = "injected"
         self._log_recall(session_id, recalled)
+        self._remember_recall_debug(session_id=session_id, user_text=user_text, recalled=recalled)
         injected_text = self._build_gateway_system_text(recalled)
         system_prompt = self._read_system_prompt()
         forward_payload = self._prepare_forward_payload(
@@ -1672,6 +1673,36 @@ class ZetaOpenAIGateway:
             len(memories),
             sources,
         )
+
+    def _remember_recall_debug(
+        self,
+        *,
+        session_id: str,
+        user_text: str,
+        recalled: dict[str, Any],
+    ) -> None:
+        memories = recalled.get("memories") if isinstance(recalled, dict) else []
+        if not isinstance(memories, list):
+            memories = []
+        snapshot = {
+            "session_id": session_id,
+            "query": recalled.get("query", user_text) if isinstance(recalled, dict) else user_text,
+            "keyword_query": recalled.get("keyword_query", "") if isinstance(recalled, dict) else "",
+            "keyword_terms": recalled.get("keyword_terms", []) if isinstance(recalled, dict) else [],
+            "user_text": user_text,
+            "count": len(memories),
+            "memories": memories,
+            "injection_text": recalled.get("injection_text", "") if isinstance(recalled, dict) else "",
+            "timestamp": int(time.time()),
+        }
+        self.last_recall_debug = snapshot
+        snapshots = getattr(self, "recall_debug_by_session", None)
+        if not isinstance(snapshots, dict):
+            snapshots = {}
+            self.recall_debug_by_session = snapshots
+        snapshots[session_id] = snapshot
+        while len(snapshots) > 32:
+            snapshots.pop(next(iter(snapshots)))
 
     def _upstream_headers(self, api_key: str) -> dict[str, str]:
         headers = {

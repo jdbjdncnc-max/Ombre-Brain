@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Companion 1.0</title>
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
-  <link rel="stylesheet" href="styles.css?v=20260809.1">
+  <link rel="stylesheet" href="styles.css?v=20260809.2">
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -31,13 +31,44 @@
               <span>正在编辑历史消息，发送后将从这里重新对话</span>
               <button id="cancelEditButton" type="button">取消</button>
             </div>
+            <div id="composerAttachmentTray" class="composer-attachment-tray" hidden></div>
             <form id="composer" class="composer">
+              <div class="composer-add-wrap">
+                <button id="composerAddButton" class="composer-add-button" type="button" title="添加内容" aria-label="添加内容" aria-expanded="false">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 5v14M5 12h14"/>
+                  </svg>
+                </button>
+                <div id="composerMenu" class="composer-menu" hidden>
+                  <button type="button" data-composer-action="photo">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M4 6h16v12H4z"/>
+                      <path d="m7 15 3-3 2 2 3-4 2 5M8 9h.01"/>
+                    </svg>
+                    <span>发送照片</span>
+                  </button>
+                  <button type="button" data-composer-mode="body">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M5 5h14v14H5zM8 9h8M8 13h8M8 17h5"/>
+                    </svg>
+                    <span>输入正文</span>
+                  </button>
+                  <button type="button" data-composer-mode="thinking">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M9 18h6M10 21h4"/>
+                      <path d="M8.1 14.8A6 6 0 1 1 15.9 14.8C14.7 15.6 14 16.5 14 18h-4c0-1.5-.7-2.4-1.9-3.2z"/>
+                    </svg>
+                    <span>输入人类思考链</span>
+                  </button>
+                </div>
+              </div>
               <textarea id="messageInput" rows="1" placeholder="说点什么" autocomplete="off"></textarea>
               <button id="sendButton" class="send-button" type="submit" title="发送" aria-label="发送">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M5 12h13M13 6l6 6-6 6"/>
                 </svg>
               </button>
+              <input id="chatImageFile" type="file" accept="image/png,image/jpeg,image/webp,image/avif,image/gif" multiple hidden>
             </form>
           </div>
         </section>
@@ -663,8 +694,16 @@
 
             <div class="button-row">
               <button id="saveSettingsButton" class="primary-button" type="button">保存</button>
+              <button id="exportChatButton" class="secondary-button" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 3v12M7 10l5 5 5-5"/>
+                  <path d="M5 19h14"/>
+                </svg>
+                <span>导出聊天记录</span>
+              </button>
               <button id="clearChatButton" class="secondary-button" type="button">清空对话</button>
             </div>
+            <output id="exportChatStatus" class="inline-status" aria-live="polite"></output>
           </div>
         </section>
       </main>
@@ -714,10 +753,30 @@
     </section>
   </div>
 
+  <div id="recallModal" class="recall-modal" hidden>
+    <section class="recall-dialog" role="dialog" aria-modal="true" aria-labelledby="recallDialogTitle">
+      <header class="recall-dialog-header">
+        <div>
+          <p class="eyebrow">Memory recall</p>
+          <h2 id="recallDialogTitle">本次召回的记忆</h2>
+        </div>
+        <button id="closeRecallModalButton" class="icon-button" type="button" title="关闭" aria-label="关闭召回记忆弹窗">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </header>
+      <div id="recallDialogMeta" class="recall-dialog-meta"></div>
+      <div id="recallDialogList" class="recall-dialog-list"></div>
+      <details id="recallInjectionDetails" class="recall-injection-details" hidden>
+        <summary>查看实际注入给 AI 的记忆文本</summary>
+        <pre id="recallInjectionText"></pre>
+      </details>
+    </section>
+  </div>
+
   <script src="vendor/marked/marked.umd.js"></script>
   <script src="vendor/dompurify/purify.min.js"></script>
   <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/katex/auto-render.min.js"></script>
-  <script src="app.js?v=20260809.1" type="module"></script>
+  <script src="app.js?v=20260809.2" type="module"></script>
 </body>
 </html>

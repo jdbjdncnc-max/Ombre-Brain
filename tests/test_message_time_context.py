@@ -52,6 +52,38 @@ class MessageTimeContextTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, [{"role": "user", "content": "正文"}])
 
+    def test_multimodal_user_content_keeps_separate_thinking_body_and_image_blocks(self):
+        content = [
+            {"type": "text", "text": "<userthinking>先确认图片细节</userthinking>"},
+            {"type": "text", "text": "正文问题"},
+            {"type": "image_url", "image_url": {"url": "data:image/webp;base64,AAAA"}},
+        ]
+        messages = [{
+            "role": "user",
+            "content": content,
+            "context": {"sentAt": "2026-08-09T10:00:00Z", "timezone": "Asia/Taipei"},
+        }]
+
+        result = self.gateway._inject_message_time_context(messages, "UTC")
+
+        self.assertEqual(result[0]["content"], content)
+        self.assertNotIn("context", result[0])
+        self.assertEqual(
+            self.gateway._message_content_to_text(result[0]["content"]),
+            "<userthinking>先确认图片细节</userthinking>\n正文问题",
+        )
+
+    def test_recall_debug_snapshots_are_kept_per_session(self):
+        first = {"query": "第一轮", "memories": [{"summary_text": "记忆一"}], "injection_text": "注入一"}
+        second = {"query": "第二轮", "memories": [], "injection_text": ""}
+
+        self.gateway._remember_recall_debug(session_id="session-a", user_text="A", recalled=first)
+        self.gateway._remember_recall_debug(session_id="session-b", user_text="B", recalled=second)
+
+        self.assertEqual(self.gateway.recall_debug_by_session["session-a"]["memories"], first["memories"])
+        self.assertEqual(self.gateway.recall_debug_by_session["session-b"]["count"], 0)
+        self.assertEqual(self.gateway.last_recall_debug["session_id"], "session-b")
+
     def test_removes_only_legacy_info_blocks_copied_at_start_of_assistant_message(self):
         messages = [{
             "role": "assistant",

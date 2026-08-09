@@ -413,7 +413,11 @@ try:
         gateway = zeta_openai_gateway.gateway
         query = str(request.query_params.get("q") or "").strip()
         if not query:
-            snapshot = getattr(gateway, "last_recall_debug", None)
+            session_id = str(request.query_params.get("session_id") or "").strip()
+            snapshots = getattr(gateway, "recall_debug_by_session", {})
+            snapshot = snapshots.get(session_id) if session_id and isinstance(snapshots, dict) else None
+            if snapshot is None and not session_id:
+                snapshot = getattr(gateway, "last_recall_debug", None)
             if not snapshot:
                 return JSONResponse({"ok": True, "mode": "last", "count": 0, "memories": [], "injection_text": ""})
             return JSONResponse({"ok": True, "mode": "last", **snapshot})

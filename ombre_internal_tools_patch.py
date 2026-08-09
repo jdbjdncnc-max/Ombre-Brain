@@ -1167,6 +1167,9 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
         if recall_injected:
             memory_headers["X-Zeta-Recall-Mode"] = "injected"
         self._log_recall(session_id, recalled)
+        remember_recall = getattr(self, "_remember_recall_debug", None)
+        if callable(remember_recall):
+            remember_recall(session_id=session_id, user_text=user_text, recalled=recalled)
         injected_text = self._build_gateway_system_text(recalled)
         system_prompt = self._read_system_prompt()
         forward_payload = self._prepare_forward_payload(

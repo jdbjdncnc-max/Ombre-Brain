@@ -154,7 +154,12 @@ const state = {
   healthLoading: false,
   healthPermission: "unknown",
   busy: false,
+  imageProcessing: false,
   editingMessageId: "",
+  composerMode: "body",
+  composerDrafts: { body: "", thinking: "" },
+  pendingImages: [],
+  composerError: "",
   emotionAppraisalUserCount: 0,
   systemPromptConfigured: false,
   systemPromptSha256: "",
@@ -184,8 +189,14 @@ const els = {
   composer: document.querySelector("#composer"),
   editNotice: document.querySelector("#editNotice"),
   cancelEditButton: document.querySelector("#cancelEditButton"),
+  composerAttachmentTray: document.querySelector("#composerAttachmentTray"),
+  composerAddButton: document.querySelector("#composerAddButton"),
+  composerMenu: document.querySelector("#composerMenu"),
+  composerModeButtons: [...document.querySelectorAll("[data-composer-mode]")],
+  composerPhotoButton: document.querySelector("[data-composer-action='photo']"),
   messageInput: document.querySelector("#messageInput"),
   sendButton: document.querySelector("#sendButton"),
+  chatImageFile: document.querySelector("#chatImageFile"),
   refreshMemoryButton: document.querySelector("#refreshMemoryButton"),
   memorySearchForm: document.querySelector("#memorySearchForm"),
   memorySearchInput: document.querySelector("#memorySearchInput"),
@@ -297,7 +308,15 @@ const els = {
   backgroundFit: document.querySelector("#backgroundFit"),
   accentColor: document.querySelector("#accentColor"),
   saveSettingsButton: document.querySelector("#saveSettingsButton"),
+  exportChatButton: document.querySelector("#exportChatButton"),
+  exportChatStatus: document.querySelector("#exportChatStatus"),
   clearChatButton: document.querySelector("#clearChatButton"),
+  recallModal: document.querySelector("#recallModal"),
+  closeRecallModalButton: document.querySelector("#closeRecallModalButton"),
+  recallDialogMeta: document.querySelector("#recallDialogMeta"),
+  recallDialogList: document.querySelector("#recallDialogList"),
+  recallInjectionDetails: document.querySelector("#recallInjectionDetails"),
+  recallInjectionText: document.querySelector("#recallInjectionText"),
   tabs: [...document.querySelectorAll(".tab-button")],
   memorySegments: [...document.querySelectorAll(".segment-button")],
   memoryPanels: [...document.querySelectorAll(".memory-panel")]
@@ -316,6 +335,7 @@ hydrateSettingsForm();
 saveSettings();
 applySettings();
 renderMessages();
+renderComposerState();
 restoreNavigationState();
 initSchedule();
 renderSchedule();
@@ -342,7 +362,10 @@ function bindEvents() {
   });
 
   els.messageInput.addEventListener("input", () => {
+    state.composerDrafts[state.composerMode] = els.messageInput.value;
+    state.composerError = "";
     autosizeTextarea(els.messageInput);
+    renderComposerState();
   });
 
   els.messageInput.addEventListener("keydown", (event) => {
@@ -353,6 +376,33 @@ function bindEvents() {
   });
 
   els.cancelEditButton.addEventListener("click", cancelMessageEdit);
+
+  els.composerAddButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setComposerMenuOpen(els.composerMenu.hidden);
+  });
+
+  els.composerMenu.addEventListener("click", (event) => event.stopPropagation());
+  els.composerModeButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      switchComposerMode(button.dataset.composerMode);
+      setComposerMenuOpen(false);
+    });
+  });
+  els.composerPhotoButton.addEventListener("click", () => {
+    setComposerMenuOpen(false);
+    els.chatImageFile.click();
+  });
+  els.chatImageFile.addEventListener("change", importChatImages);
+  els.composerAttachmentTray.addEventListener("click", handleComposerTrayClick);
+  document.addEventListener("click", () => setComposerMenuOpen(false));
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") {
+      return;
+    }
+    setComposerMenuOpen(false);
+    closeRecallModal();
+  });
 
   els.chooseSystemPromptButton.addEventListener("click", () => {
     els.systemPromptFile.click();
@@ -463,6 +513,14 @@ function bindEvents() {
     renderMessages();
   });
 
+  els.exportChatButton.addEventListener("click", exportChatHistory);
+  els.closeRecallModalButton.addEventListener("click", closeRecallModal);
+  els.recallModal.addEventListener("click", (event) => {
+    if (event.target === els.recallModal) {
+      closeRecallModal();
+    }
+  });
+
   els.chooseBackgroundButton.addEventListener("click", () => {
     els.backgroundFile.click();
   });
@@ -533,8 +591,20 @@ function bindEvents() {
 }
 
 async function sendMessage() {
-  const text = els.messageInput.value.trim();
-  if (!text || state.busy) {
+  syncActiveComposerDraft();
+  const text = state.composerDrafts.body.trim();
+  const userThinking = state.composerDrafts.thinking.trim();
+  const images = state.pendingImages.map((image) => ({ ...image }));
+  if (state.busy || state.imageProcessing || state.composerMode !== "body") {
+    return;
+  }
+  if (userThinking && !text) {
+    state.composerError = "人类思考链不能单独发送，请再写一段正文。";
+    switchComposerMode("body");
+    renderComposerState();
+    return;
+  }
+  if (!text && !images.length) {
     return;
   }
 
@@ -550,7 +620,7 @@ async function sendMessage() {
   applySettings();
 
   if (state.editingMessageId) {
-    if (!applyUserMessageEdit(state.editingMessageId, text)) {
+    if (!applyUserMessageEdit(state.editingMessageId, { content: text, userThinking, images })) {
       cancelMessageEdit();
       return;
     }
@@ -562,15 +632,18 @@ async function sendMessage() {
       id: crypto.randomUUID(),
       role: "user",
       content: text,
+      ...(userThinking ? { userThinking } : {}),
+      ...(images.length ? { images } : {}),
       createdAt: new Date().toISOString(),
       timezone: currentTimeZone(),
       ...(healthContext ? { healthContext } : {})
     });
   }
 
-  captureTodoFromMessage(text);
-  els.messageInput.value = "";
-  autosizeTextarea(els.messageInput);
+  if (text) {
+    captureTodoFromMessage(text);
+  }
+  resetComposerInputs();
   await generateAssistantReply();
 }
 
@@ -617,6 +690,7 @@ async function generateAssistantReply() {
     }
 
     updateSystemPromptInjectionStatus(response);
+    assistantMessage.recall = await captureCurrentRecallSnapshot(response);
 
     if (!response.body) {
       throw new Error("后端没有返回流式内容。");
@@ -695,16 +769,25 @@ async function regenerateAssistantMessage(messageId) {
   await generateAssistantReply();
 }
 
-function applyUserMessageEdit(messageId, content) {
+function applyUserMessageEdit(messageId, { content, userThinking = "", images = [] }) {
   const editIndex = state.messages.findIndex((message) => message.id === messageId && message.role === "user");
   if (editIndex < 0) {
     return false;
   }
-  state.messages[editIndex] = {
+  const updatedMessage = {
     ...state.messages[editIndex],
     content,
+    userThinking,
+    images,
     editedAt: new Date().toISOString()
   };
+  if (!userThinking) {
+    delete updatedMessage.userThinking;
+  }
+  if (!images.length) {
+    delete updatedMessage.images;
+  }
+  state.messages[editIndex] = updatedMessage;
   state.messages = state.messages.slice(0, editIndex + 1);
   return true;
 }
@@ -727,11 +810,19 @@ function beginMessageEdit(messageId) {
     return;
   }
   state.editingMessageId = message.id;
-  els.messageInput.value = message.content;
+  state.composerMode = "body";
+  state.composerDrafts = {
+    body: String(message.content || ""),
+    thinking: String(message.userThinking || "")
+  };
+  state.pendingImages = normalizeUserImages(message.images).map((image) => ({ ...image }));
+  state.composerError = "";
+  els.messageInput.value = state.composerDrafts.body;
   els.editNotice.hidden = false;
   els.sendButton.title = "保存并重新发送";
   els.sendButton.setAttribute("aria-label", "保存并重新发送");
   autosizeTextarea(els.messageInput);
+  renderComposerState();
   els.messageInput.focus();
   els.messageInput.setSelectionRange(els.messageInput.value.length, els.messageInput.value.length);
 }
@@ -742,9 +833,399 @@ function cancelMessageEdit({ clearInput = true } = {}) {
   els.sendButton.title = "发送";
   els.sendButton.setAttribute("aria-label", "发送");
   if (clearInput) {
-    els.messageInput.value = "";
-    autosizeTextarea(els.messageInput);
+    resetComposerInputs();
   }
+}
+
+function syncActiveComposerDraft() {
+  state.composerDrafts[state.composerMode] = els.messageInput.value;
+}
+
+function setComposerMenuOpen(open) {
+  const shouldOpen = Boolean(open) && !state.busy && !state.imageProcessing;
+  els.composerMenu.hidden = !shouldOpen;
+  els.composerAddButton.setAttribute("aria-expanded", String(shouldOpen));
+}
+
+function switchComposerMode(mode, { focus = true, sync = true } = {}) {
+  if (mode !== "body" && mode !== "thinking") {
+    return;
+  }
+  if (sync) {
+    syncActiveComposerDraft();
+  }
+  state.composerMode = mode;
+  els.messageInput.value = state.composerDrafts[mode] || "";
+  autosizeTextarea(els.messageInput);
+  renderComposerState();
+  if (focus) {
+    els.messageInput.focus();
+    els.messageInput.setSelectionRange(els.messageInput.value.length, els.messageInput.value.length);
+  }
+}
+
+function resetComposerInputs() {
+  state.composerMode = "body";
+  state.composerDrafts = { body: "", thinking: "" };
+  state.pendingImages = [];
+  state.composerError = "";
+  els.messageInput.value = "";
+  els.chatImageFile.value = "";
+  autosizeTextarea(els.messageInput);
+  renderComposerState();
+}
+
+function renderComposerState() {
+  const body = String(state.composerDrafts.body || "");
+  const thinking = String(state.composerDrafts.thinking || "").trim();
+  const images = normalizeUserImages(state.pendingImages);
+  els.composer.classList.toggle("composer-thinking-mode", state.composerMode === "thinking");
+  els.messageInput.placeholder = state.composerMode === "thinking"
+    ? "写下你没直接说出口的想法（需和正文一起发送）"
+    : (thinking ? "写下正文，发送时会附上人类思考链" : "说点什么");
+  els.composerModeButtons.forEach((button) => {
+    button.classList.toggle("mode-active", button.dataset.composerMode === state.composerMode);
+  });
+
+  els.composerAttachmentTray.replaceChildren();
+  if (state.composerError) {
+    const error = document.createElement("span");
+    error.className = "composer-image-processing composer-error";
+    error.textContent = state.composerError;
+    els.composerAttachmentTray.append(error);
+  }
+  if (thinking) {
+    const chip = document.createElement("div");
+    chip.className = "composer-draft-chip";
+    chip.dataset.editThinking = "true";
+    const label = document.createElement("strong");
+    label.textContent = "人类思考链";
+    const preview = document.createElement("span");
+    preview.textContent = thinking.replace(/\s+/g, " ");
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.dataset.clearThinking = "true";
+    remove.title = "移除人类思考链";
+    remove.setAttribute("aria-label", "移除人类思考链");
+    remove.textContent = "×";
+    chip.append(label, preview, remove);
+    els.composerAttachmentTray.append(chip);
+  }
+  for (const image of images) {
+    const chip = document.createElement("div");
+    chip.className = "composer-image-chip";
+    const preview = document.createElement("img");
+    preview.src = image.dataUrl;
+    preview.alt = image.name;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.dataset.removeImage = image.id;
+    remove.title = `移除 ${image.name}`;
+    remove.setAttribute("aria-label", `移除 ${image.name}`);
+    remove.textContent = "×";
+    chip.append(preview, remove);
+    els.composerAttachmentTray.append(chip);
+  }
+  if (state.imageProcessing) {
+    const processing = document.createElement("span");
+    processing.className = "composer-image-processing";
+    processing.textContent = "正在处理照片…";
+    els.composerAttachmentTray.append(processing);
+  }
+  els.composerAttachmentTray.hidden = !els.composerAttachmentTray.childElementCount;
+
+  const thinkingNeedsBody = Boolean(thinking && !body.trim());
+  const hasSendableContent = Boolean(body.trim() || images.length);
+  els.sendButton.hidden = state.composerMode === "thinking";
+  els.sendButton.disabled = state.busy
+    || state.imageProcessing
+    || state.composerMode === "thinking"
+    || thinkingNeedsBody
+    || !hasSendableContent;
+  els.messageInput.disabled = state.busy || state.imageProcessing;
+  els.composerAddButton.disabled = state.busy || state.imageProcessing;
+}
+
+function handleComposerTrayClick(event) {
+  const removeImageButton = event.target.closest("[data-remove-image]");
+  if (removeImageButton) {
+    state.pendingImages = state.pendingImages.filter((image) => image.id !== removeImageButton.dataset.removeImage);
+    state.composerError = "";
+    renderComposerState();
+    return;
+  }
+  if (event.target.closest("[data-clear-thinking]")) {
+    state.composerDrafts.thinking = "";
+    state.composerError = "";
+    if (state.composerMode === "thinking") {
+      switchComposerMode("body", { sync: false });
+    } else {
+      renderComposerState();
+    }
+    return;
+  }
+  if (event.target.closest("[data-edit-thinking]")) {
+    switchComposerMode("thinking");
+  }
+}
+
+async function importChatImages() {
+  const selected = [...(els.chatImageFile.files || [])];
+  els.chatImageFile.value = "";
+  if (!selected.length || state.imageProcessing) {
+    return;
+  }
+  const available = Math.max(0, 4 - state.pendingImages.length);
+  if (!available) {
+    state.composerError = "每条消息最多发送 4 张照片。";
+    renderComposerState();
+    return;
+  }
+
+  state.imageProcessing = true;
+  state.composerError = selected.length > available ? `最多保留前 ${available} 张照片。` : "";
+  renderComposerState();
+  try {
+    for (const file of selected.slice(0, available)) {
+      state.pendingImages.push(await prepareChatImage(file));
+      renderComposerState();
+    }
+  } catch (error) {
+    state.composerError = error instanceof Error ? error.message : String(error);
+  } finally {
+    state.imageProcessing = false;
+    renderComposerState();
+  }
+}
+
+async function prepareChatImage(file) {
+  if (!String(file?.type || "").startsWith("image/")) {
+    throw new Error("只能选择图片文件。");
+  }
+  if (Number(file.size) > 15 * 1024 * 1024) {
+    throw new Error(`${file.name || "这张照片"}超过 15 MB，请先压缩。`);
+  }
+  const source = await platform.readFileAsDataUrl(file);
+  const image = await loadAvatarImage(source);
+  let dataUrl = "";
+  let width = image.naturalWidth;
+  let height = image.naturalHeight;
+  outer: for (const maxSide of [1400, 1200, 1024, 800]) {
+    const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+    width = Math.max(1, Math.round(image.naturalWidth * scale));
+    height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("当前设备无法处理照片。");
+    }
+    context.drawImage(image, 0, 0, width, height);
+    for (const quality of [0.82, 0.68, 0.54, 0.42]) {
+      dataUrl = canvas.toDataURL("image/webp", quality);
+      if (dataUrlApproxBytes(dataUrl) <= 420 * 1024) {
+        break outer;
+      }
+    }
+  }
+  if (dataUrlApproxBytes(dataUrl) > 520 * 1024) {
+    throw new Error(`${file.name || "这张照片"}处理后仍然太大，请换一张较小的图片。`);
+  }
+  return {
+    id: crypto.randomUUID(),
+    name: String(file.name || "照片"),
+    type: "image/webp",
+    dataUrl,
+    width,
+    height
+  };
+}
+
+function dataUrlApproxBytes(dataUrl) {
+  const base64 = String(dataUrl || "").split(",", 2)[1] || "";
+  return Math.ceil(base64.length * 0.75);
+}
+
+async function captureCurrentRecallSnapshot(response) {
+  const headerCount = Number.parseInt(response?.headers?.get("X-Zeta-Memory-Count") || "", 10);
+  try {
+    const snapshot = await gatewayFetch(`/debug/recall.json?session_id=${encodeURIComponent(state.sessionId)}`);
+    if (snapshot?.session_id && snapshot.session_id !== state.sessionId) {
+      return {
+        available: false,
+        count: Number.isFinite(headerCount) ? headerCount : 0,
+        error: "召回详情刚好被另一个会话更新，本条只保留了数量。"
+      };
+    }
+    return normalizeRecallSnapshot(snapshot);
+  } catch (error) {
+    return {
+      available: false,
+      count: Number.isFinite(headerCount) ? headerCount : 0,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+function normalizeRecallSnapshot(value) {
+  const memories = Array.isArray(value?.memories)
+    ? value.memories.filter((memory) => memory && typeof memory === "object")
+    : [];
+  return {
+    available: true,
+    sessionId: String(value?.session_id || ""),
+    query: String(value?.query || value?.user_text || ""),
+    keywordQuery: String(value?.keyword_query || ""),
+    keywordTerms: Array.isArray(value?.keyword_terms) ? value.keyword_terms.map(String) : [],
+    count: memories.length,
+    memories,
+    injectionText: String(value?.injection_text || ""),
+    timestamp: Number(value?.timestamp) || Math.floor(Date.now() / 1000)
+  };
+}
+
+function openRecallModal(message) {
+  const recall = message?.recall;
+  els.recallDialogList.replaceChildren();
+  els.recallInjectionDetails.hidden = true;
+  els.recallInjectionDetails.open = false;
+  els.recallInjectionText.textContent = "";
+
+  if (!recall) {
+    els.recallDialogMeta.textContent = "这条旧消息生成时还没有保存召回详情。";
+    els.recallDialogList.append(recallEmptyNode("没有可显示的召回记录。"));
+  } else if (recall.available === false) {
+    els.recallDialogMeta.textContent = `本轮召回数量：${Number(recall.count) || 0}`;
+    els.recallDialogList.append(recallEmptyNode(recall.error || "未能读取本轮召回详情。"));
+  } else {
+    const recallTime = recall.timestamp
+      ? new Date(Number(recall.timestamp) * 1000).toLocaleString("zh-CN")
+      : "";
+    els.recallDialogMeta.textContent = compactParts([
+      `共召回 ${Number(recall.count) || 0} 条`,
+      recallTime,
+      recall.query ? `检索内容：${recall.query}` : "",
+      recall.keywordTerms?.length ? `关键词：${recall.keywordTerms.join("、")}` : ""
+    ]).join(" · ");
+    if (!recall.memories?.length) {
+      els.recallDialogList.append(recallEmptyNode("这一轮没有召回记忆。"));
+    } else {
+      recall.memories.forEach((memory, index) => {
+        els.recallDialogList.append(createRecallMemoryCard(memory, index));
+      });
+    }
+    if (recall.injectionText) {
+      els.recallInjectionText.textContent = recall.injectionText;
+      els.recallInjectionDetails.hidden = false;
+    }
+  }
+
+  els.recallModal.hidden = false;
+  els.closeRecallModalButton.focus();
+}
+
+function closeRecallModal() {
+  if (els.recallModal.hidden) {
+    return;
+  }
+  els.recallModal.hidden = true;
+}
+
+function recallEmptyNode(text) {
+  const empty = document.createElement("div");
+  empty.className = "recall-empty";
+  empty.textContent = text;
+  return empty;
+}
+
+function createRecallMemoryCard(memory, index) {
+  const card = document.createElement("article");
+  card.className = "recall-memory-card";
+  const summary = document.createElement("strong");
+  summary.textContent = String(memory.summary_text || memory.name || `记忆 ${index + 1}`);
+  const meta = document.createElement("div");
+  meta.className = "recall-memory-meta";
+  const score = Number(memory.score);
+  const tags = Array.isArray(memory.tags) ? memory.tags : [];
+  const metaParts = [
+    memory.source ? `来源 ${memory.source}` : "",
+    Number.isFinite(score) ? `分数 ${score.toFixed(3)}` : "",
+    memory.importance !== undefined && memory.importance !== null ? `重要度 ${memory.importance}` : "",
+    ...tags.slice(0, 6).map((tag) => `#${tag}`)
+  ].filter(Boolean);
+  for (const value of metaParts) {
+    const item = document.createElement("span");
+    item.textContent = String(value);
+    meta.append(item);
+  }
+  card.append(summary);
+  if (meta.childElementCount) {
+    card.append(meta);
+  }
+  if (memory.reason || memory.feel_text) {
+    const reason = document.createElement("div");
+    reason.className = "recall-memory-reason";
+    reason.textContent = compactParts([
+      memory.reason ? `召回原因：${memory.reason}` : "",
+      memory.feel_text ? `情感：${memory.feel_text}` : ""
+    ]).join(" · ");
+    card.append(reason);
+  }
+  return card;
+}
+
+async function exportChatHistory() {
+  const exportedAt = new Date();
+  const payload = {
+    format: "ombre-companion-chat-export",
+    version: 1,
+    exportedAt: exportedAt.toISOString(),
+    sessionId: state.sessionId,
+    participants: {
+      user: state.settings.userName,
+      assistant: state.settings.assistantName,
+      model: state.settings.model
+    },
+    messageCount: state.messages.length,
+    messages: state.messages
+  };
+  const filename = `ombre-chat-${dateKey(exportedAt)}-${pad2(exportedAt.getHours())}${pad2(exportedAt.getMinutes())}.json`;
+  const json = JSON.stringify(payload, null, 2);
+  const blob = new Blob([json], { type: "application/json;charset=utf-8" });
+  const file = typeof File === "function" ? new File([blob], filename, { type: blob.type }) : null;
+  els.exportChatStatus.textContent = "正在准备导出…";
+  try {
+    const canShareFile = file
+      && /Android|iPhone|iPad/i.test(navigator.userAgent)
+      && typeof navigator.share === "function"
+      && typeof navigator.canShare === "function"
+      && navigator.canShare({ files: [file] });
+    if (canShareFile) {
+      await navigator.share({ files: [file], title: "Ombre 聊天记录" });
+    } else {
+      downloadBlob(blob, filename);
+    }
+    els.exportChatStatus.textContent = `已导出 ${state.messages.length} 条记录`;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      els.exportChatStatus.textContent = "已取消导出";
+    } else {
+      els.exportChatStatus.textContent = error instanceof Error ? error.message : String(error);
+    }
+  }
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.rel = "noopener";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function buildGatewayHeaders() {
@@ -821,13 +1302,21 @@ function normalizeStoredMessages(value) {
       && !(message.role === "summary" && message.pending)
     ))
     .map((message) => {
-      const normalized = message.role === "assistant" && message.reasoningPresentationPending
+      const messageWithAttachments = message.role === "user"
         ? {
             ...message,
-            reasoning: message.reasoning || message.reasoningSource || "",
-            reasoningPresentationPending: false
+            content: typeof message.content === "string" ? message.content : "",
+            userThinking: String(message.userThinking || ""),
+            images: normalizeUserImages(message.images)
           }
         : message;
+      const normalized = messageWithAttachments.role === "assistant" && messageWithAttachments.reasoningPresentationPending
+        ? {
+            ...messageWithAttachments,
+            reasoning: messageWithAttachments.reasoning || messageWithAttachments.reasoningSource || "",
+            reasoningPresentationPending: false
+          }
+        : messageWithAttachments;
       if (
         (normalized.role === "user" || normalized.role === "assistant")
         && normalized.createdAt
@@ -837,6 +1326,24 @@ function normalizeStoredMessages(value) {
       }
       return normalized;
     });
+}
+
+function normalizeUserImages(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((image) => image && typeof image === "object")
+    .map((image) => ({
+      id: String(image.id || crypto.randomUUID()),
+      name: String(image.name || "照片"),
+      type: String(image.type || "image/webp"),
+      dataUrl: String(image.dataUrl || ""),
+      width: Number(image.width) || 0,
+      height: Number(image.height) || 0
+    }))
+    .filter((image) => /^data:image\/[a-z0-9.+-]+;base64,/i.test(image.dataUrl))
+    .slice(0, 4);
 }
 
 function messageForGateway(message) {
@@ -849,7 +1356,7 @@ function messageForGateway(message) {
     : null;
   return {
     role: message.role,
-    content: message.content,
+    content: message.role === "user" ? buildUserMessageContent(message) : message.content,
     ...(sentAt || health
       ? {
           context: {
@@ -861,6 +1368,42 @@ function messageForGateway(message) {
   };
 }
 
+function buildUserMessageContent(message) {
+  const body = String(message.content || "");
+  const thinking = String(message.userThinking || "").trim();
+  const images = normalizeUserImages(message.images);
+  if (!thinking && !images.length) {
+    return body;
+  }
+
+  const content = [];
+  if (thinking) {
+    content.push({
+      type: "text",
+      text: `<userthinking>\n${escapeXmlText(thinking)}\n</userthinking>`
+    });
+  }
+  if (body.trim()) {
+    content.push({ type: "text", text: body });
+  } else if (images.length) {
+    content.push({ type: "text", text: "请查看我发送的图片。" });
+  }
+  for (const image of images) {
+    content.push({
+      type: "image_url",
+      image_url: { url: image.dataUrl, detail: "auto" }
+    });
+  }
+  return content;
+}
+
+function escapeXmlText(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 function messagesSinceLatestSummary() {
   const latestSummaryIndex = findLatestCompletedSummaryIndex();
   return state.messages
@@ -868,9 +1411,16 @@ function messagesSinceLatestSummary() {
     .filter((message) => (
       (message.role === "user" || message.role === "assistant")
       && !message.pending
-      && typeof message.content === "string"
-      && message.content.trim()
+      && messageHasConversationContent(message)
     ));
+}
+
+function messageHasConversationContent(message) {
+  return Boolean(
+    (typeof message?.content === "string" && message.content.trim())
+    || (message?.role === "user" && String(message.userThinking || "").trim())
+    || (message?.role === "user" && normalizeUserImages(message.images).length)
+  );
 }
 
 async function maybePresentReasoning(message) {
@@ -981,8 +1531,7 @@ function conversationUserMessageCount() {
   return state.messages.filter((message) => (
     message.role === "user"
     && !message.pending
-    && typeof message.content === "string"
-    && message.content.trim()
+    && messageHasConversationContent(message)
   )).length;
 }
 
@@ -993,7 +1542,7 @@ function emotionAppraisalMessagesAfter(userCursor) {
     if (message.role !== "user" && message.role !== "assistant") {
       continue;
     }
-    if (message.pending || typeof message.content !== "string" || !message.content.trim()) {
+    if (message.pending || !messageHasConversationContent(message)) {
       continue;
     }
     if (message.role === "user") {
@@ -2826,6 +3375,11 @@ function createMessageActions(message) {
       () => regenerateAssistantMessage(message.id),
       state.busy
     ));
+    actions.append(createMessageActionButton(
+      "recall",
+      "查看本次召回记忆",
+      () => openRecallModal(message)
+    ));
   }
   return actions;
 }
@@ -2850,7 +3404,18 @@ function createMessageActionIcon(kind) {
     copy: ["M8 8h11v11H8z", "M5 16H4V5h11v1"],
     check: ["M5 12.5l4 4L19 7"],
     edit: ["M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z", "m13.5 6.5 4 4"],
-    regenerate: ["M20 11a8 8 0 1 0-2.3 5.7", "M20 4v7h-7"]
+    regenerate: ["M20 11a8 8 0 1 0-2.3 5.7", "M20 4v7h-7"],
+    recall: [
+      "M12 9.5c-2.3-1.8-2.2-4.6 0-6 2.2 1.4 2.3 4.2 0 6",
+      "M14.5 12c1.8-2.3 4.6-2.2 6 0-1.4 2.2-4.2 2.3-6 0",
+      "M12 14.5c2.3 1.8 2.2 4.6 0 6-2.2-1.4-2.3-4.2 0-6",
+      "M9.5 12c-1.8 2.3-4.6 2.2-6 0 1.4-2.2 4.2-2.3 6 0",
+      "M10.2 10.2c-2.8.2-4.8-1.8-4.2-4.2 2.4-.6 4.4 1.4 4.2 4.2",
+      "M13.8 10.2c-.2-2.8 1.8-4.8 4.2-4.2.6 2.4-1.4 4.4-4.2 4.2",
+      "M13.8 13.8c2.8-.2 4.8 1.8 4.2 4.2-2.4.6-4.4-1.4-4.2-4.2",
+      "M10.2 13.8c.2 2.8-1.8 4.8-4.2 4.2-.6-2.4 1.4-4.4 4.2-4.2",
+      "M12 9.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z"
+    ]
   };
   const paths = iconPaths[kind] || iconPaths.copy;
   for (const data of paths) {
@@ -3010,6 +3575,12 @@ function renderMessages(shouldScroll = true) {
     } else {
       content.textContent = message.content || " ";
     }
+    if (message.role === "user" && normalizeUserImages(message.images).length) {
+      body.append(createUserImageGallery(message.images));
+    }
+    if (message.role === "user" && String(message.userThinking || "").trim()) {
+      body.append(createUserThinkingBlock(message.userThinking));
+    }
     const hasReasoning = message.role === "assistant" && (
       message.reasoning
       || message.reasoningSource
@@ -3041,7 +3612,9 @@ function renderMessages(shouldScroll = true) {
       reasoning.append(summary, reasoningContent);
       body.append(reasoning);
     }
-    body.append(content);
+    if (message.role === "assistant" || String(message.content || "").trim()) {
+      body.append(content);
+    }
     if (!message.pending) {
       body.append(createMessageFooter(message));
     }
@@ -3057,6 +3630,30 @@ function renderMessages(shouldScroll = true) {
   if (shouldScroll) {
     els.messageList.scrollTop = els.messageList.scrollHeight;
   }
+}
+
+function createUserImageGallery(images) {
+  const gallery = document.createElement("div");
+  gallery.className = "message-user-images";
+  for (const image of normalizeUserImages(images)) {
+    const preview = document.createElement("img");
+    preview.src = image.dataUrl;
+    preview.alt = image.name || "用户发送的图片";
+    preview.loading = "lazy";
+    gallery.append(preview);
+  }
+  return gallery;
+}
+
+function createUserThinkingBlock(value) {
+  const details = document.createElement("details");
+  details.className = "message-user-thinking";
+  const summary = document.createElement("summary");
+  summary.textContent = "人类思考链";
+  const content = document.createElement("div");
+  content.textContent = String(value || "");
+  details.append(summary, content);
+  return details;
 }
 
 function reasoningDurationLabel(durationMs) {
@@ -4158,8 +4755,10 @@ function formatMessageTimestamp(value, timezone) {
 
 function setBusy(value) {
   state.busy = value;
-  els.sendButton.disabled = value;
-  els.messageInput.disabled = value;
+  if (value) {
+    setComposerMenuOpen(false);
+  }
+  renderComposerState();
 }
 
 function autosizeTextarea(textarea) {
@@ -4168,7 +4767,7 @@ function autosizeTextarea(textarea) {
 }
 
 function saveMessages() {
-  platform.storage.setJson(storageKeys.messages, state.messages.slice(-80));
+  platform.storage.setJson(storageKeys.messages, state.messages);
 }
 
 function saveSettings() {
