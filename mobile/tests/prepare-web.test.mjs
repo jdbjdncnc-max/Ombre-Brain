@@ -17,6 +17,9 @@ test("prepared frontend contains the web app and platform adapters", async () =>
   assert.match(index, /id="soloEmotionChart"/);
   assert.match(index, /id="soloActivityTrack"/);
   assert.match(index, /id="mcpManager"/);
+  assert.match(index, /href="styles\.css\?v=/);
+  assert.match(index, /src="app\.js\?v=/);
+  assert.doesNotMatch(index, /(?:href|src)="\/frontend\//);
   assert.match(solo, /requestTimeline/);
   assert.match(app, /ombre_context_kind: "conversation_summary"/);
   assert.match(app, /网关已保存 · 本轮已注入/);
@@ -24,6 +27,8 @@ test("prepared frontend contains the web app and platform adapters", async () =>
   assert.match(app, /\/api\/emotion-appraisal/);
   assert.match(app, /skip_emotion_appraisal: true/);
   assert.match(app, /syncNativeProactiveNotifications/);
+  assert.match(app, /url\("background\.svg"\)/);
+  assert.doesNotMatch(app, /url\("\/frontend\//);
   assert.match(platform, /Capacitor\?\.Plugins\?\.CompanionNative/);
   assert.match(androidPlatform, /configureProactiveNotifications/);
   assert.doesNotMatch(app, /\/api\/solo\/outbox/);

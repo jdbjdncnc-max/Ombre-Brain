@@ -3917,7 +3917,7 @@ function applySettings() {
   if (state.settings.backgroundUrl) {
     root.style.setProperty("--bg-image", `url("${cssUrlEscape(state.settings.backgroundUrl)}")`);
   } else {
-    root.style.setProperty("--bg-image", 'url("/frontend/background.svg")');
+    root.style.setProperty("--bg-image", 'url("background.svg")');
   }
   renderIdentitySettings();
   renderMessages(false);
