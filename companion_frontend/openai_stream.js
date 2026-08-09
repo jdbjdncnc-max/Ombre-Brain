@@ -76,6 +76,43 @@ export function dispatchOpenAiBlock(block, onDelta) {
       continue;
     }
 
+    const streamControl = parsed.ombre_stream_control;
+    if (streamControl && typeof streamControl === "object") {
+      onDelta({
+        content: "",
+        reasoning: "",
+        model: typeof parsed.model === "string" ? parsed.model.trim() : "",
+        usage: null,
+        streamControl: {
+          resetContent: Boolean(streamControl.reset_content),
+          resetReasoning: Boolean(streamControl.reset_reasoning)
+        }
+      });
+      continue;
+    }
+
+    const toolStatus = parsed.ombre_tool_status;
+    if (toolStatus && Array.isArray(toolStatus.calls)) {
+      onDelta({
+        content: "",
+        reasoning: "",
+        model: typeof parsed.model === "string" ? parsed.model.trim() : "",
+        usage: null,
+        toolStatus: {
+          calls: toolStatus.calls
+            .filter((call) => call && typeof call === "object")
+            .map((call) => ({
+              id: String(call.id || ""),
+              server: String(call.server || ""),
+              tool: String(call.tool || ""),
+              phase: call.phase === "completed" ? "completed" : "running",
+              ...(call.phase === "completed" ? { ok: Boolean(call.ok) } : {})
+            }))
+        }
+      });
+      continue;
+    }
+
     const choice = parsed.choices?.[0] || {};
     const delta = choice.delta || choice.message || {};
     const content = typeof delta.content === "string" ? delta.content : "";

@@ -1,6 +1,6 @@
 import { platform } from "./platform.js";
 import { createSoloPanel } from "./solo.js?v=20260807.2";
-import { normalizeTokenUsage, readOpenAiStream } from "./openai_stream.js?v=20260809.1";
+import { normalizeTokenUsage, readOpenAiStream } from "./openai_stream.js?v=20260809.2";
 import {
   buildHealthMessageContext,
   buildHealthSparklinePath,
@@ -701,8 +701,23 @@ async function generateAssistantReply() {
     }
 
     streamStarted = true;
-    await readOpenAiStream(response.body, ({ content, reasoning, model, usage, streamWarning }) => {
+    await readOpenAiStream(response.body, ({
+      content,
+      reasoning,
+      model,
+      usage,
+      streamWarning,
+      streamControl,
+      toolStatus
+    }) => {
       const deltaAt = Date.now();
+      if (streamControl?.resetContent) {
+        assistantMessage.content = "";
+      }
+      if (streamControl?.resetReasoning) {
+        assistantMessage.reasoning = "";
+        assistantMessage.reasoningSource = "";
+      }
       if (reasoning) {
         lastReasoningAt = deltaAt;
       }
@@ -713,6 +728,9 @@ async function generateAssistantReply() {
       assistantMessage.reasoningSource += reasoning;
       assistantMessage.model = model || assistantMessage.model;
       assistantMessage.usage = usage || assistantMessage.usage;
+      if (toolStatus) {
+        applyAssistantToolStatus(assistantMessage, toolStatus);
+      }
       if (streamWarning) {
         assistantMessage.streamInterrupted = true;
         assistantMessage.streamError = streamWarning.message;
@@ -3204,6 +3222,17 @@ function pad2(value) {
   return String(value).padStart(2, "0");
 }
 
+function applyAssistantToolStatus(message, status) {
+  const current = Array.isArray(message.toolActivity) ? message.toolActivity : [];
+  const byId = new Map(current.map((call) => [String(call.id || ""), call]));
+  for (const incoming of status.calls || []) {
+    const id = String(incoming.id || `${incoming.server}:${incoming.tool}`);
+    const previous = byId.get(id) || {};
+    byId.set(id, { ...previous, ...incoming, id });
+  }
+  message.toolActivity = [...byId.values()];
+}
+
 function renderMarkdown(element, source) {
   const markdown = String(source || "");
   if (!markdown) {
@@ -3411,6 +3440,41 @@ function createMessageFooter(message) {
   return footer;
 }
 
+function createMessageToolActivity(calls) {
+  const items = Array.isArray(calls) ? calls : [];
+  const running = items.some((call) => call.phase !== "completed");
+  const failed = items.some((call) => call.phase === "completed" && !call.ok);
+  const details = document.createElement("details");
+  details.className = `message-tools${running ? " running" : ""}${failed ? " failed" : ""}`;
+  details.open = running;
+
+  const summary = document.createElement("summary");
+  summary.textContent = running
+    ? "正在使用工具…"
+    : (failed ? `工具调用完成，部分失败 · ${items.length}` : `已使用工具 · ${items.length}`);
+  details.append(summary);
+
+  const list = document.createElement("div");
+  list.className = "message-tools-list";
+  for (const call of items) {
+    const row = document.createElement("div");
+    row.className = "message-tool-row";
+
+    const name = document.createElement("span");
+    name.className = "message-tool-name";
+    name.textContent = [call.server, call.tool].filter(Boolean).join(" · ") || "外部工具";
+
+    const state = document.createElement("span");
+    const completed = call.phase === "completed";
+    state.className = `message-tool-state ${completed ? (call.ok ? "success" : "error") : "running"}`;
+    state.textContent = completed ? (call.ok ? "完成" : "失败") : "调用中";
+    row.append(name, state);
+    list.append(row);
+  }
+  details.append(list);
+  return details;
+}
+
 function formatMessageUsage(usage) {
   const normalized = normalizeTokenUsage(usage);
   if (!normalized) {
@@ -3463,6 +3527,9 @@ function renderMessages(shouldScroll = true) {
     }
     if (message.role === "user" && String(message.userThinking || "").trim()) {
       body.append(createUserThinkingBlock(message.userThinking));
+    }
+    if (message.role === "assistant" && Array.isArray(message.toolActivity) && message.toolActivity.length) {
+      body.append(createMessageToolActivity(message.toolActivity));
     }
     const hasReasoning = message.role === "assistant" && (
       message.reasoning

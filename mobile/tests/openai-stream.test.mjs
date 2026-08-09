@@ -60,3 +60,41 @@ test("a gateway interruption warning is delivered separately from assistant text
   });
   assert.equal(deltas[0].content, "");
 });
+
+test("protocol reset and tool status arrive as private UI events", () => {
+  const deltas = [];
+  const reset = {
+    id: "ombre-test123",
+    model: "test-model",
+    ombre_stream_control: { reset_content: false, reset_reasoning: true }
+  };
+  const status = {
+    id: "ombre-test123",
+    model: "test-model",
+    ombre_tool_status: {
+      calls: [{
+        id: "0:0:galatea-garden:get_self",
+        server: "galatea-garden",
+        tool: "get_self",
+        phase: "completed",
+        ok: true
+      }]
+    }
+  };
+
+  dispatchOpenAiBlock(`data: ${JSON.stringify(reset)}`, (delta) => deltas.push(delta));
+  dispatchOpenAiBlock(`data: ${JSON.stringify(status)}`, (delta) => deltas.push(delta));
+
+  assert.deepEqual(deltas[0].streamControl, {
+    resetContent: false,
+    resetReasoning: true
+  });
+  assert.deepEqual(deltas[1].toolStatus.calls[0], {
+    id: "0:0:galatea-garden:get_self",
+    server: "galatea-garden",
+    tool: "get_self",
+    phase: "completed",
+    ok: true
+  });
+  assert.equal("arguments" in deltas[1].toolStatus.calls[0], false);
+});

@@ -2127,6 +2127,62 @@ svg {
   animation: blink 0.9s infinite;
 }
 
+.message-tools {
+  overflow: hidden;
+  color: rgba(17, 28, 27, 0.72);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.38);
+}
+
+.message-tools summary {
+  padding: 7px 10px;
+  cursor: pointer;
+  color: color-mix(in srgb, var(--accent) 72%, #24312f);
+  font-size: 12px;
+  font-weight: 650;
+  list-style-position: inside;
+  user-select: none;
+}
+
+.message-tools-list {
+  display: grid;
+  gap: 5px;
+  padding: 0 10px 9px;
+}
+
+.message-tool-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.message-tool-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.message-tool-state {
+  flex: 0 0 auto;
+  font-weight: 650;
+}
+
+.message-tool-state.running {
+  color: color-mix(in srgb, var(--accent) 78%, #6c594f);
+}
+
+.message-tool-state.success {
+  color: #3f7662;
+}
+
+.message-tool-state.error,
+.message-tools.failed summary {
+  color: #a44343;
+}
+
 .message-stream-warning {
   margin: 8px 0 0;
   padding: 7px 9px;
