@@ -213,6 +213,27 @@ class SoloMcpCapabilityTests(unittest.IsolatedAsyncioTestCase):
         await self.bridge.update_policy("peer-place", {"autonomy": "chat_only"})
         self.assertEqual(self.bridge.autonomous_catalog(), [])
 
+    async def test_chat_catalog_supports_chat_only_without_exposing_secrets_or_blocked_tools(self):
+        await self._discover_sample_tools()
+        await self.bridge.update_policy("peer-place", {
+            "autonomy": "chat_only",
+            "categories": ["forum", "peer"],
+            "allowedTools": ["list_threads", "post_reply"],
+        })
+
+        catalog = self.bridge.chat_catalog()
+
+        self.assertEqual(catalog[0]["name"], "peer-place")
+        self.assertEqual(
+            [tool["name"] for tool in catalog[0]["tools"]],
+            ["list_threads", "post_reply"],
+        )
+        serialized = json.dumps(catalog, ensure_ascii=False)
+        self.assertNotIn("delete_thread", serialized)
+        self.assertNotIn("endpoint", serialized)
+        self.assertNotIn("Authorization", serialized)
+        self.assertEqual(self.bridge.autonomous_catalog(), [])
+
     async def test_hard_blocked_tool_requires_explicit_user_confirmation(self):
         await self._discover_sample_tools()
         self.bridge._request.reset_mock()

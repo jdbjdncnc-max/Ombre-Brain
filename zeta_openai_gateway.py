@@ -1540,10 +1540,27 @@ class ZetaOpenAIGateway:
             finally:
                 await stream_context.__aexit__(None, None, None)
 
+        replaced_stream_headers = {
+            "content-length",
+            "transfer-encoding",
+            "connection",
+            "keep-alive",
+            "proxy-authenticate",
+            "proxy-authorization",
+            "te",
+            "trailer",
+            "upgrade",
+            "content-type",
+            "content-encoding",
+            "content-md5",
+            "accept-ranges",
+            "content-range",
+            "etag",
+        }
         headers = {
             key: value
             for key, value in upstream_response.headers.items()
-            if key.lower() not in {"content-length", "transfer-encoding", "connection"}
+            if key.lower() not in replaced_stream_headers
         }
         headers.update({"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
         headers.update(memory_headers)

@@ -462,9 +462,17 @@ class SoloMcpBridge:
             "servers": servers,
         }
 
+    def chat_catalog(self) -> list[dict[str, Any]]:
+        """Return tools explicitly authorized for use while the user is present."""
+
+        return self._authorized_catalog(autonomous=False)
+
     def autonomous_catalog(self) -> list[dict[str, Any]]:
         """Return only tools that are currently authorized for solitude use."""
 
+        return self._authorized_catalog(autonomous=True)
+
+    def _authorized_catalog(self, *, autonomous: bool) -> list[dict[str, Any]]:
         if not self.enabled:
             return []
         document = self._servers_document()
@@ -473,7 +481,10 @@ class SoloMcpBridge:
         for name, config in sorted(document["mcpServers"].items()):
             if not isinstance(config, dict) or not bool(config.get("enabled", True)):
                 continue
-            if str(config.get("autonomy") or "chat_only") not in {"full", "allowlist"}:
+            autonomy = str(config.get("autonomy") or "chat_only")
+            if autonomy == "off":
+                continue
+            if autonomous and autonomy not in {"full", "allowlist"}:
                 continue
             capability = capabilities.get(name) if isinstance(capabilities.get(name), dict) else {}
             raw_tools = capability.get("tools") if isinstance(capability.get("tools"), list) else []

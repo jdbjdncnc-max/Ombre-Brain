@@ -4057,8 +4057,8 @@ const MCP_CATEGORY_LABELS = {
 };
 
 const MCP_AUTONOMY_LABELS = {
-  full: "完全自主",
-  allowlist: "仅白名单",
+  full: "对话 + 完全自主",
+  allowlist: "对话 + 白名单自主",
   chat_only: "仅对话可用",
   off: "停用"
 };
@@ -4256,7 +4256,7 @@ function renderMcpServerCard(server) {
   card.append(credentials);
 
   const actions = createMcpElement("div", "mcp-card-actions");
-  const saveButton = createMcpElement("button", "small-button", "保存权限");
+  const saveButton = createMcpElement("button", "small-button", "保存可用范围");
   saveButton.type = "button";
   saveButton.addEventListener("click", () => saveMcpPolicy(server.name, card, saveButton));
   const testButton = createMcpElement("button", "small-button", "测试连接");
@@ -4283,7 +4283,7 @@ async function saveMcpPolicy(name, card, button) {
       body: JSON.stringify(body)
     });
     state.mcpServers = Array.isArray(data.servers) ? data.servers : state.mcpServers;
-    setMcpManagerMessage(`${name} 的权限已保存。`);
+    setMcpManagerMessage(`${name} 的对话与独处可用范围已保存。`);
     renderMcpServers();
   } catch (error) {
     setMcpManagerMessage(error instanceof Error ? error.message : String(error), true);

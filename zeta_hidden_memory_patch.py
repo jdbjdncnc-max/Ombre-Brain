@@ -12,6 +12,26 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 
 logger = logging.getLogger("ombre_brain.zeta_hidden_memory_patch")
 
+_HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+_REBUILT_BODY_HEADERS = _HOP_BY_HOP_HEADERS | {
+    "content-length",
+    "content-encoding",
+    "content-md5",
+    "accept-ranges",
+    "content-range",
+    "etag",
+}
+_REBUILT_STREAM_HEADERS = _REBUILT_BODY_HEADERS | {"content-type"}
+
 MEMORY_REQUEST_OPEN = "<zeta_memory_request>"
 MEMORY_REQUEST_CLOSE = "</zeta_memory_request>"
 DIARY_OPEN = "<zeta_diary>"
@@ -762,7 +782,7 @@ async def _hidden_stream_upstream(
     headers = {
         key: value
         for key, value in upstream_response.headers.items()
-        if key.lower() not in {"content-length", "transfer-encoding", "connection"}
+        if key.lower() not in _REBUILT_STREAM_HEADERS
     }
     headers.update({"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
     headers.update(memory_headers)
@@ -792,7 +812,7 @@ def _proxy_chat_response_with_text(
     headers = {
         key: value
         for key, value in response.headers.items()
-        if key.lower() not in {"content-length", "transfer-encoding", "connection"}
+        if key.lower() not in _REBUILT_BODY_HEADERS
     }
     if extra_headers:
         headers.update(extra_headers)

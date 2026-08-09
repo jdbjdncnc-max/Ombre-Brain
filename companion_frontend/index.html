@@ -276,7 +276,7 @@
             </button>
             <button id="mcpManagerButton" type="button">
               <span class="tool-management-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h16v11H4zM8 8V5h8v3M4 12h16M10 12v2h4v-2"/></svg></span>
-              <strong>MCP 工具</strong><small>配置服务、能力和自主权限</small><em>可配置</em>
+              <strong>MCP 工具</strong><small>配置对话调用和独处自主权限</small><em>可配置</em>
             </button>
           </div>
 
@@ -296,7 +296,7 @@
               <label for="mcpImportText">粘贴 MCP 配置</label>
               <textarea id="mcpImportText" rows="7" spellcheck="false" placeholder='{"mcpServers":{"my-server":{"transport":"streamable-http","url":"https://example.com/mcp"}}}'></textarea>
               <div class="mcp-import-footer">
-                <small>新服务默认只能在对话中使用；凭据请使用 ${ENV_VAR} 或 ${secret:server.key}。</small>
+                <small>新服务默认仅对话可用；测试连接并勾选工具后，对话模型即可按需调用。凭据请使用 ${ENV_VAR} 或 ${secret:server.key}。</small>
                 <button id="importMcpButton" class="primary-button" type="submit">导入配置</button>
               </div>
             </form>
@@ -777,6 +777,6 @@
   <script src="vendor/dompurify/purify.min.js"></script>
   <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/katex/auto-render.min.js"></script>
-  <script src="app.js?v=20260809.2" type="module"></script>
+  <script src="app.js?v=20260809.3" type="module"></script>
 </body>
 </html>
