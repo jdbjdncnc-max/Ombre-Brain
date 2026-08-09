@@ -1,5 +1,11 @@
 import { platform } from "./platform.js";
 import { createSoloPanel } from "./solo.js?v=20260807.2";
+import {
+  buildHealthMessageContext,
+  buildHealthSparklinePath,
+  formatHealthDurationHours,
+  normalizeHealthSnapshot
+} from "./health.js?v=20260808.1";
 
 const LEGACY_SUMMARY_PROMPT_V1 = `你负责为一段持续对话生成“累计上下文摘要”，供同一个对话模型在后续轮次继续使用。
 
@@ -72,7 +78,8 @@ const storageKeys = {
   emotionAppraisalCursor: "companion.emotionAppraisalCursor.v1",
   schedule: "companion.schedule.v1",
   scheduleSettings: "companion.scheduleSettings.v1",
-  scheduleNudges: "companion.scheduleNudges.v1"
+  scheduleNudges: "companion.scheduleNudges.v1",
+  healthSnapshot: "companion.healthSnapshot.v1"
 };
 
 const defaultBackend = platform.getDefaultApiBaseUrl();
@@ -143,6 +150,9 @@ const state = {
   visibleWeekStart: dateKey(startOfWeek(new Date())),
   scheduleNudges: loadJson(storageKeys.scheduleNudges, {}),
   scheduleSyncStatus: "本地日程",
+  healthSnapshot: normalizeHealthSnapshot(loadJson(storageKeys.healthSnapshot, null)),
+  healthLoading: false,
+  healthPermission: "unknown",
   busy: false,
   editingMessageId: "",
   emotionAppraisalUserCount: 0,
@@ -216,6 +226,12 @@ const els = {
   upcomingSummary: document.querySelector("#upcomingSummary"),
   upcomingScheduleList: document.querySelector("#upcomingScheduleList"),
   homeFeatureCards: [...document.querySelectorAll("[data-home-feature]")],
+  healthCard: document.querySelector("#healthCard"),
+  healthStatus: document.querySelector("#healthStatus"),
+  healthHeartRate: document.querySelector("#healthHeartRate"),
+  healthHeartRatePath: document.querySelector("#healthHeartRatePath"),
+  healthSteps: document.querySelector("#healthSteps"),
+  healthSleep: document.querySelector("#healthSleep"),
   duettoCard: document.querySelector("#duettoCard"),
   duettoCardSubtitle: document.querySelector("#duettoCardSubtitle"),
   duettoFrame: document.querySelector("#duettoFrame"),
@@ -305,12 +321,19 @@ initSchedule();
 renderSchedule();
 updateClock();
 refreshHealth();
+renderHealthSnapshot();
+refreshHealthSnapshot({ silent: true });
 soloPanel.start();
 loadSchedule().catch(() => {
   setScheduleSyncStatus("本地日程", "offline");
 });
 setInterval(checkScheduleNudges, 30000);
 setInterval(updateClock, 30000);
+setInterval(() => refreshHealthSnapshot({ silent: true }), 60000);
+platform.lifecycle.onResume(() => {
+  refreshHealth();
+  refreshHealthSnapshot({ silent: true });
+});
 
 function bindEvents() {
   els.composer.addEventListener("submit", (event) => {
@@ -533,12 +556,15 @@ async function sendMessage() {
     }
     cancelMessageEdit({ clearInput: false });
   } else {
+    await refreshHealthSnapshot({ silent: true });
+    const healthContext = buildHealthMessageContext(state.healthSnapshot);
     state.messages.push({
       id: crypto.randomUUID(),
       role: "user",
       content: text,
       createdAt: new Date().toISOString(),
-      timezone: currentTimeZone()
+      timezone: currentTimeZone(),
+      ...(healthContext ? { healthContext } : {})
     });
   }
 
@@ -816,14 +842,19 @@ function normalizeStoredMessages(value) {
 function messageForGateway(message) {
   const sentAt = normalizeMessageTimestamp(message.createdAt);
   const timezone = normalizeTimeZone(message.timezone);
+  const health = message.role === "user"
+    && message.healthContext
+    && typeof message.healthContext === "object"
+    ? message.healthContext
+    : null;
   return {
     role: message.role,
     content: message.content,
-    ...(sentAt
+    ...(sentAt || health
       ? {
           context: {
-            sentAt,
-            timezone
+            ...(sentAt ? { sentAt, timezone } : {}),
+            ...(health ? { health } : {})
           }
         }
       : {})
@@ -3093,11 +3124,159 @@ function handleHomeFeature(feature) {
     return;
   }
 
+  if (feature === "health") {
+    handleHealthFeature();
+    return;
+  }
+
   const messages = {
-    reading: "共读会在后续对话中接入。",
-    health: "身体数据会在后续对话中接入。"
+    reading: "共读会在后续对话中接入。"
   };
   showHomeNotice(messages[feature] || "这项功能会在后续对话中接入。");
+}
+
+async function handleHealthFeature() {
+  if (!platform.health?.isSupported()) {
+    showHomeNotice("健康数据需要在 Android 版里读取 Health Connect。");
+    return;
+  }
+
+  try {
+    let status = await platform.health.status();
+    state.healthPermission = String(status?.permission || "unknown");
+    if (status?.supported === false) {
+      renderHealthSnapshot();
+      showHomeNotice("这台设备暂不支持 Health Connect。");
+      return;
+    }
+    if (state.healthPermission !== "granted") {
+      status = await platform.health.requestPermissions();
+      state.healthPermission = String(status?.permission || "unknown");
+      if (state.healthPermission !== "granted") {
+        renderHealthSnapshot();
+        showHomeNotice("需要允许步数、心率和睡眠权限，才能显示身体数据。");
+        return;
+      }
+    }
+    await refreshHealthSnapshot({ silent: false });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error || "");
+    showHomeNotice(message || "暂时没能读取身体数据。");
+  }
+}
+
+async function refreshHealthSnapshot({ silent = true } = {}) {
+  if (!platform.health?.isSupported() || state.healthLoading) {
+    renderHealthSnapshot();
+    return state.healthSnapshot;
+  }
+
+  state.healthLoading = true;
+  if (!silent && els.healthStatus) {
+    els.healthStatus.textContent = "正在同步…";
+  }
+
+  try {
+    const result = await platform.health.readSnapshot();
+    state.healthPermission = String(result?.permission || state.healthPermission || "unknown");
+    if (result?.status === "permission_required") {
+      renderHealthSnapshot();
+      return state.healthSnapshot;
+    }
+    if (result?.status === "unsupported") {
+      state.healthPermission = "unsupported";
+      renderHealthSnapshot();
+      return state.healthSnapshot;
+    }
+
+    const snapshot = normalizeHealthSnapshot(result);
+    if (snapshot) {
+      state.healthSnapshot = snapshot;
+      platform.storage.setJson(storageKeys.healthSnapshot, snapshot);
+      if (!silent) {
+        showHomeNotice("身体数据已经同步，之后发消息时会自动附上简短摘要。");
+      }
+    }
+    renderHealthSnapshot();
+    return state.healthSnapshot;
+  } catch (error) {
+    renderHealthSnapshot();
+    if (!silent) {
+      const message = error instanceof Error ? error.message : String(error || "");
+      showHomeNotice(message || "暂时没能读取身体数据。");
+    }
+    return state.healthSnapshot;
+  } finally {
+    state.healthLoading = false;
+    renderHealthSnapshot();
+  }
+}
+
+function renderHealthSnapshot() {
+  const snapshot = state.healthSnapshot;
+  const heartRate = snapshot?.continuous?.heartRate;
+  const steps = snapshot?.discrete?.steps;
+  const sleep = snapshot?.discrete?.sleep;
+  const series = Array.isArray(heartRate?.series) ? heartRate.series : [];
+  const latestHeartRate = finiteHealthNumber(heartRate?.latestValue);
+  const stepCount = finiteHealthNumber(steps?.value);
+  const sleepMinutes = finiteHealthNumber(sleep?.value);
+
+  if (els.healthHeartRate) {
+    els.healthHeartRate.textContent = latestHeartRate === null ? "—" : String(Math.round(latestHeartRate));
+  }
+  if (els.healthSteps) {
+    els.healthSteps.textContent = stepCount === null ? "—" : Math.max(0, Math.round(stepCount)).toLocaleString("zh-CN");
+  }
+  if (els.healthSleep) {
+    els.healthSleep.textContent = sleepMinutes === null ? "—" : formatHealthDurationHours(sleepMinutes);
+  }
+  if (els.healthHeartRatePath) {
+    els.healthHeartRatePath.setAttribute("d", buildHealthSparklinePath(series, 180, 46));
+    els.healthHeartRatePath.classList.toggle("is-empty", series.length < 2);
+  }
+
+  const hasData = latestHeartRate !== null || stepCount !== null || sleepMinutes !== null;
+  els.healthCard?.classList.toggle("feature-ready", hasData);
+  els.healthCard?.classList.toggle("health-permission-needed", state.healthPermission !== "granted" && !hasData);
+
+  if (!els.healthStatus) {
+    return;
+  }
+  if (state.healthLoading) {
+    els.healthStatus.textContent = "正在同步…";
+  } else if (hasData) {
+    els.healthStatus.textContent = healthUpdatedLabel(snapshot?.capturedAt);
+  } else if (!platform.health?.isSupported() || state.healthPermission === "unsupported") {
+    els.healthStatus.textContent = "仅 Android 可读取";
+  } else if (state.healthPermission !== "granted") {
+    els.healthStatus.textContent = "点此授权";
+  } else {
+    els.healthStatus.textContent = "暂无同步数据";
+  }
+}
+
+function finiteHealthNumber(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function healthUpdatedLabel(value) {
+  const capturedAt = new Date(value || "");
+  if (Number.isNaN(capturedAt.getTime())) {
+    return "已同步";
+  }
+  const minutes = Math.max(0, Math.floor((Date.now() - capturedAt.getTime()) / 60000));
+  if (minutes < 1) {
+    return "刚刚更新";
+  }
+  if (minutes < 60) {
+    return `${minutes} 分钟前更新`;
+  }
+  return `${Math.floor(minutes / 60)} 小时前更新`;
 }
 
 function openSoloView() {

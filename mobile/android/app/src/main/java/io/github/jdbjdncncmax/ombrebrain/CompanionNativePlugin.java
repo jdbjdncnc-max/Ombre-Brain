@@ -21,10 +21,28 @@ import java.net.URI;
         @Permission(
             alias = "notifications",
             strings = { Manifest.permission.POST_NOTIFICATIONS }
+        ),
+        @Permission(
+            alias = "healthSteps",
+            strings = { "android.permission.health.READ_STEPS" }
+        ),
+        @Permission(
+            alias = "healthHeartRate",
+            strings = { "android.permission.health.READ_HEART_RATE" }
+        ),
+        @Permission(
+            alias = "healthSleep",
+            strings = { "android.permission.health.READ_SLEEP" }
         )
     }
 )
 public class CompanionNativePlugin extends Plugin {
+    private static final String[] HEALTH_PERMISSION_ALIASES = {
+        "healthSteps",
+        "healthHeartRate",
+        "healthSleep"
+    };
+
     @PluginMethod
     public void notificationPermission(PluginCall call) {
         JSObject result = new JSObject();
@@ -82,6 +100,58 @@ public class CompanionNativePlugin extends Plugin {
     }
 
     @PluginMethod
+    public void healthStatus(PluginCall call) {
+        call.resolve(healthStatusResult());
+    }
+
+    @PluginMethod
+    public void requestHealthPermissions(PluginCall call) {
+        if (!HealthSnapshotReader.isSupported(getContext())) {
+            call.resolve(healthStatusResult());
+            return;
+        }
+        if (healthGranted()) {
+            call.resolve(healthStatusResult());
+            return;
+        }
+        requestPermissionForAliases(
+            HEALTH_PERMISSION_ALIASES,
+            call,
+            "healthPermissionCallback"
+        );
+    }
+
+    @PermissionCallback
+    private void healthPermissionCallback(PluginCall call) {
+        call.resolve(healthStatusResult());
+    }
+
+    @PluginMethod
+    public void readHealthSnapshot(PluginCall call) {
+        if (!HealthSnapshotReader.isSupported(getContext())) {
+            call.resolve(healthStatusResult());
+            return;
+        }
+        if (!healthGranted()) {
+            call.resolve(healthStatusResult());
+            return;
+        }
+        HealthSnapshotReader.read(getContext(), new HealthSnapshotReader.Callback() {
+            @Override
+            public void onSuccess(JSObject snapshot) {
+                snapshot.put("permission", "granted");
+                call.resolve(snapshot);
+            }
+
+            @Override
+            public void onError(Throwable error) {
+                String message = error == null ? "暂时无法读取 Health Connect。" : clean(error.getMessage());
+                call.reject(message.isEmpty() ? "暂时无法读取 Health Connect。" : message);
+            }
+        });
+    }
+
+    @PluginMethod
     public void showNotification(PluginCall call) {
         if (!notificationGranted()) {
             call.reject("通知权限尚未开启。");
@@ -114,6 +184,45 @@ public class CompanionNativePlugin extends Plugin {
     private boolean notificationGranted() {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
             || getPermissionState("notifications") == PermissionState.GRANTED;
+    }
+
+    private boolean healthGranted() {
+        if (!HealthSnapshotReader.isSupported(getContext())) {
+            return false;
+        }
+        for (String alias : HEALTH_PERMISSION_ALIASES) {
+            if (getPermissionState(alias) != PermissionState.GRANTED) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private String currentHealthPermission() {
+        if (!HealthSnapshotReader.isSupported(getContext())) {
+            return "unsupported";
+        }
+        if (healthGranted()) {
+            return "granted";
+        }
+        for (String alias : HEALTH_PERMISSION_ALIASES) {
+            if (getPermissionState(alias) == PermissionState.DENIED) {
+                return "denied";
+            }
+        }
+        return "prompt";
+    }
+
+    private JSObject healthStatusResult() {
+        boolean supported = HealthSnapshotReader.isSupported(getContext());
+        String permission = currentHealthPermission();
+        JSObject result = new JSObject();
+        result.put("supported", supported);
+        result.put("permission", permission);
+        result.put("status", !supported
+            ? "unsupported"
+            : "granted".equals(permission) ? "ready" : "permission_required");
+        return result;
     }
 
     private String currentPermission() {

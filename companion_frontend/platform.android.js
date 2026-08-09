@@ -7,6 +7,7 @@ export function createAndroidPlatform(bridge, { capacitorPlugin = false } = {}) 
     kind: "android",
     storage: createBridgeStorageAdapter(bridge, fallback.storage),
     notifications: createBridgeNotificationAdapter(bridge, fallback.notifications, capacitorPlugin),
+    health: createBridgeHealthAdapter(bridge, fallback.health, capacitorPlugin),
     getDefaultApiBaseUrl() {
       const bridgeUrl = callBridgeString(bridge, "getApiBaseUrl");
       return bridgeUrl || fallback.getDefaultApiBaseUrl();
@@ -34,6 +35,41 @@ export function createAndroidPlatform(bridge, { capacitorPlugin = false } = {}) 
       onPause(handler) {
         window.CompanionOnPause = handler;
       }
+    }
+  };
+}
+
+function createBridgeHealthAdapter(bridge, fallback, capacitorPlugin) {
+  const invoke = async (method) => {
+    if (!hasBridgeMethod(bridge, method)) {
+      return fallback[method === "healthStatus" ? "status" : method === "requestHealthPermissions" ? "requestPermissions" : "readSnapshot"]();
+    }
+    if (capacitorPlugin) {
+      return await bridge[method]({});
+    }
+    const value = callBridgeString(bridge, method);
+    if (!value) {
+      return {};
+    }
+    try {
+      return JSON.parse(value);
+    } catch {
+      return {};
+    }
+  };
+
+  return {
+    isSupported() {
+      return hasBridgeMethod(bridge, "readHealthSnapshot");
+    },
+    status() {
+      return invoke("healthStatus");
+    },
+    requestPermissions() {
+      return invoke("requestHealthPermissions");
+    },
+    readSnapshot() {
+      return invoke("readHealthSnapshot");
     }
   };
 }

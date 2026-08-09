@@ -3,6 +3,7 @@ export function createBrowserPlatform() {
     kind: "browser",
     storage: createLocalStorageAdapter(),
     notifications: createBrowserNotificationAdapter(),
+    health: createBrowserHealthAdapter(),
     getDefaultApiBaseUrl,
     request,
     readFileAsDataUrl,
@@ -10,6 +11,23 @@ export function createBrowserPlatform() {
     lifecycle: {
       onResume() {},
       onPause() {}
+    }
+  };
+}
+
+function createBrowserHealthAdapter() {
+  return {
+    isSupported() {
+      return false;
+    },
+    async status() {
+      return { status: "unsupported", supported: false, permission: "unsupported" };
+    },
+    async requestPermissions() {
+      return { status: "unsupported", supported: false, permission: "unsupported" };
+    },
+    async readSnapshot() {
+      return { status: "unsupported", supported: false, permission: "unsupported" };
     }
   };
 }
