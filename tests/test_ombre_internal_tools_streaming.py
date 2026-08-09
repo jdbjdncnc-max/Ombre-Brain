@@ -66,7 +66,16 @@ class FakeResponse:
         self.lines = list(lines or [])
         self.body = body
         self.status_code = status_code
-        self.headers = headers or {"content-type": "text/event-stream", "content-encoding": "gzip"}
+        self.headers = headers or {
+            "content-type": "text/event-stream",
+            "content-encoding": "gzip",
+            "content-length": "999",
+            "content-md5": "stale-digest",
+            "accept-ranges": "bytes",
+            "content-range": "bytes 0-998/999",
+            "etag": '"stale-etag"',
+            "keep-alive": "timeout=5",
+        }
 
     async def aiter_lines(self):
         for line in self.lines:
@@ -210,7 +219,17 @@ class StreamingRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delta_values(output, "reasoning"), ["先想"])
         self.assertEqual(delta_values(output, "content"), ["你", "好"])
         self.assertEqual(output.count("data: [DONE]"), 1)
-        self.assertNotIn("content-encoding", proxied.headers)
+        for header in (
+            "content-encoding",
+            "content-length",
+            "content-md5",
+            "accept-ranges",
+            "content-range",
+            "etag",
+            "keep-alive",
+        ):
+            self.assertNotIn(header, proxied.headers)
+        self.assertTrue(proxied.headers["content-type"].startswith("text/event-stream"))
 
     async def test_preserves_incremental_native_tool_calls_without_empty_fallback(self):
         first_tool_delta = [{

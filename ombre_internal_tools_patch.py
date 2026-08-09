@@ -725,6 +725,14 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
             )
 
         content_type = first_response.headers.get("content-type", "").lower()
+        if logger:
+            logger.info(
+                "Ombre SSE upstream connected | session=%s status=%s content_type=%s content_encoding=%s",
+                session_id,
+                first_response.status_code,
+                content_type or "missing",
+                first_response.headers.get("content-encoding", "identity") or "identity",
+            )
         if "application/json" in content_type and "text/event-stream" not in content_type:
             await first_response.aread()
             await first_context.__aexit__(None, None, None)
@@ -958,10 +966,17 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
             "content-length",
             "transfer-encoding",
             "connection",
+            "keep-alive",
+            "proxy-authenticate",
+            "proxy-authorization",
+            "te",
+            "trailer",
+            "upgrade",
             "content-type",
             "content-encoding",
             "content-md5",
             "accept-ranges",
+            "content-range",
             "etag",
         }
         headers = {
@@ -1099,10 +1114,17 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
             "content-length",
             "transfer-encoding",
             "connection",
+            "keep-alive",
+            "proxy-authenticate",
+            "proxy-authorization",
+            "te",
+            "trailer",
+            "upgrade",
             "content-type",
             "content-encoding",
             "content-md5",
             "accept-ranges",
+            "content-range",
             "etag",
         }
         headers = {
