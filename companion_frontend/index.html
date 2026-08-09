@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Companion 1.0</title>
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
-  <link rel="stylesheet" href="styles.css?v=20260809.2">
+  <link rel="stylesheet" href="styles.css?v=20260809.3">
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -692,6 +692,19 @@
               <input id="accentColor" type="color">
             </label>
 
+            <div class="field chat-import-field">
+              <span>恢复聊天记录</span>
+              <select id="importChatMode" aria-label="聊天记录导入方式">
+                <option value="replace">覆盖当前聊天（推荐首次迁移）</option>
+                <option value="merge">与当前聊天合并并去重</option>
+              </select>
+              <label class="chat-import-session">
+                <input id="importChatContinueSession" type="checkbox" checked>
+                <span>沿用备份中的原会话编号</span>
+              </label>
+              <small>先在网页端导出 JSON，再到 APP 选择同一个文件即可恢复。</small>
+            </div>
+
             <div class="button-row">
               <button id="saveSettingsButton" class="primary-button" type="button">保存</button>
               <button id="exportChatButton" class="secondary-button" type="button">
@@ -701,9 +714,18 @@
                 </svg>
                 <span>导出聊天记录</span>
               </button>
+              <button id="importChatButton" class="secondary-button" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 21V9M7 14l5-5 5 5"/>
+                  <path d="M5 5h14"/>
+                </svg>
+                <span>导入聊天记录</span>
+              </button>
+              <input id="importChatFile" type="file" accept="application/json,.json" hidden>
               <button id="clearChatButton" class="secondary-button" type="button">清空对话</button>
             </div>
             <output id="exportChatStatus" class="inline-status" aria-live="polite"></output>
+            <output id="importChatStatus" class="inline-status" aria-live="polite"></output>
           </div>
         </section>
       </main>
@@ -777,6 +799,6 @@
   <script src="vendor/dompurify/purify.min.js"></script>
   <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/katex/auto-render.min.js"></script>
-    <script src="app.js?v=20260809.5" type="module"></script>
+    <script src="app.js?v=20260809.6" type="module"></script>
 </body>
 </html>

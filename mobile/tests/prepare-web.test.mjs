@@ -12,11 +12,14 @@ test("prepared frontend contains the web app and platform adapters", async () =>
   const app = await readFile(path.join(outputDir, "app.js"), "utf8");
   const platform = await readFile(path.join(outputDir, "platform.js"), "utf8");
   const androidPlatform = await readFile(path.join(outputDir, "platform.android.js"), "utf8");
+  const chatTransfer = await readFile(path.join(outputDir, "chat_transfer.js"), "utf8");
   const solo = await readFile(path.join(outputDir, "solo.js"), "utf8");
   assert.match(index, /<head(?:\s|>)/i);
   assert.match(index, /id="soloEmotionChart"/);
   assert.match(index, /id="soloActivityTrack"/);
   assert.match(index, /id="mcpManager"/);
+  assert.match(index, /id="importChatButton"/);
+  assert.match(index, /id="importChatContinueSession"/);
   assert.match(index, /href="styles\.css\?v=/);
   assert.match(index, /src="app\.js\?v=/);
   assert.doesNotMatch(index, /(?:href|src)="\/frontend\//);
@@ -27,10 +30,12 @@ test("prepared frontend contains the web app and platform adapters", async () =>
   assert.match(app, /\/api\/emotion-appraisal/);
   assert.match(app, /skip_emotion_appraisal: true/);
   assert.match(app, /syncNativeProactiveNotifications/);
+  assert.match(app, /persistImportedChat/);
   assert.match(app, /url\("background\.svg"\)/);
   assert.doesNotMatch(app, /url\("\/frontend\//);
   assert.match(platform, /Capacitor\?\.Plugins\?\.CompanionNative/);
   assert.match(androidPlatform, /configureProactiveNotifications/);
+  assert.match(chatTransfer, /ombre-companion-chat-export/);
   assert.doesNotMatch(app, /\/api\/solo\/outbox/);
   assert.doesNotMatch(app, /\[Ombre 消息信息\]/);
   assert.equal((await stat(path.join(outputDir, "app.js"))).isFile(), true);
@@ -38,6 +43,7 @@ test("prepared frontend contains the web app and platform adapters", async () =>
   assert.equal((await stat(path.join(outputDir, "platform.js"))).isFile(), true);
   assert.equal((await stat(path.join(outputDir, "platform.browser.js"))).isFile(), true);
   assert.equal((await stat(path.join(outputDir, "platform.android.js"))).isFile(), true);
+  assert.equal((await stat(path.join(outputDir, "chat_transfer.js"))).isFile(), true);
 });
 
 test("fallback bundle publishes a versioned native bridge contract", async () => {

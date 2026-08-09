@@ -2872,6 +2872,31 @@ svg {
   line-height: 1.45;
 }
 
+.chat-import-session {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 34px;
+  color: rgba(23, 33, 31, 0.68);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.field .chat-import-session input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.field .chat-import-session span {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
 .prompt-file-row {
   display: flex;
   align-items: center;

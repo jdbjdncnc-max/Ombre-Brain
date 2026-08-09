@@ -2,6 +2,12 @@ import { platform } from "./platform.js";
 import { createSoloPanel } from "./solo.js?v=20260807.2";
 import { normalizeTokenUsage, readOpenAiStream } from "./openai_stream.js?v=20260809.2";
 import {
+  MAX_CHAT_IMPORT_BYTES,
+  mergeChatMessages,
+  parseChatExport,
+  prepareImportedMessages
+} from "./chat_transfer.js?v=20260809.1";
+import {
   buildHealthMessageContext,
   buildHealthSparklinePath,
   formatHealthDurationHours,
@@ -311,6 +317,11 @@ const els = {
   saveSettingsButton: document.querySelector("#saveSettingsButton"),
   exportChatButton: document.querySelector("#exportChatButton"),
   exportChatStatus: document.querySelector("#exportChatStatus"),
+  importChatMode: document.querySelector("#importChatMode"),
+  importChatContinueSession: document.querySelector("#importChatContinueSession"),
+  importChatButton: document.querySelector("#importChatButton"),
+  importChatFile: document.querySelector("#importChatFile"),
+  importChatStatus: document.querySelector("#importChatStatus"),
   clearChatButton: document.querySelector("#clearChatButton"),
   recallModal: document.querySelector("#recallModal"),
   closeRecallModalButton: document.querySelector("#closeRecallModalButton"),
@@ -515,6 +526,14 @@ function bindEvents() {
   });
 
   els.exportChatButton.addEventListener("click", exportChatHistory);
+  els.importChatButton.addEventListener("click", () => {
+    if (state.busy) {
+      els.importChatStatus.textContent = "请等这次回复完成后再恢复聊天记录。";
+      return;
+    }
+    els.importChatFile.click();
+  });
+  els.importChatFile.addEventListener("change", importChatHistory);
   els.closeRecallModalButton.addEventListener("click", closeRecallModal);
   els.recallModal.addEventListener("click", (event) => {
     if (event.target === els.recallModal) {
@@ -1262,6 +1281,125 @@ async function exportChatHistory() {
       els.exportChatStatus.textContent = error instanceof Error ? error.message : String(error);
     }
   }
+}
+
+async function importChatHistory() {
+  const file = els.importChatFile.files?.[0];
+  els.importChatFile.value = "";
+  if (!file) {
+    return;
+  }
+  if (state.busy) {
+    els.importChatStatus.textContent = "请等这次回复完成后再恢复聊天记录。";
+    return;
+  }
+  if (file.size > MAX_CHAT_IMPORT_BYTES) {
+    els.importChatStatus.textContent = "文件超过 32 MB，请先选择较小的聊天记录备份。";
+    return;
+  }
+
+  els.importChatStatus.textContent = "正在检查聊天记录…";
+  try {
+    const imported = parseChatExport(await file.text());
+    const importedMessages = normalizeStoredMessages(prepareImportedMessages(imported.messages, {
+      createId: () => crypto.randomUUID(),
+      timezone: currentTimeZone()
+    }));
+    if (!importedMessages.length) {
+      throw new Error("这个备份里没有可恢复的聊天记录。");
+    }
+
+    const mode = els.importChatMode.value === "merge" ? "merge" : "replace";
+    const continueSession = Boolean(els.importChatContinueSession.checked && imported.sessionId);
+    const nextMessages = mode === "merge"
+      ? mergeChatMessages(state.messages, importedMessages)
+      : importedMessages;
+    const actionLabel = mode === "merge"
+      ? `与当前 ${state.messages.length} 条记录合并，完成后共 ${nextMessages.length} 条`
+      : `覆盖当前 ${state.messages.length} 条记录`;
+    const sessionLabel = continueSession
+      ? "并沿用原会话编号"
+      : (els.importChatContinueSession.checked
+        ? "；备份没有可用的会话编号，将保留当前会话编号"
+        : "，并保留当前会话编号");
+    const participantLabel = [imported.participants.user, imported.participants.assistant]
+      .filter(Boolean)
+      .join(" ↔ ");
+    const confirmation = [
+      `文件中有 ${importedMessages.length} 条聊天记录。`,
+      imported.exportedAt ? `导出时间：${formatChatImportDate(imported.exportedAt)}` : "",
+      participantLabel ? `对话双方：${participantLabel}` : "",
+      `将${actionLabel}${sessionLabel}。`,
+      "确定继续吗？"
+    ].filter(Boolean).join("\n");
+    if (!window.confirm(confirmation)) {
+      els.importChatStatus.textContent = "已取消恢复，当前聊天记录没有变化";
+      return;
+    }
+
+    persistImportedChat(nextMessages, continueSession ? imported.sessionId : "");
+    els.importChatStatus.textContent = mode === "merge"
+      ? `已合并 ${importedMessages.length} 条记录，现在共有 ${nextMessages.length} 条`
+      : `已恢复 ${nextMessages.length} 条聊天记录${continueSession ? "，原会话已延续" : ""}`;
+  } catch (error) {
+    els.importChatStatus.textContent = error instanceof Error ? error.message : String(error);
+  }
+}
+
+function persistImportedChat(messages, importedSessionId) {
+  const previousMessages = state.messages;
+  const previousSessionId = state.sessionId;
+  const previousEditingMessageId = state.editingMessageId;
+  const previousEmotionCursor = state.emotionAppraisalUserCount;
+  try {
+    state.messages = messages;
+    state.editingMessageId = "";
+    if (importedSessionId) {
+      state.sessionId = importedSessionId;
+    }
+    platform.storage.setJson(storageKeys.messages, state.messages);
+    const storedMessages = platform.storage.getJson(storageKeys.messages, null);
+    if (JSON.stringify(storedMessages) !== JSON.stringify(state.messages)) {
+      throw new Error("设备没有成功保存这些聊天记录，可能是储存空间不足。当前记录已恢复原状。");
+    }
+    if (importedSessionId) {
+      platform.storage.setString(storageKeys.sessionId, state.sessionId);
+      if (platform.storage.getString(storageKeys.sessionId) !== state.sessionId) {
+        throw new Error("设备没有成功保存原会话编号。当前记录已恢复原状。");
+      }
+    }
+    setEmotionAppraisalCursor(conversationUserMessageCount());
+    state.loadedMemoryPanels.clear();
+    renderMessages(false);
+    renderComposerState();
+    updateSummaryStatus();
+  } catch (error) {
+    state.messages = previousMessages;
+    state.sessionId = previousSessionId;
+    state.editingMessageId = previousEditingMessageId;
+    platform.storage.setJson(storageKeys.messages, previousMessages);
+    platform.storage.setString(storageKeys.sessionId, previousSessionId);
+    setEmotionAppraisalCursor(previousEmotionCursor);
+    renderMessages(false);
+    renderComposerState();
+    updateSummaryStatus();
+    throw error;
+  }
+}
+
+function formatChatImportDate(value) {
+  const date = new Date(value || "");
+  if (Number.isNaN(date.getTime())) {
+    return "未知";
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(date);
 }
 
 function downloadBlob(blob, filename) {
