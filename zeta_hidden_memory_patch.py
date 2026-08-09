@@ -597,6 +597,7 @@ async def _hidden_chat_completions(self: Any, request: Any) -> Response:
         injected_text,
         system_prompt,
         client_timezone,
+        session_id=session_id,
     )
     memory_headers.update(self._system_prompt_debug_headers(forward_payload, system_prompt))
 

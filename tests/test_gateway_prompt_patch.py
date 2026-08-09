@@ -56,11 +56,19 @@ class GatewayPromptPatchTests(unittest.IsolatedAsyncioTestCase):
         gateway._read_system_prompt = lambda: "主 Prompt 哨兵"
         captured = {}
 
-        def prepare(payload, injected_text, system_prompt="", client_timezone="UTC"):
+        def prepare(
+            payload,
+            injected_text,
+            system_prompt="",
+            client_timezone="UTC",
+            *,
+            session_id="",
+        ):
             captured.update({
                 "injected_text": injected_text,
                 "system_prompt": system_prompt,
                 "client_timezone": client_timezone,
+                "session_id": session_id,
             })
             return {"messages": [], "stream": False}
 
@@ -76,6 +84,7 @@ class GatewayPromptPatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["injected_text"], "第二层哨兵")
         self.assertEqual(captured["system_prompt"], "主 Prompt 哨兵")
         self.assertEqual(captured["client_timezone"], "Asia/Taipei")
+        self.assertEqual(captured["session_id"], "test-session")
         self.assertEqual(response_headers["X-Ombre-System-Prompt-Included"], "1")
 
     async def test_injected_duetto_recall_skips_second_gateway_recall(self):

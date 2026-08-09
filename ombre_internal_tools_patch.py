@@ -1947,6 +1947,7 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
             injected_text,
             system_prompt,
             client_timezone=client_timezone,
+            session_id=session_id,
         )
         self._ombre_add_native_mcp_tools(forward_payload)
         memory_headers.update(self._system_prompt_debug_headers(forward_payload, system_prompt))

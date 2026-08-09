@@ -153,10 +153,80 @@ export function normalizeTokenUsage(value) {
     value.cache_read_input_tokens,
     value.cached_tokens
   );
-  if (inputTokens === null && outputTokens === null && totalTokens === null && cachedTokens === null) {
+  const cacheWriteTokens = tokenCount(
+    value.cacheWriteTokens,
+    value.prompt_tokens_details?.cache_write_tokens,
+    value.input_tokens_details?.cache_write_tokens,
+    value.cache_creation_input_tokens
+  );
+  const reasoningTokens = tokenCount(
+    value.reasoningTokens,
+    value.completion_tokens_details?.reasoning_tokens,
+    value.output_tokens_details?.reasoning_tokens,
+    value.reasoning_tokens
+  );
+  const cost = monetaryAmount(value.cost, value.total_cost, value.usage_cost);
+  const upstreamCost = monetaryAmount(
+    value.upstreamCost,
+    value.cost_details?.upstream_inference_cost
+  );
+  if (
+    inputTokens === null
+    && outputTokens === null
+    && totalTokens === null
+    && cachedTokens === null
+    && cacheWriteTokens === null
+    && reasoningTokens === null
+    && cost === null
+    && upstreamCost === null
+  ) {
     return null;
   }
-  return { inputTokens, outputTokens, totalTokens, cachedTokens };
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    cachedTokens,
+    cacheWriteTokens,
+    reasoningTokens,
+    cost,
+    upstreamCost
+  };
+}
+
+export function formatTokenUsage(value) {
+  const normalized = normalizeTokenUsage(value);
+  if (!normalized) {
+    return "";
+  }
+  const parts = [];
+  if (normalized.inputTokens !== null) {
+    parts.push(`输入 ${formatTokenCount(normalized.inputTokens)}`);
+  }
+  if (normalized.cachedTokens !== null) {
+    const safeCached = normalized.inputTokens === null
+      ? normalized.cachedTokens
+      : Math.min(normalized.cachedTokens, normalized.inputTokens);
+    const cacheRate = normalized.inputTokens > 0
+      ? `（${((safeCached / normalized.inputTokens) * 100).toFixed(1)}%）`
+      : "";
+    parts.push(`缓存 ${formatTokenCount(normalized.cachedTokens)}${cacheRate}`);
+  } else if (normalized.inputTokens !== null) {
+    parts.push("缓存未返回");
+  }
+  if (normalized.outputTokens !== null) {
+    parts.push(`输出 ${formatTokenCount(normalized.outputTokens)}`);
+  }
+  if (normalized.reasoningTokens > 0) {
+    parts.push(`其中思考 ${formatTokenCount(normalized.reasoningTokens)}`);
+  }
+  if (normalized.cost !== null) {
+    parts.push(`费用 ${formatUsdCost(normalized.cost)}`);
+  }
+  if (!parts.length && normalized.totalTokens !== null) {
+    parts.push(`总计 ${formatTokenCount(normalized.totalTokens)} tokens`);
+  }
+  return parts.join(" · ");
 }
 
 function tokenCount(...values) {
@@ -167,6 +237,29 @@ function tokenCount(...values) {
     }
   }
   return null;
+}
+
+function monetaryAmount(...values) {
+  for (const value of values) {
+    const number = Number(value);
+    if (Number.isFinite(number) && number >= 0) {
+      return number;
+    }
+  }
+  return null;
+}
+
+function formatTokenCount(value) {
+  return new Intl.NumberFormat("zh-CN").format(Number(value) || 0);
+}
+
+function formatUsdCost(value) {
+  const cost = Number(value);
+  if (!Number.isFinite(cost) || cost < 0) {
+    return "$0";
+  }
+  const digits = cost >= 1 ? 2 : (cost >= 0.01 ? 4 : 6);
+  return `$${cost.toFixed(digits)}`;
 }
 
 function firstReasoningText(...values) {

@@ -13,21 +13,34 @@ MAX_PROMPT_BYTES = 256 * 1024
 
 def inject_gateway_messages(
     source_messages: list[Any],
-    memory_text: str,
+    dynamic_text: str,
     system_prompt: str,
+    *,
+    fixed_gateway_text: str = "",
+    summary_text: str = "",
 ) -> list[Any]:
     messages = deepcopy(source_messages)
-    if system_prompt.strip():
-        messages.insert(0, {"role": "system", "content": system_prompt})
-    if memory_text.strip():
-        insert_at = 0
-        while (
-            insert_at < len(messages)
-            and isinstance(messages[insert_at], dict)
-            and messages[insert_at].get("role") == "system"
+    stable_prefix = [
+        text.strip()
+        for text in (system_prompt, fixed_gateway_text, summary_text)
+        if str(text or "").strip()
+    ]
+    if stable_prefix:
+        messages[0:0] = [
+            {"role": "system", "content": text}
+            for text in stable_prefix
+        ]
+
+    dynamic = str(dynamic_text or "").strip()
+    if dynamic:
+        insert_at = len(messages)
+        if (
+            messages
+            and isinstance(messages[-1], dict)
+            and messages[-1].get("role") == "user"
         ):
-            insert_at += 1
-        messages.insert(insert_at, {"role": "system", "content": memory_text})
+            insert_at -= 1
+        messages.insert(insert_at, {"role": "system", "content": dynamic})
     return messages
 
 

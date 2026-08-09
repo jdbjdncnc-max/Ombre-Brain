@@ -52,6 +52,37 @@ class GatewaySystemPromptTests(unittest.TestCase):
         )
         self.assertEqual(payload["messages"][0]["content"], "Duetto scene patch")
 
+    def test_cache_layers_keep_fixed_rules_and_summary_before_history(self):
+        source = [
+            {"role": "system", "content": "Duetto scene patch"},
+            {"role": "user", "content": "Earlier question"},
+            {"role": "assistant", "content": "Earlier answer"},
+            {"role": "user", "content": "Newest question"},
+        ]
+
+        forwarded = inject_gateway_messages(
+            source,
+            "Current time and recalled memory",
+            "Canonical persona",
+            fixed_gateway_text="Fixed gateway and tool rules",
+            summary_text="Ten-turn rolling summary",
+        )
+
+        self.assertEqual(
+            [message["content"] for message in forwarded],
+            [
+                "Canonical persona",
+                "Fixed gateway and tool rules",
+                "Ten-turn rolling summary",
+                "Duetto scene patch",
+                "Earlier question",
+                "Earlier answer",
+                "Current time and recalled memory",
+                "Newest question",
+            ],
+        )
+        self.assertEqual(source[-1]["content"], "Newest question")
+
     def test_debug_headers_prove_exact_prompt_without_exposing_its_content(self):
         gateway = object.__new__(ZetaOpenAIGateway)
         prompt = "主 Prompt 哨兵"

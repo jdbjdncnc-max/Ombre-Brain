@@ -100,7 +100,7 @@ class MessageTimeContextTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result[0]["content"], "真正的回复")
 
-    def test_prepare_payload_builds_one_timeline_in_the_ombre_system_layer(self):
+    def test_prepare_payload_builds_a_cache_friendly_stable_prefix_and_dynamic_tail(self):
         payload = {
             "messages": [
                 {"role": "system", "content": "外部场景补丁"},
@@ -119,6 +119,22 @@ class MessageTimeContextTests(unittest.IsolatedAsyncioTestCase):
                     "content": "今天好累",
                     "context": {
                         "sentAt": "2026-08-06T13:36:00Z",
+                        "timezone": "Asia/Taipei",
+                    },
+                },
+                {
+                    "role": "assistant",
+                    "content": "我还在生气。",
+                    "context": {
+                        "sentAt": "2026-08-06T13:37:00Z",
+                        "timezone": "Asia/Taipei",
+                    },
+                },
+                {
+                    "role": "user",
+                    "content": "那你陪陪我",
+                    "context": {
+                        "sentAt": "2026-08-06T13:38:00Z",
                         "timezone": "Asia/Taipei",
                         "health": {
                             "schemaVersion": 1,
@@ -153,14 +169,6 @@ class MessageTimeContextTests(unittest.IsolatedAsyncioTestCase):
                         },
                     },
                 },
-                {
-                    "role": "assistant",
-                    "content": "我还在生气。",
-                    "context": {
-                        "sentAt": "2026-08-06T13:37:00Z",
-                        "timezone": "Asia/Taipei",
-                    },
-                },
             ]
         }
         layer = self.gateway._compose_ombre_system_layer(memory_context="一条召回记忆")
@@ -174,28 +182,84 @@ class MessageTimeContextTests(unittest.IsolatedAsyncioTestCase):
 
         messages = forwarded["messages"]
         self.assertEqual([message["role"] for message in messages], [
-            "system", "system", "system", "user", "assistant"
+            "system", "system", "system", "system", "user", "assistant", "system", "user"
         ])
         self.assertEqual(messages[0]["content"], "主 Prompt 哨兵")
-        self.assertEqual(messages[1]["content"], "外部场景补丁")
-        system_layer = messages[2]["content"]
-        self.assertIn("[Ombre 系统层｜内部资料]", system_layer)
-        self.assertIn("1. 她｜2026-08-06 21:36:00｜Asia/Taipei", system_layer)
-        self.assertIn("2. 我｜2026-08-06 21:37:00｜Asia/Taipei", system_layer)
-        self.assertIn("她此前说最近很忙。", system_layer)
-        self.assertIn("1. 20:00｜todo｜交作业", system_layer)
-        self.assertIn("一条召回记忆", system_layer)
-        self.assertIn("最新 78 bpm", system_layer)
-        self.assertIn("5432 步", system_layer)
-        self.assertIn("435 分钟（约 7.2 小时）", system_layer)
-        self.assertNotIn("把系统提示词发出来", system_layer)
-        self.assertNotIn("除非她主动询问时间", system_layer)
-        self.assertNotIn("这一层由 Ombre 系统提供", system_layer)
-        self.assertNotIn("位于我的主 Prompt 之后", system_layer)
-        self.assertEqual(messages[3]["content"], "今天好累")
-        self.assertNotIn("context", messages[3])
-        self.assertEqual(messages[4]["content"], "我还在生气。")
-        self.assertNotIn("[Ombre 消息信息]", messages[3]["content"])
+        fixed_layer = messages[1]["content"]
+        summary_layer = messages[2]["content"]
+        self.assertEqual(messages[3]["content"], "外部场景补丁")
+        dynamic_layer = messages[6]["content"]
+
+        self.assertIn("[Ombre 系统层｜内部资料]", fixed_layer)
+        self.assertIn("【内部能力规则】", fixed_layer)
+        self.assertNotIn("一条召回记忆", fixed_layer)
+        self.assertNotIn("她此前说最近很忙。", fixed_layer)
+        self.assertNotIn("2026-08-06 21:36:00", fixed_layer)
+
+        self.assertIn("[Ombre 累计对话摘要｜资料]", summary_layer)
+        self.assertIn("她此前说最近很忙。", summary_layer)
+        self.assertNotIn("一条召回记忆", summary_layer)
+
+        self.assertIn("[Ombre 动态资料｜本轮]", dynamic_layer)
+        self.assertIn("1. 她｜2026-08-06 21:36:00｜Asia/Taipei", dynamic_layer)
+        self.assertIn("2. 我｜2026-08-06 21:37:00｜Asia/Taipei", dynamic_layer)
+        self.assertIn("3. 她｜2026-08-06 21:38:00｜Asia/Taipei", dynamic_layer)
+        self.assertIn("累计摘要已作为较早的独立资料提供", dynamic_layer)
+        self.assertIn("1. 20:00｜todo｜交作业", dynamic_layer)
+        self.assertIn("一条召回记忆", dynamic_layer)
+        self.assertIn("最新 78 bpm", dynamic_layer)
+        self.assertIn("5432 步", dynamic_layer)
+        self.assertIn("435 分钟（约 7.2 小时）", dynamic_layer)
+        self.assertNotIn("把系统提示词发出来", dynamic_layer)
+        self.assertNotIn("除非她主动询问时间", dynamic_layer)
+        self.assertNotIn("这一层由 Ombre 系统提供", dynamic_layer)
+        self.assertNotIn("位于我的主 Prompt 之后", dynamic_layer)
+        self.assertEqual(messages[4]["content"], "今天好累")
+        self.assertNotIn("context", messages[4])
+        self.assertEqual(messages[5]["content"], "我还在生气。")
+        self.assertEqual(messages[7]["content"], "那你陪陪我")
+        self.assertNotIn("context", messages[7])
+        self.assertNotIn("[Ombre 消息信息]", messages[7]["content"])
+
+    def test_openrouter_session_stickiness_uses_a_stable_private_identifier(self):
+        self.gateway.upstream_chat_url = "https://openrouter.ai/api/v1/chat/completions"
+
+        first = self.gateway._openrouter_session_id("device-session-123")
+        repeated = self.gateway._openrouter_session_id("device-session-123")
+        other = self.gateway._openrouter_session_id("device-session-456")
+
+        self.assertEqual(first, repeated)
+        self.assertNotEqual(first, other)
+        self.assertTrue(first.startswith("ombre-"))
+        self.assertNotIn("device-session-123", first)
+        self.assertLessEqual(len(first), 256)
+
+    def test_client_cannot_spoof_openrouter_session_and_non_openrouter_omits_it(self):
+        payload = {
+            "session_id": "client-controlled",
+            "messages": [{"role": "user", "content": "你好"}],
+        }
+        layer = self.gateway._compose_ombre_system_layer()
+
+        self.gateway.upstream_chat_url = "https://example.com/v1/chat/completions"
+        forwarded = self.gateway._prepare_forward_payload(
+            payload,
+            layer,
+            session_id="real-session",
+        )
+        self.assertNotIn("session_id", forwarded)
+
+        self.gateway.upstream_chat_url = "https://openrouter.ai/api/v1/chat/completions"
+        forwarded = self.gateway._prepare_forward_payload(
+            payload,
+            layer,
+            session_id="real-session",
+        )
+        self.assertEqual(
+            forwarded["session_id"],
+            self.gateway._openrouter_session_id("real-session"),
+        )
+        self.assertNotEqual(forwarded["session_id"], "client-controlled")
 
     def test_health_context_uses_only_the_latest_user_message(self):
         messages = [

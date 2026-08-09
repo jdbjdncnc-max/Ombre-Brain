@@ -1,6 +1,6 @@
 import { platform } from "./platform.js";
 import { createSoloPanel } from "./solo.js?v=20260807.2";
-import { normalizeTokenUsage, readOpenAiStream } from "./openai_stream.js?v=20260809.2";
+import { formatTokenUsage, normalizeTokenUsage, readOpenAiStream } from "./openai_stream.js?v=20260810.1";
 import {
   MAX_CHAT_IMPORT_BYTES,
   mergeChatMessages,
@@ -3595,7 +3595,7 @@ function createMessageFooter(message) {
     footer.append(time);
   }
   if (message.role === "assistant") {
-    const usageText = formatMessageUsage(message.usage);
+    const usageText = formatTokenUsage(message.usage);
     if (usageText) {
       const usage = document.createElement("span");
       usage.className = "message-usage";
@@ -3640,22 +3640,6 @@ function createMessageToolActivity(calls) {
   }
   details.append(list);
   return details;
-}
-
-function formatMessageUsage(usage) {
-  const normalized = normalizeTokenUsage(usage);
-  if (!normalized) {
-    return "";
-  }
-  const total = normalized.totalTokens ?? (normalized.inputTokens || 0) + (normalized.outputTokens || 0);
-  const cached = normalized.cachedTokens;
-  return `总计 ${formatTokenCount(total)} tokens · ${
-    cached === null ? "缓存未返回" : `缓存 ${formatTokenCount(cached)}`
-  }`;
-}
-
-function formatTokenCount(value) {
-  return new Intl.NumberFormat("zh-CN").format(Number(value) || 0);
 }
 
 function identityInitial(name) {
