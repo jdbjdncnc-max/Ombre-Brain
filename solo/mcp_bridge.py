@@ -462,6 +462,45 @@ class SoloMcpBridge:
             "servers": servers,
         }
 
+    def autonomous_catalog(self) -> list[dict[str, Any]]:
+        """Return only tools that are currently authorized for solitude use."""
+
+        if not self.enabled:
+            return []
+        document = self._servers_document()
+        capabilities = self._capabilities_document()
+        catalog: list[dict[str, Any]] = []
+        for name, config in sorted(document["mcpServers"].items()):
+            if not isinstance(config, dict) or not bool(config.get("enabled", True)):
+                continue
+            if str(config.get("autonomy") or "chat_only") not in {"full", "allowlist"}:
+                continue
+            capability = capabilities.get(name) if isinstance(capabilities.get(name), dict) else {}
+            raw_tools = capability.get("tools") if isinstance(capability.get("tools"), list) else []
+            tools = [
+                {
+                    "name": str(tool.get("name") or "")[:160],
+                    "desc": str(tool.get("desc") or "")[:600],
+                    "kind": str(tool.get("kind") or "unknown")[:20],
+                    "inputSchema": deepcopy(tool.get("inputSchema") or {"type": "object"}),
+                }
+                for tool in raw_tools
+                if isinstance(tool, dict)
+                and bool(tool.get("allowed"))
+                and not bool(tool.get("hardBlocked"))
+                and str(tool.get("name") or "").strip()
+            ]
+            if not tools:
+                continue
+            catalog.append({
+                "name": name,
+                "categories": deepcopy(
+                    capability.get("categories") or config.get("categories") or ["misc"]
+                ),
+                "tools": tools,
+            })
+        return catalog
+
     def status_snapshot(self) -> dict[str, Any]:
         snapshot = self.public_snapshot()
         return {

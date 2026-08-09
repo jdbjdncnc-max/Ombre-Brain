@@ -97,6 +97,11 @@ MCP 客户端默认关闭。设置 `OMBRE_SOLO_MCP_ENABLED=1` 后，工具管理
 MCP 配置中的凭据只能写成 `${ENV_VAR}` 或 `${secret:server.key}`。前一种在 Zeabur 环境
 变量中设置；后一种通过工具管理页写入持久卷里的私密文件，API 永远不会把明文读回。
 
+独处时的 MCP 行动也复用 `OMBRE_UPSTREAM_*` 对话模型。情绪系统先决定行动方向，对话模型再从
+已授权候选中选择具体服务器、工具和参数；工具的真实返回会写入轨迹，并复用 `OMBRE_SUMMARY_*`
+评估这次经历对情绪的影响。只有设为“完全自主”或“仅白名单”且已勾选的工具会进入候选列表；
+首次导入后需要先在工具管理页测试连接，让服务端保存工具能力列表。
+
 Use these for memory quality. `OMBRE_API_KEY` still works as a legacy shared key, but the split variables are clearer:
 
 ```text
