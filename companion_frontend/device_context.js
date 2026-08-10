@@ -1,4 +1,4 @@
-const MAX_USAGE_ENTRIES = 8;
+const MAX_USAGE_ENTRIES = 3;
 
 export function normalizeDeviceContextSnapshot(value) {
   if (!value || typeof value !== "object") {
@@ -57,10 +57,24 @@ export function deviceUsageLabel(value) {
   if (!usage || usage.status !== "ready") {
     return "等待今日应用时长";
   }
-  const first = usage.entries[0];
-  return first
-    ? `${first.appName} ${formatMinutes(first.foregroundMinutes)}`
+  return usage.entries.length
+    ? usage.entries.map((entry) => `${entry.appName} ${formatDeviceUsageMinutes(entry.foregroundMinutes)}`).join(" · ")
     : "今天暂无应用记录";
+}
+
+export function deviceCurrentScreenLabel(value) {
+  const app = normalizeScreenApp(value);
+  return app ? app.appName : "暂无记录";
+}
+
+export function formatDeviceUsageMinutes(value) {
+  const minutes = Math.max(0, Math.round(Number(value) || 0));
+  if (minutes < 60) {
+    return `${minutes} 分钟`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours} 小时 ${rest} 分` : `${hours} 小时`;
 }
 
 function normalizePermissions(value) {
@@ -137,6 +151,7 @@ function normalizeAppUsage(value) {
   const entries = Array.isArray(value.entries)
     ? value.entries.map(normalizeUsageEntry).filter(Boolean).slice(0, MAX_USAGE_ENTRIES)
     : [];
+  const currentScreenApp = normalizeScreenApp(value.currentScreenApp);
   const totalForegroundMinutes = boundedNumber(value.totalForegroundMinutes, 0, 1440);
   return {
     status: "ready",
@@ -145,7 +160,26 @@ function normalizeAppUsage(value) {
     startAt: isoTimestamp(value.startAt),
     endAt: isoTimestamp(value.endAt),
     totalForegroundMinutes: totalForegroundMinutes === null ? 0 : Math.round(totalForegroundMinutes),
+    ...(currentScreenApp ? { currentScreenApp } : {}),
     entries
+  };
+}
+
+function normalizeScreenApp(value) {
+  if (!value || typeof value !== "object" || cleanText(value.status, 24) !== "ready") {
+    return null;
+  }
+  const appName = cleanText(value.appName, 80);
+  const packageName = cleanText(value.packageName, 180).replace(/[^A-Za-z0-9._-]/g, "");
+  if (!appName && !packageName) {
+    return null;
+  }
+  return {
+    status: "ready",
+    mode: "latest_external_before_ombre",
+    appName: appName || packageName,
+    packageName,
+    observedAt: isoTimestamp(value.observedAt)
   };
 }
 
@@ -186,14 +220,4 @@ function isoTimestamp(value) {
 
 function cleanText(value, limit) {
   return String(value || "").replace(/[\r\n\t]+/g, " ").trim().slice(0, limit);
-}
-
-function formatMinutes(value) {
-  const minutes = Math.max(0, Math.round(Number(value) || 0));
-  if (minutes < 60) {
-    return `${minutes} 分钟`;
-  }
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return rest ? `${hours} 小时 ${rest} 分` : `${hours} 小时`;
 }

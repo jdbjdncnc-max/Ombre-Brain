@@ -28,6 +28,11 @@ test("Android reads sensor location and today's UsageStats without IP geolocatio
   assert.match(reader, /getCurrentLocation/);
   assert.match(reader, /Geocoder/);
   assert.match(reader, /queryEvents/);
+  assert.match(reader, /MAX_USAGE_ENTRIES = 3/);
+  assert.match(reader, /latest_external_before_ombre/);
+  assert.match(reader, /currentScreenApp/);
+  assert.match(reader, /packageinstaller/);
+  assert.match(reader, /securitycenter/);
   assert.doesNotMatch(reader, /https?:\/\//);
   assert.match(plugin, /readDeviceContext/);
   assert.match(plugin, /openUsageAccessSettings/);

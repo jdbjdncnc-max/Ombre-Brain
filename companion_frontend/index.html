@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Companion 1.0</title>
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
-  <link rel="stylesheet" href="styles.css?v=20260810.1">
+  <link rel="stylesheet" href="styles.css?v=20260810.2">
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -93,16 +93,15 @@
           </div>
 
           <div class="home-card-grid">
-            <button id="deviceContextCard" class="home-card" type="button" data-home-feature="device" aria-label="此刻环境，点按授权或刷新定位与应用时长">
+            <button id="callCard" class="home-card" type="button" data-home-feature="call" aria-label="给 Zeta 打电话">
               <span class="home-card-icon" aria-hidden="true">
                 <svg viewBox="0 0 32 32">
-                  <path d="M16 28s8-8.2 8-15a8 8 0 1 0-16 0c0 6.8 8 15 8 15z"/>
-                  <circle cx="16" cy="13" r="3"/>
+                  <path d="M9.1 5.5 13 10l-2.4 3.2a20.4 20.4 0 0 0 8.2 8.2L22 19l4.5 3.9-1.8 3.2c-.7 1.2-2.1 1.8-3.4 1.3C13.5 24.8 7.2 18.5 4.6 10.7c-.5-1.3.1-2.7 1.3-3.4z"/>
                 </svg>
               </span>
               <span class="home-card-copy">
-                <strong>此刻环境</strong>
-                <small class="home-card-stats"><span id="deviceLocationStatus">等待精确定位</span><span id="deviceUsageStatus">等待今日应用时长</span></small>
+                <strong>打电话</strong>
+                <small id="callCardSubtitle">语音通话 · Android 原生</small>
               </span>
             </button>
 
@@ -120,29 +119,16 @@
               </span>
             </button>
 
-            <button id="healthCard" class="home-card health-card" type="button" data-home-feature="health" aria-label="今天的身体，点按同步健康数据">
-              <span class="home-card-icon health-card-icon" aria-hidden="true">
+            <button id="sailTodayCard" class="home-card" type="button" data-home-feature="sail" aria-label="Sail 的今天，点按查看身体、位置和应用概览">
+              <span class="home-card-icon" aria-hidden="true">
                 <svg viewBox="0 0 32 32">
                   <path d="M16 26.8S5.5 20.5 5.5 12.8A5.6 5.6 0 0 1 16 10a5.6 5.6 0 0 1 10.5 2.8C26.5 20.5 16 26.8 16 26.8z"/>
                   <path d="M10.2 16h3.2l1.5-3.1 2.5 6.1 1.6-3h3"/>
                 </svg>
               </span>
-              <span class="home-card-copy health-card-copy">
-                <span class="health-card-heading">
-                  <strong>今天的身体</strong>
-                  <small id="healthStatus">等待同步</small>
-                </span>
-                <span class="health-chart" aria-label="最近二十四小时心率曲线">
-                  <span class="health-chart-label">心率 <b id="healthHeartRate">—</b> bpm</span>
-                  <svg viewBox="0 0 180 46" preserveAspectRatio="none" aria-hidden="true">
-                    <path class="health-chart-guide" d="M3 23 H177"/>
-                    <path id="healthHeartRatePath" class="health-chart-line is-empty" d=""/>
-                  </svg>
-                </span>
-                <small class="home-card-stats health-card-stats">
-                  <span>步数 <b id="healthSteps">—</b></span>
-                  <span>睡眠 <b id="healthSleep">—</b> 小时</span>
-                </small>
+              <span class="home-card-copy">
+                <strong>Sail 的今天</strong>
+                <small>身体、位置与应用概览</small>
               </span>
             </button>
 
@@ -182,6 +168,53 @@
           </div>
         </section>
 
+        <section id="callView" class="view" aria-label="和 Zeta 通话" data-call-state="idle">
+          <div class="call-topbar">
+            <button id="callBackButton" class="icon-button call-back-button" type="button" title="返回今天" aria-label="返回今天">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+            </button>
+            <span>加密连接 · Ombre</span>
+            <i aria-hidden="true"></i>
+          </div>
+
+          <div class="call-stage">
+            <div class="call-avatar-wrap" aria-hidden="true">
+              <span class="call-pulse"></span>
+              <img id="callAvatar" class="call-avatar" alt="" hidden>
+              <span id="callAvatarFallback" class="call-avatar-fallback">Z</span>
+            </div>
+            <h1 id="callName">Zeta</h1>
+            <p id="callStatus" class="call-status" role="status">准备通话</p>
+            <time id="callTimer" class="call-timer">00:00</time>
+
+            <div id="callTranscriptList" class="call-captions" aria-live="polite" aria-label="实时字幕">
+              <p class="call-caption-hint">接通后，最近几句会显示在这里</p>
+            </div>
+            <p id="callError" class="call-error" role="alert" hidden></p>
+          </div>
+
+          <div class="call-controls" aria-label="通话控制">
+            <button id="callMuteButton" class="call-control" type="button" aria-pressed="false">
+              <span class="call-control-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM5 11v1a7 7 0 0 0 14 0v-1M12 19v3M8 22h8"/></svg>
+              </span>
+              <span id="callMuteLabel">静音</span>
+            </button>
+            <button id="callHangupButton" class="call-control call-hangup" type="button" disabled>
+              <span class="call-control-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M4 14.5c4.8-3.3 11.2-3.3 16 0l-2.2 4-3.2-1.5v-2.1a9 9 0 0 0-5.2 0V17l-3.2 1.5z"/></svg>
+              </span>
+              <span>挂断</span>
+            </button>
+            <button id="callSpeakerButton" class="call-control" type="button" aria-pressed="false">
+              <span class="call-control-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M5 9h4l5-4v14l-5-4H5zM17 9a4 4 0 0 1 0 6M19 6a8 8 0 0 1 0 12"/></svg>
+              </span>
+              <span id="callSpeakerLabel">扬声器</span>
+            </button>
+          </div>
+        </section>
+
         <section id="musicView" class="view" aria-label="一起听歌">
           <div class="music-header">
             <button id="musicBackButton" class="icon-button" type="button" title="返回今天" aria-label="返回今天">
@@ -209,6 +242,69 @@
               allow="autoplay; clipboard-write; encrypted-media; picture-in-picture"
               referrerpolicy="strict-origin-when-cross-origin"
             ></iframe>
+          </div>
+        </section>
+
+        <section id="sailView" class="view" aria-label="Sail 的今天">
+          <div class="sail-header">
+            <button id="sailBackButton" class="icon-button" type="button" title="返回今天" aria-label="返回今天">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+            </button>
+            <div class="sail-header-copy">
+              <p class="eyebrow">Daily context</p>
+              <h1>Sail 的今天</h1>
+            </div>
+            <button id="sailRefreshButton" class="icon-button sail-refresh-button" type="button" title="刷新数据" aria-label="刷新身体、位置和应用数据">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v6h-6"/></svg>
+            </button>
+          </div>
+
+          <div class="sail-scroll">
+            <section class="sail-context-card" aria-labelledby="sailContextTitle">
+              <div class="sail-section-heading">
+                <div><p class="eyebrow">Here & now</p><h2 id="sailContextTitle">此刻在哪里</h2></div>
+                <small id="sailLocationStatus">等待系统定位</small>
+              </div>
+              <div class="sail-context-grid">
+                <div class="sail-context-item">
+                  <span>地点</span>
+                  <strong id="sailLocationName">等待精确定位</strong>
+                  <small id="sailLocationMeta">不会使用代理 IP 推断</small>
+                </div>
+                <div class="sail-context-item">
+                  <span>刚才的屏幕</span>
+                  <strong id="sailCurrentApp">暂无记录</strong>
+                  <small id="sailCurrentAppMeta">显示切换进 Ombre 前的应用</small>
+                </div>
+              </div>
+            </section>
+
+            <section class="sail-data-card" aria-labelledby="sailHealthTitle">
+              <div class="sail-section-heading">
+                <div><p class="eyebrow">Health Connect</p><h2 id="sailHealthTitle">今天的身体</h2></div>
+                <small id="healthStatus">等待同步</small>
+              </div>
+              <div class="sail-health-chart" aria-label="最近二十四小时心率曲线">
+                <span class="sail-chart-label">心率 <b id="healthHeartRate">—</b> bpm</span>
+                <svg viewBox="0 0 300 64" preserveAspectRatio="none" aria-hidden="true">
+                  <path class="health-chart-guide" d="M4 32 H296"/>
+                  <path id="healthHeartRatePath" class="health-chart-line is-empty" d=""/>
+                </svg>
+              </div>
+              <div class="sail-vitals-grid">
+                <div><span>今日步数</span><strong id="healthSteps">—</strong><small>步</small></div>
+                <div><span>最近睡眠</span><strong id="healthSleep">—</strong><small>小时</small></div>
+              </div>
+            </section>
+
+            <section class="sail-data-card" aria-labelledby="sailUsageTitle">
+              <div class="sail-section-heading">
+                <div><p class="eyebrow">Screen time</p><h2 id="sailUsageTitle">今天的应用</h2></div>
+                <small id="sailUsageTotal">等待统计</small>
+              </div>
+              <div id="sailUsageList" class="sail-usage-list" aria-live="polite"></div>
+              <p id="sailPanelStatus" class="sail-panel-status" role="status">点右上角可刷新或完成授权</p>
+            </section>
           </div>
         </section>
 
@@ -843,6 +939,6 @@
   <script src="vendor/dompurify/purify.min.js"></script>
   <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/katex/auto-render.min.js"></script>
-    <script src="app.js?v=20260810.3" type="module"></script>
+    <script src="app.js?v=20260810.5" type="module"></script>
 </body>
 </html>

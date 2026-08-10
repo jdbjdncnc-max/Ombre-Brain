@@ -1,6 +1,9 @@
 import { createBrowserPlatform } from "./platform.browser.js";
 
-export function createAndroidPlatform(bridge, { capacitorPlugin = false } = {}) {
+export function createAndroidPlatform(
+  bridge,
+  { capacitorPlugin = false, callBridge = null, callCapacitorPlugin = false } = {}
+) {
   const fallback = createBrowserPlatform();
 
   return {
@@ -9,6 +12,7 @@ export function createAndroidPlatform(bridge, { capacitorPlugin = false } = {}) 
     notifications: createBridgeNotificationAdapter(bridge, fallback.notifications, capacitorPlugin),
     health: createBridgeHealthAdapter(bridge, fallback.health, capacitorPlugin),
     deviceContext: createBridgeDeviceContextAdapter(bridge, fallback.deviceContext, capacitorPlugin),
+    call: createBridgeCallAdapter(callBridge, fallback.call, callCapacitorPlugin),
     getDefaultApiBaseUrl() {
       const bridgeUrl = callBridgeString(bridge, "getApiBaseUrl");
       return bridgeUrl || fallback.getDefaultApiBaseUrl();
@@ -36,6 +40,77 @@ export function createAndroidPlatform(bridge, { capacitorPlugin = false } = {}) 
       onPause(handler) {
         window.CompanionOnPause = handler;
       }
+    }
+  };
+}
+
+function createBridgeCallAdapter(bridge, fallback, capacitorPlugin) {
+  if (!bridge) {
+    return fallback;
+  }
+  const invoke = async (method, payload = {}) => {
+    if (!hasBridgeMethod(bridge, method)) {
+      return fallback[method]?.(payload) || {};
+    }
+    if (capacitorPlugin) {
+      return (await bridge[method](payload)) || {};
+    }
+    const value = callBridgeString(bridge, method, JSON.stringify(payload));
+    if (!value) {
+      return {};
+    }
+    try {
+      return JSON.parse(value);
+    } catch {
+      return {};
+    }
+  };
+
+  return {
+    isSupported() {
+      return hasBridgeMethod(bridge, "startCall");
+    },
+    async permission() {
+      const value = await invoke("microphonePermission");
+      return String(value?.value || "prompt");
+    },
+    async requestPermission() {
+      const value = await invoke("requestMicrophonePermission");
+      return String(value?.value || "denied");
+    },
+    start(options) {
+      return invoke("startCall", {
+        ...options,
+        contextMessages: JSON.stringify(options?.contextMessages || [])
+      });
+    },
+    hangup() {
+      return invoke("hangup");
+    },
+    setMuted(enabled) {
+      return invoke("setMuted", { enabled: Boolean(enabled) });
+    },
+    setSpeaker(enabled) {
+      return invoke("setSpeaker", { enabled: Boolean(enabled) });
+    },
+    getState() {
+      return invoke("getState");
+    },
+    onEvent(handler) {
+      if (capacitorPlugin && hasBridgeMethod(bridge, "addListener")) {
+        const listener = bridge.addListener("callEvent", handler);
+        return () => Promise.resolve(listener).then((handle) => handle?.remove?.()).catch(() => {});
+      }
+      globalThis.CompanionOnCallEvent = (value) => {
+        try {
+          handler(typeof value === "string" ? JSON.parse(value) : value);
+        } catch {}
+      };
+      return () => {
+        if (globalThis.CompanionOnCallEvent) {
+          delete globalThis.CompanionOnCallEvent;
+        }
+      };
     }
   };
 }

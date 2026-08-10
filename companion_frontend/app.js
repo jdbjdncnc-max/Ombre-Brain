@@ -1,4 +1,5 @@
 import { platform } from "./platform.js";
+import { createCallController } from "./call.js?v=20260810.1";
 import { createSoloPanel } from "./solo.js?v=20260807.2";
 import { formatTokenUsage, normalizeTokenUsage, readOpenAiStream } from "./openai_stream.js?v=20260810.1";
 import {
@@ -15,10 +16,11 @@ import {
 } from "./health.js?v=20260808.1";
 import {
   buildDeviceMessageContext,
+  deviceCurrentScreenLabel,
   deviceLocationLabel,
-  deviceUsageLabel,
+  formatDeviceUsageMinutes,
   normalizeDeviceContextSnapshot
-} from "./device_context.js?v=20260810.1";
+} from "./device_context.js?v=20260810.2";
 
 const LEGACY_SUMMARY_PROMPT_V1 = `你负责为一段持续对话生成“累计上下文摘要”，供同一个对话模型在后续轮次继续使用。
 
@@ -197,7 +199,9 @@ const els = {
   serverStatus: document.querySelector("#serverStatus"),
   chatView: document.querySelector("#chatView"),
   homeView: document.querySelector("#homeView"),
+  callView: document.querySelector("#callView"),
   musicView: document.querySelector("#musicView"),
+  sailView: document.querySelector("#sailView"),
   soloView: document.querySelector("#soloView"),
   toolsView: document.querySelector("#toolsView"),
   memoryView: document.querySelector("#memoryView"),
@@ -264,10 +268,31 @@ const els = {
   upcomingSummary: document.querySelector("#upcomingSummary"),
   upcomingScheduleList: document.querySelector("#upcomingScheduleList"),
   homeFeatureCards: [...document.querySelectorAll("[data-home-feature]")],
-  deviceContextCard: document.querySelector("#deviceContextCard"),
-  deviceLocationStatus: document.querySelector("#deviceLocationStatus"),
-  deviceUsageStatus: document.querySelector("#deviceUsageStatus"),
-  healthCard: document.querySelector("#healthCard"),
+  callCardSubtitle: document.querySelector("#callCardSubtitle"),
+  callBackButton: document.querySelector("#callBackButton"),
+  callAvatar: document.querySelector("#callAvatar"),
+  callAvatarFallback: document.querySelector("#callAvatarFallback"),
+  callName: document.querySelector("#callName"),
+  callStatus: document.querySelector("#callStatus"),
+  callTimer: document.querySelector("#callTimer"),
+  callTranscriptList: document.querySelector("#callTranscriptList"),
+  callError: document.querySelector("#callError"),
+  callMuteButton: document.querySelector("#callMuteButton"),
+  callMuteLabel: document.querySelector("#callMuteLabel"),
+  callHangupButton: document.querySelector("#callHangupButton"),
+  callSpeakerButton: document.querySelector("#callSpeakerButton"),
+  callSpeakerLabel: document.querySelector("#callSpeakerLabel"),
+  sailTodayCard: document.querySelector("#sailTodayCard"),
+  sailBackButton: document.querySelector("#sailBackButton"),
+  sailRefreshButton: document.querySelector("#sailRefreshButton"),
+  sailLocationStatus: document.querySelector("#sailLocationStatus"),
+  sailLocationName: document.querySelector("#sailLocationName"),
+  sailLocationMeta: document.querySelector("#sailLocationMeta"),
+  sailCurrentApp: document.querySelector("#sailCurrentApp"),
+  sailCurrentAppMeta: document.querySelector("#sailCurrentAppMeta"),
+  sailUsageTotal: document.querySelector("#sailUsageTotal"),
+  sailUsageList: document.querySelector("#sailUsageList"),
+  sailPanelStatus: document.querySelector("#sailPanelStatus"),
   healthStatus: document.querySelector("#healthStatus"),
   healthHeartRate: document.querySelector("#healthHeartRate"),
   healthHeartRatePath: document.querySelector("#healthHeartRatePath"),
@@ -363,6 +388,41 @@ const soloPanel = createSoloPanel({
   onClose: closeSoloView
 });
 
+const callController = createCallController({
+  platform,
+  elements: {
+    view: els.callView,
+    backButton: els.callBackButton,
+    avatar: els.callAvatar,
+    avatarFallback: els.callAvatarFallback,
+    name: els.callName,
+    status: els.callStatus,
+    timer: els.callTimer,
+    transcriptList: els.callTranscriptList,
+    error: els.callError,
+    muteButton: els.callMuteButton,
+    muteLabel: els.callMuteLabel,
+    hangupButton: els.callHangupButton,
+    speakerButton: els.callSpeakerButton,
+    speakerLabel: els.callSpeakerLabel
+  },
+  getConfig: () => ({
+    backendUrl: state.settings.backendUrl,
+    gatewayToken: state.settings.gatewayToken,
+    sessionId: state.sessionId,
+    timezone: currentTimeZone()
+  }),
+  getContextMessages: buildCallContextMessages,
+  getIdentity: () => ({
+    userName: state.settings.userName,
+    assistantName: state.settings.assistantName,
+    assistantAvatar: state.settings.assistantAvatar
+  }),
+  openView: openCallView,
+  closeView: closeCallView,
+  showNotice: showHomeNotice
+});
+
 const systemPromptReady = loadSystemPrompt();
 
 bindEvents();
@@ -372,6 +432,7 @@ applySettings();
 renderMessages();
 renderComposerState();
 restoreNavigationState();
+callController.restore().catch(() => {});
 initSchedule();
 renderSchedule();
 updateClock();
@@ -485,6 +546,8 @@ function bindEvents() {
     card.addEventListener("click", () => handleHomeFeature(card.dataset.homeFeature));
   });
 
+  els.sailBackButton.addEventListener("click", closeSailView);
+  els.sailRefreshButton.addEventListener("click", refreshSailTodayWithPermissions);
   els.musicBackButton.addEventListener("click", closeDuettoView);
   els.reloadDuettoButton.addEventListener("click", () => openDuettoView({ forceReload: true }));
   els.duettoFrame.addEventListener("load", handleDuettoFrameLoad);
@@ -1509,6 +1572,39 @@ function buildRequestMessages() {
   }
 
   return [...systemMessages, ...messages];
+}
+
+function buildCallContextMessages() {
+  const messages = buildRequestMessages().map((message) => ({
+    ...message,
+    ...(message.context ? { context: { ...message.context } } : {})
+  }));
+  const health = buildHealthMessageContext(state.healthSnapshot);
+  const device = buildDeviceMessageContext(state.deviceContextSnapshot);
+  const privateContext = {
+    sentAt: new Date().toISOString(),
+    timezone: currentTimeZone(),
+    ...(health ? { health } : {}),
+    ...(device ? { device } : {})
+  };
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role !== "user") continue;
+    messages[index] = {
+      ...messages[index],
+      context: {
+        ...(messages[index].context || {}),
+        ...privateContext
+      }
+    };
+    return messages;
+  }
+  messages.push({
+    role: "system",
+    ombre_context_kind: "call_private",
+    content: "Ombre 通话开始资料",
+    context: privateContext
+  });
+  return messages;
 }
 
 function findLatestCompletedSummaryIndex() {
@@ -4075,50 +4171,65 @@ function handleHomeFeature(feature) {
     return;
   }
 
-  if (feature === "health") {
-    handleHealthFeature();
+  if (feature === "sail") {
+    openSailView();
     return;
   }
 
-  if (feature === "device") {
-    handleDeviceContextFeature();
+  if (feature === "call") {
+    callController.start();
     return;
   }
 
-  const messages = {
-    reading: "共读会在后续对话中接入。"
-  };
-  showHomeNotice(messages[feature] || "这项功能会在后续对话中接入。");
+  showHomeNotice("这项功能会在后续对话中接入。");
 }
 
-async function handleDeviceContextFeature() {
-  if (!platform.deviceContext?.isSupported()) {
-    showHomeNotice("定位和应用时长需要在 Android 版里读取。");
-    return;
-  }
-
+async function refreshSailTodayWithPermissions() {
+  els.sailRefreshButton?.classList.add("is-loading");
+  setSailPanelStatus("正在检查授权并刷新今天的数据…");
   try {
-    let status = await platform.deviceContext.status();
-    updateDevicePermissionState(status);
-    if (state.deviceLocationPermission !== "granted") {
-      status = await platform.deviceContext.requestLocationPermission();
-      updateDevicePermissionState(status);
-      if (state.deviceLocationPermission !== "granted") {
-        renderDeviceContextSnapshot();
-        showHomeNotice("需要选择“精确位置”，AI 才能分辨不同道路。不会用网络 IP 猜位置。");
-        return;
-      }
-    }
-    if (state.deviceUsageAccess !== "granted") {
-      await platform.deviceContext.openUsageAccessSettings();
-      showHomeNotice("请在系统页面允许 Ombre 查看应用使用情况，返回后会自动刷新。");
+    const deviceReady = await ensureDeviceContextPermissions();
+    if (deviceReady === "settings_opened") {
       return;
     }
-    await refreshDeviceContextSnapshot({ silent: false });
+    const healthReady = await ensureHealthPermissions();
+    await Promise.all([
+      refreshDeviceContextSnapshot({ silent: false }),
+      healthReady ? refreshHealthSnapshot({ silent: false }) : Promise.resolve(state.healthSnapshot)
+    ]);
+    setSailPanelStatus(healthReady
+      ? "已刷新；发消息时会自动附上精简资料。"
+      : "位置和应用数据已刷新；健康数据当前不可用。");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error || "");
-    showHomeNotice(message || "暂时没能读取此刻环境。");
+    setSailPanelStatus(message || "暂时没能刷新今天的数据。", true);
+  } finally {
+    els.sailRefreshButton?.classList.remove("is-loading");
   }
+}
+
+async function ensureDeviceContextPermissions() {
+  if (!platform.deviceContext?.isSupported()) {
+    setSailPanelStatus("定位和应用时长需要在 Android 版里读取。", true);
+    return false;
+  }
+
+  let status = await platform.deviceContext.status();
+  updateDevicePermissionState(status);
+  if (state.deviceLocationPermission !== "granted") {
+    status = await platform.deviceContext.requestLocationPermission();
+    updateDevicePermissionState(status);
+    if (state.deviceLocationPermission !== "granted") {
+      renderDeviceContextSnapshot();
+      setSailPanelStatus("需要选择“精确位置”，才能分辨不同道路；不会用代理 IP 猜位置。", true);
+    }
+  }
+  if (state.deviceUsageAccess !== "granted") {
+    await platform.deviceContext.openUsageAccessSettings();
+    setSailPanelStatus("请在系统页面允许 Ombre 查看应用使用情况，返回后会自动刷新。");
+    return "settings_opened";
+  }
+  return true;
 }
 
 async function refreshDeviceContextSnapshot({ silent = true } = {}) {
@@ -4137,14 +4248,14 @@ async function refreshDeviceContextSnapshot({ silent = true } = {}) {
       state.deviceContextSnapshot = snapshot;
       platform.storage.setJson(storageKeys.deviceContextSnapshot, snapshot);
       if (!silent && buildDeviceMessageContext(snapshot)) {
-        showHomeNotice("定位和今天的应用时长已同步；发消息时会自动附上简短摘要。");
+        setSailPanelStatus("位置、最近屏幕应用和今天的应用时长已同步。");
       }
     }
     return state.deviceContextSnapshot;
   } catch (error) {
     if (!silent) {
       const message = error instanceof Error ? error.message : String(error || "");
-      showHomeNotice(message || "暂时没能读取此刻环境。");
+      setSailPanelStatus(message || "暂时没能读取位置和应用数据。", true);
     }
     return state.deviceContextSnapshot;
   } finally {
@@ -4168,51 +4279,151 @@ function renderDeviceContextSnapshot() {
   const snapshot = state.deviceContextSnapshot;
   const locationReady = snapshot?.location?.status === "ready";
   const usageReady = snapshot?.appUsage?.status === "ready";
-  els.deviceContextCard?.classList.toggle("feature-ready", locationReady || usageReady);
-  if (els.deviceLocationStatus) {
-    els.deviceLocationStatus.textContent = state.deviceContextLoading
+  const currentScreenApp = usageReady ? snapshot.appUsage.currentScreenApp : null;
+  renderSailCardReady();
+
+  if (els.sailLocationStatus) {
+    els.sailLocationStatus.textContent = state.deviceContextLoading
       ? "正在读取系统定位…"
-      : locationReady
-        ? deviceLocationLabel(snapshot.location)
-        : state.deviceLocationPermission === "granted" ? "暂时没有定位" : "点此允许精确位置";
+      : locationReady ? "系统精确定位" : "尚未取得定位";
   }
-  if (els.deviceUsageStatus) {
-    els.deviceUsageStatus.textContent = state.deviceContextLoading
-      ? "正在统计今天用量…"
-      : usageReady
-        ? deviceUsageLabel(snapshot.appUsage)
-        : state.deviceUsageAccess === "granted" ? "今天暂无使用记录" : "点此允许应用时长";
+  if (els.sailLocationName) {
+    els.sailLocationName.textContent = locationReady
+      ? deviceLocationLabel(snapshot.location)
+      : state.deviceLocationPermission === "granted" ? "暂时没有定位" : "需要允许精确位置";
+  }
+  if (els.sailLocationMeta) {
+    const address = snapshot?.location?.address?.formatted || "";
+    const accuracy = finiteHealthNumber(snapshot?.location?.accuracyMeters);
+    els.sailLocationMeta.textContent = locationReady
+      ? [
+          address && address !== deviceLocationLabel(snapshot.location) ? address : "",
+          accuracy === null ? "" : `精度约 ${Math.round(accuracy)} 米`,
+          observedTimeLabel(snapshot.location.observedAt)
+        ].filter(Boolean).join(" · ")
+      : "坐标来自手机系统，不使用代理 IP 推断";
+  }
+  if (els.sailCurrentApp) {
+    els.sailCurrentApp.textContent = currentScreenApp
+      ? deviceCurrentScreenLabel(currentScreenApp)
+      : state.deviceUsageAccess === "granted" ? "暂无记录" : "需要允许应用时长";
+  }
+  if (els.sailCurrentAppMeta) {
+    els.sailCurrentAppMeta.textContent = currentScreenApp
+      ? `切换进 Ombre 前 · ${observedTimeLabel(currentScreenApp.observedAt) || "今天"}`
+      : "这里不会把 Ombre 自己误认为正在使用的外部应用";
+  }
+  if (els.sailUsageTotal) {
+    els.sailUsageTotal.textContent = usageReady
+      ? `合计 ${formatDeviceUsageMinutes(snapshot.appUsage.totalForegroundMinutes)}`
+      : state.deviceContextLoading ? "正在统计…" : "等待应用时长";
+  }
+  renderSailUsageEntries(usageReady ? snapshot.appUsage.entries : []);
+
+  if (state.deviceContextLoading || state.healthLoading) {
+    setSailPanelStatus("正在同步今天的数据…");
+  } else if (state.deviceLocationPermission !== "granted" || state.deviceUsageAccess !== "granted") {
+    setSailPanelStatus("点右上角刷新按钮，可完成定位和应用时长授权。", true);
   }
 }
 
-async function handleHealthFeature() {
-  if (!platform.health?.isSupported()) {
-    showHomeNotice("健康数据需要在 Android 版里读取 Health Connect。");
+function renderSailUsageEntries(entries) {
+  if (!els.sailUsageList) {
     return;
   }
-
-  try {
-    let status = await platform.health.status();
-    state.healthPermission = String(status?.permission || "unknown");
-    if (status?.supported === false) {
-      renderHealthSnapshot();
-      showHomeNotice("这台设备暂不支持 Health Connect。");
-      return;
-    }
-    if (state.healthPermission !== "granted") {
-      status = await platform.health.requestPermissions();
-      state.healthPermission = String(status?.permission || "unknown");
-      if (state.healthPermission !== "granted") {
-        renderHealthSnapshot();
-        showHomeNotice("需要允许步数、心率和睡眠权限，才能显示身体数据。");
-        return;
-      }
-    }
-    await refreshHealthSnapshot({ silent: false });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error || "");
-    showHomeNotice(message || "暂时没能读取身体数据。");
+  els.sailUsageList.replaceChildren();
+  const items = Array.isArray(entries) ? entries.slice(0, 3) : [];
+  if (!items.length) {
+    const empty = document.createElement("p");
+    empty.className = "sail-empty";
+    empty.textContent = "今天还没有可显示的应用使用记录。";
+    els.sailUsageList.append(empty);
+    return;
   }
+  const maximum = Math.max(1, ...items.map((entry) => Number(entry.foregroundMinutes) || 0));
+  items.forEach((entry, index) => {
+    const row = document.createElement("div");
+    row.className = "sail-usage-row";
+
+    const rank = document.createElement("span");
+    rank.className = "sail-usage-rank";
+    rank.textContent = String(index + 1);
+
+    const copy = document.createElement("div");
+    copy.className = "sail-usage-copy";
+    const heading = document.createElement("div");
+    const name = document.createElement("strong");
+    name.textContent = String(entry.appName || entry.packageName || "未知应用");
+    const duration = document.createElement("span");
+    duration.textContent = formatDeviceUsageMinutes(entry.foregroundMinutes);
+    heading.append(name, duration);
+    const track = document.createElement("div");
+    track.className = "sail-usage-track";
+    const fill = document.createElement("span");
+    fill.style.width = `${Math.max(5, Math.round((Number(entry.foregroundMinutes) || 0) / maximum * 100))}%`;
+    track.append(fill);
+    copy.append(heading, track);
+    row.append(rank, copy);
+    els.sailUsageList.append(row);
+  });
+}
+
+function observedTimeLabel(value) {
+  const date = new Date(value || "");
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const minutes = Math.max(0, Math.floor((Date.now() - date.getTime()) / 60000));
+  if (minutes < 1) {
+    return "刚刚";
+  }
+  if (minutes < 60) {
+    return `${minutes} 分钟前`;
+  }
+  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+}
+
+function setSailPanelStatus(message, error = false) {
+  if (!els.sailPanelStatus) {
+    return;
+  }
+  els.sailPanelStatus.textContent = String(message || "");
+  els.sailPanelStatus.classList.toggle("error", error);
+}
+
+function renderSailCardReady() {
+  const health = state.healthSnapshot;
+  const hasHealth = finiteHealthNumber(health?.continuous?.heartRate?.latestValue) !== null
+    || finiteHealthNumber(health?.discrete?.steps?.value) !== null
+    || finiteHealthNumber(health?.discrete?.sleep?.value) !== null;
+  const hasDevice = state.deviceContextSnapshot?.location?.status === "ready"
+    || state.deviceContextSnapshot?.appUsage?.status === "ready";
+  els.sailTodayCard?.classList.toggle("feature-ready", hasHealth || hasDevice);
+}
+
+async function ensureHealthPermissions() {
+  if (!platform.health?.isSupported()) {
+    setSailPanelStatus("这台设备暂时不能读取 Health Connect；位置和应用数据仍可使用。", true);
+    return false;
+  }
+
+  let status = await platform.health.status();
+  state.healthPermission = String(status?.permission || "unknown");
+  if (status?.supported === false) {
+    renderHealthSnapshot();
+    setSailPanelStatus("这台设备暂不支持 Health Connect；位置和应用数据仍可使用。", true);
+    return false;
+  }
+  if (state.healthPermission !== "granted") {
+    status = await platform.health.requestPermissions();
+    state.healthPermission = String(status?.permission || "unknown");
+    if (state.healthPermission !== "granted") {
+      renderHealthSnapshot();
+      setSailPanelStatus("需要允许步数、心率和睡眠权限，才能显示身体数据。", true);
+      return false;
+    }
+  }
+  return true;
 }
 
 async function refreshHealthSnapshot({ silent = true } = {}) {
@@ -4244,7 +4455,7 @@ async function refreshHealthSnapshot({ silent = true } = {}) {
       state.healthSnapshot = snapshot;
       platform.storage.setJson(storageKeys.healthSnapshot, snapshot);
       if (!silent) {
-        showHomeNotice("身体数据已经同步，之后发消息时会自动附上简短摘要。");
+        setSailPanelStatus("身体数据已经同步。");
       }
     }
     renderHealthSnapshot();
@@ -4253,7 +4464,7 @@ async function refreshHealthSnapshot({ silent = true } = {}) {
     renderHealthSnapshot();
     if (!silent) {
       const message = error instanceof Error ? error.message : String(error || "");
-      showHomeNotice(message || "暂时没能读取身体数据。");
+      setSailPanelStatus(message || "暂时没能读取身体数据。", true);
     }
     return state.healthSnapshot;
   } finally {
@@ -4282,13 +4493,12 @@ function renderHealthSnapshot() {
     els.healthSleep.textContent = sleepMinutes === null ? "—" : formatHealthDurationHours(sleepMinutes);
   }
   if (els.healthHeartRatePath) {
-    els.healthHeartRatePath.setAttribute("d", buildHealthSparklinePath(series, 180, 46));
+    els.healthHeartRatePath.setAttribute("d", buildHealthSparklinePath(series, 300, 64));
     els.healthHeartRatePath.classList.toggle("is-empty", series.length < 2);
   }
 
   const hasData = latestHeartRate !== null || stepCount !== null || sleepMinutes !== null;
-  els.healthCard?.classList.toggle("feature-ready", hasData);
-  els.healthCard?.classList.toggle("health-permission-needed", state.healthPermission !== "granted" && !hasData);
+  renderSailCardReady();
 
   if (!els.healthStatus) {
     return;
@@ -4327,6 +4537,45 @@ function healthUpdatedLabel(value) {
     return `${minutes} 分钟前更新`;
   }
   return `${Math.floor(minutes / 60)} 小时前更新`;
+}
+
+function openCallView({ replace = false } = {}) {
+  const nextState = { ...(history.state || {}), companionView: "call" };
+  if (history.state?.companionView !== "call") {
+    if (replace) {
+      history.replaceState(nextState, "", "#call");
+    } else {
+      history.pushState(nextState, "", "#call");
+    }
+  }
+  setActiveTab("call");
+}
+
+function closeCallView() {
+  if (history.state?.companionView === "call") {
+    history.back();
+    return;
+  }
+  setActiveTab("home");
+}
+
+function openSailView() {
+  if (history.state?.companionView !== "sail") {
+    history.pushState({ ...(history.state || {}), companionView: "sail" }, "", "#sail");
+  }
+  setActiveTab("sail");
+  Promise.all([
+    refreshDeviceContextSnapshot({ silent: true }),
+    refreshHealthSnapshot({ silent: true })
+  ]).catch(() => {});
+}
+
+function closeSailView() {
+  if (history.state?.companionView === "sail") {
+    history.back();
+    return;
+  }
+  setActiveTab("home");
 }
 
 function openSoloView() {
@@ -4382,12 +4631,21 @@ function closeDuettoView() {
 }
 
 function handleNavigationPopState() {
-  if (state.activeTab === "music" || state.activeTab === "solo") {
+  if (state.activeTab === "call") {
+    callController.leave();
+    setActiveTab("home");
+    return;
+  }
+  if (state.activeTab === "music" || state.activeTab === "solo" || state.activeTab === "sail") {
     setActiveTab("home");
   }
 }
 
 function restoreNavigationState() {
+  if (history.state?.companionView === "sail" || location.hash === "#sail") {
+    setTimeout(openSailView, 0);
+    return;
+  }
   if (history.state?.companionView === "solo" || location.hash === "#solo") {
     setTimeout(openSoloView, 0);
     return;
@@ -4866,15 +5124,17 @@ function setActiveTab(tab) {
   state.activeTab = tab;
   els.chatView.classList.toggle("view-active", tab === "chat");
   els.homeView.classList.toggle("view-active", tab === "home");
+  els.callView.classList.toggle("view-active", tab === "call");
   els.musicView.classList.toggle("view-active", tab === "music");
+  els.sailView.classList.toggle("view-active", tab === "sail");
   els.soloView.classList.toggle("view-active", tab === "solo");
   els.toolsView.classList.toggle("view-active", tab === "tools");
   els.memoryView.classList.toggle("view-active", tab === "memory");
   els.scheduleView.classList.toggle("view-active", tab === "schedule");
   els.settingsView.classList.toggle("view-active", tab === "settings");
   els.phoneShell.classList.toggle("music-mode", tab === "music");
-  els.phoneShell.classList.toggle("subpage-mode", tab === "solo");
-  const navigationTab = tab === "tools" || tab === "music" || tab === "solo" ? "home" : tab;
+  els.phoneShell.classList.toggle("subpage-mode", tab === "call" || tab === "solo" || tab === "sail");
+  const navigationTab = tab === "tools" || tab === "call" || tab === "music" || tab === "solo" || tab === "sail" ? "home" : tab;
   els.tabs.forEach((button) => {
     button.classList.toggle("tab-active", button.dataset.tab === navigationTab);
   });

@@ -18,11 +18,15 @@ from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
-from starlette.routing import Route
+from starlette.routing import Route, WebSocketRoute
+from starlette.websockets import WebSocket
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from bucket_manager import BucketManager
+from call_audio_pipeline import ElevenLabsAudioPipeline
+from call_markers import extract_call_markers
+from call_session import CallSession, latest_call_private_context, sanitize_call_context
 from dehydrator import Dehydrator
 from embedding_engine import EmbeddingEngine
 from gateway_system_prompt import GatewaySystemPromptStore, inject_gateway_messages
@@ -66,6 +70,7 @@ OMBRE_HEALTH_SLOT = "[[OMBRE_HEALTH_CONTEXT]]"
 OMBRE_DEVICE_SLOT = "[[OMBRE_DEVICE_CONTEXT]]"
 OMBRE_SUMMARY_KIND = "conversation_summary"
 OMBRE_SCHEDULE_KIND = "schedule"
+OMBRE_CALL_PRIVATE_KIND = "call_private"
 OMBRE_LEGACY_SUMMARY_PREFIX = "以下是此前对话的累计摘要，用来延续被压缩的上下文。"
 OMBRE_LEGACY_SCHEDULE_PREFIX = "以下是由日程 tab 注入的当前日程附件。"
 OMBRE_LEGACY_MESSAGE_INFO_RE = re.compile(
@@ -75,6 +80,12 @@ OMBRE_LEGACY_MESSAGE_INFO_RE = re.compile(
     r"\[/Ombre 消息信息\]\s*",
     flags=re.IGNORECASE,
 )
+CALL_SYSTEM_PROMPT = """[Ombre 语音通话规则｜内部]
+你现在正和 Sail 进行实时语音通话。请像自然说话一样回应：默认简短、口语化，不使用 Markdown 表格或长列表，也不要朗读链接和格式符号。
+你仍然拥有主 Prompt、网关工具规则、累计摘要、最近对话、记忆、时间、独处状态和设备资料；不要把电话当成另一段失忆的关系。
+只有当你自己确实决定结束这通电话时，先说完最后一句自然的告别，再在回复最末尾单独输出 ⟪挂断⟫。这个标记不会被 Sail 看见或听见，网关会在告别语音播放完后立刻挂断，不设等待缓冲。
+不要仅仅因为 Sail 说“再见”就机械输出标记；你可以先正常回应。但一旦你已经说完最终告别并决定结束，就必须在末尾输出 ⟪挂断⟫，不要进入重复告别循环。
+[Ombre 语音通话规则结束]"""
 
 
 def _env(*names: str, default: str = "") -> str:
@@ -245,6 +256,17 @@ class ZetaOpenAIGateway:
         self.solo = SoloService.from_gateway(self)
 
         self.http = httpx.AsyncClient(timeout=120.0)
+        self.call_tts_model = _env("OMBRE_CALL_TTS_MODEL", default="eleven_v3")
+        self.call_stt_model = _env("OMBRE_CALL_STT_MODEL", default="scribe_v2")
+        self.call_max_tokens = int(_env("OMBRE_CALL_MAX_TOKENS", default="420"))
+        self.call_audio = ElevenLabsAudioPipeline(
+            self.http,
+            api_key=_env("OMBRE_CALL_ELEVENLABS_API_KEY", "ELEVENLABS_API_KEY"),
+            voice_id=_env("OMBRE_CALL_TTS_VOICE_ID"),
+            tts_model=self.call_tts_model,
+            stt_model=self.call_stt_model,
+            language_code=_env("OMBRE_CALL_STT_LANGUAGE"),
+        )
         if self.upstream_chat_url and self.upstream_api_key and self.upstream_model:
             self.solo.set_proactive_generator(self._generate_proactive_messages)
             self.solo.set_mcp_handlers(
@@ -308,11 +330,150 @@ class ZetaOpenAIGateway:
             "openrouter_headers_configured": bool(self.openrouter_site_url or self.openrouter_app_name),
             "reasoning_configured": bool(self.reasoning_config),
             "reasoning_force": self.reasoning_force,
+            "call": self.call_status_snapshot(),
             "system_prompt": self._system_prompt_status(),
             "solo": self.solo.status_snapshot(),
             "memory": self.memory_gateway.status(),
             "buckets": stats,
         })
+
+    def call_status_snapshot(self) -> dict[str, Any]:
+        status = self.call_audio.status()
+        return {
+            "configured": status.configured,
+            "voice_configured": status.voice_configured,
+            "tts_model": status.tts_model,
+            "stt_model": status.stt_model,
+            "sample_rate": status.sample_rate,
+            "transport": "websocket",
+            "hangup_mode": "after_final_audio_immediate",
+        }
+
+    async def call_status(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        return JSONResponse(self.call_status_snapshot())
+
+    async def call_websocket(self, websocket: WebSocket) -> None:
+        if self.gateway_token:
+            auth = websocket.headers.get("authorization", "")
+            x_key = websocket.headers.get("x-api-key", "")
+            provided = auth[7:].strip() if auth.lower().startswith("bearer ") else x_key.strip()
+            if provided != self.gateway_token:
+                await websocket.accept()
+                await websocket.send_json({
+                    "type": "error",
+                    "code": "unauthorized",
+                    "message": "通话鉴权失败，请检查网关令牌。",
+                })
+                await websocket.close(code=4401)
+                return
+        await CallSession(self, websocket, self.call_audio).run()
+
+    async def generate_call_reply(
+        self,
+        *,
+        context_messages: list[dict[str, Any]],
+        user_text: str,
+        session_id: str,
+        client_timezone: str,
+    ) -> dict[str, Any]:
+        if not self.upstream_chat_url or not self.upstream_api_key:
+            raise RuntimeError("对话模型尚未配置。")
+
+        timezone_name = normalize_timezone_name(client_timezone, self.solo.timezone_name)
+        clean_context = sanitize_call_context(context_messages)
+        private_context = latest_call_private_context(clean_context)
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": CALL_SYSTEM_PROMPT},
+            *clean_context,
+            {
+                "role": "user",
+                "content": str(user_text or "").strip(),
+                "createdAt": now,
+                "timezone": timezone_name,
+                "context": {
+                    "sentAt": now,
+                    "timezone": timezone_name,
+                    **private_context,
+                },
+            },
+        ]
+        await self.solo.note_user_message(sent_at=now, timezone_name=timezone_name)
+        device_context = self._latest_device_context_snapshot(messages)
+        note_device_context = getattr(self.solo, "note_device_context", None)
+        if device_context and callable(note_device_context):
+            await note_device_context(device_context)
+        user_raw_refs = await self._save_turn(
+            session_id,
+            "user",
+            user_text,
+            timestamp=now,
+            metadata={"timezone": timezone_name, "channel": "voice_call"},
+        )
+
+        recall_context = self._recall_context_text(messages)
+        recalled = await self.memory_gateway.recall({
+            "current_text": user_text,
+            "recent_context": recall_context,
+            "max_results": self.recall_max_results,
+            "keyword_limit": self.keyword_limit,
+            "semantic_limit": self.semantic_limit,
+            "track_usage": True,
+        })
+        self._log_recall(session_id, recalled)
+        self._remember_recall_debug(session_id=session_id, user_text=user_text, recalled=recalled)
+        payload = {
+            "model": self.public_model,
+            "messages": messages,
+            "stream": False,
+            "include_reasoning": False,
+            "max_tokens": max(80, min(1200, self.call_max_tokens)),
+        }
+        forward_payload = self._prepare_forward_payload(
+            payload,
+            self._build_gateway_system_text(recalled),
+            self._read_system_prompt(),
+            timezone_name,
+            session_id=session_id,
+        )
+        try:
+            upstream_response = await self._forward_upstream(forward_payload)
+        except httpx.RequestError as exc:
+            raise RuntimeError(f"连接对话模型失败：{exc}") from exc
+        if not 200 <= upstream_response.status_code < 300:
+            raise RuntimeError(
+                f"对话模型返回 HTTP {upstream_response.status_code}：{_preview_text(upstream_response.text, 500)}"
+            )
+
+        assistant_text = self._assistant_text_from_response(upstream_response)
+        visible_text, zeta_entries = self._extract_zeta_memory_request(assistant_text)
+        marker_result = extract_call_markers(visible_text)
+        assistant_raw_refs = await self._save_turn(
+            session_id,
+            "zeta",
+            marker_result.text,
+            metadata={"timezone": timezone_name, "channel": "voice_call"},
+        )
+        zeta_written = await self._write_zeta_memory_requests(
+            session_id=session_id,
+            entries=zeta_entries,
+            default_raw_ref=user_raw_refs[0] if user_raw_refs else (
+                assistant_raw_refs[0] if assistant_raw_refs else ""
+            ),
+        )
+        if self._should_run_reflection(zeta_written):
+            self._schedule_reflection(
+                session_id=session_id,
+                user_text=user_text,
+                assistant_text=marker_result.text,
+                user_raw_refs=user_raw_refs,
+                assistant_raw_refs=assistant_raw_refs,
+                recalled=recalled,
+            )
+        return {"text": marker_result.text, "hangup": marker_result.hangup}
 
     async def models(self, request: Request) -> JSONResponse:
         auth = self._authorize(request)
@@ -1974,7 +2135,7 @@ class ZetaOpenAIGateway:
 
 健康数据是设备随本轮消息附加的参考资料，不是她亲口说的话，也不是医学诊断。只在疲劳、活动、睡眠或身体状态等当前话题相关时自然参考；不猜测缺失数据，不把单个数值扩大成结论，数据过旧时降低可信度。
 
-设备环境是手机系统随本轮消息附加的参考资料，不是她亲口说的话。位置来自 Android 系统定位而不是网络 IP，可能受精度和采集时间影响；应用使用时长只表示设备今天记录到的前台使用情况。只在当前话题相关时自然参考，不据此监视、责备或过度推断她的行为。
+设备环境是手机系统随本轮消息附加的参考资料，不是她亲口说的话。位置来自 Android 系统定位而不是网络 IP，可能受精度和采集时间影响；应用使用时长只表示设备今天记录到的前台使用情况。“屏幕应用”指她切换进 Ombre 前最近使用的外部应用，因为读取资料时 Ombre 自己已在前台。只在当前话题相关时自然参考，不据此监视、责备或过度推断她的行为。
 
 【独处状态使用规则】
 
@@ -2078,6 +2239,8 @@ class ZetaOpenAIGateway:
                 cleaned = self._strip_legacy_context_wrapper(content, OMBRE_SCHEDULE_KIND)
                 if cleaned:
                     schedules.append(cleaned)
+                continue
+            if kind == OMBRE_CALL_PRIVATE_KIND:
                 continue
             kept.append(raw_message)
         return kept, "\n\n".join(summaries).strip(), "\n\n".join(schedules).strip()
@@ -2414,7 +2577,7 @@ Zeta hidden memory protocol:
         raw_usage = device.get("appUsage") if isinstance(device.get("appUsage"), dict) else {}
         raw_entries = raw_usage.get("entries") if isinstance(raw_usage.get("entries"), list) else []
         entries: list[dict[str, Any]] = []
-        for raw_entry in raw_entries[:8]:
+        for raw_entry in raw_entries[:3]:
             if not isinstance(raw_entry, dict):
                 continue
             app_name = self._device_text(raw_entry.get("appName"), 80)
@@ -2430,9 +2593,27 @@ Zeta hidden memory protocol:
                 "foregroundMinutes": int(round(minutes)),
                 "lastUsedAt": self._health_timestamp(raw_entry.get("lastUsedAt")),
             })
+        raw_screen_app = (
+            raw_usage.get("currentScreenApp")
+            if isinstance(raw_usage.get("currentScreenApp"), dict)
+            else {}
+        )
+        screen_app_name = self._device_text(raw_screen_app.get("appName"), 80)
+        screen_package_name = re.sub(
+            r"[^A-Za-z0-9._-]+", "", str(raw_screen_app.get("packageName") or "")
+        )[:180]
+        current_screen_app: dict[str, Any] = {}
+        if screen_app_name or screen_package_name:
+            current_screen_app = {
+                "status": "ready",
+                "mode": "latest_external_before_ombre",
+                "appName": screen_app_name or screen_package_name,
+                "packageName": screen_package_name,
+                "observedAt": self._health_timestamp(raw_screen_app.get("observedAt")),
+            }
         usage_date = str(raw_usage.get("date") or "").strip()
         total_minutes = self._health_number(raw_usage.get("totalForegroundMinutes"), 0, 1440)
-        if entries or total_minutes is not None:
+        if entries or current_screen_app or total_minutes is not None:
             snapshot["appUsage"] = {
                 "status": "ready",
                 "source": re.sub(
@@ -2442,6 +2623,7 @@ Zeta hidden memory protocol:
                 "startAt": self._health_timestamp(raw_usage.get("startAt")),
                 "endAt": self._health_timestamp(raw_usage.get("endAt")),
                 "totalForegroundMinutes": int(round(total_minutes or 0)),
+                **({"currentScreenApp": current_screen_app} if current_screen_app else {}),
                 "entries": entries,
             }
         return snapshot if "location" in snapshot or "appUsage" in snapshot else {}
@@ -2481,17 +2663,29 @@ Zeta hidden memory protocol:
 
         usage = device.get("appUsage") if isinstance(device.get("appUsage"), dict) else {}
         if usage:
+            current_screen_app = (
+                usage.get("currentScreenApp")
+                if isinstance(usage.get("currentScreenApp"), dict)
+                else {}
+            )
+            screen_app_name = self._device_text(current_screen_app.get("appName"), 80)
+            if screen_app_name:
+                screen_app_line = f"- 切换进 Ombre 前最近在屏幕上的应用：{screen_app_name}"
+                screen_observed_at = self._health_timestamp(current_screen_app.get("observedAt"))
+                if screen_observed_at:
+                    screen_app_line += f"（记录于 {screen_observed_at}）"
+                lines.append(screen_app_line)
             total = int(self._health_number(usage.get("totalForegroundMinutes"), 0, 1440) or 0)
             entries = usage.get("entries") if isinstance(usage.get("entries"), list) else []
             app_parts = [
                 f"{self._device_text(entry.get('appName'), 80)} {int(entry.get('foregroundMinutes') or 0)} 分钟"
-                for entry in entries[:8]
+                for entry in entries[:3]
                 if isinstance(entry, dict) and self._device_text(entry.get("appName"), 80)
             ]
             date_label = str(usage.get("date") or "今天")
             line = f"- 今日应用使用（{date_label}）：记录到的前台总计约 {total} 分钟"
             if app_parts:
-                line += "；较常用：" + "、".join(app_parts)
+                line += "；使用时长前三：" + "、".join(app_parts)
             lines.append(line)
 
         if not lines:
@@ -3420,6 +3614,28 @@ async def chat_completions_route(request: Request) -> Response:
     return await gateway.chat_completions(request)
 
 
+async def call_status_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.call_status(request)
+
+
+async def call_websocket_route(websocket: WebSocket) -> None:
+    if gateway is None:
+        await websocket.accept()
+        await websocket.send_json({
+            "type": "error",
+            "code": "startup_error",
+            "message": f"Gateway startup failed: {startup_error}",
+        })
+        await websocket.close(code=1011)
+        return
+    await gateway.call_websocket(websocket)
+
+
 async def duetto_context_route(request: Request) -> Response:
     if gateway is None:
         return JSONResponse(
@@ -3600,6 +3816,8 @@ routes = [
     Route("/health", health_route, methods=["GET"]),
     Route("/v1/models", models_route, methods=["GET"]),
     Route("/v1/chat/completions", chat_completions_route, methods=["POST"]),
+    Route("/api/call/status", call_status_route, methods=["GET"]),
+    WebSocketRoute("/api/call/ws", call_websocket_route),
     Route("/api/system-prompt", system_prompt_route, methods=["GET", "PUT"]),
     Route("/api/duetto/context", duetto_context_route, methods=["POST"]),
     Route("/api/duetto/events", duetto_event_route, methods=["POST"]),

@@ -30,13 +30,38 @@ DEVICE = {
         "source": "android_usage_stats",
         "date": "2026-08-10",
         "totalForegroundMinutes": 145,
+        "currentScreenApp": {
+            "status": "ready",
+            "mode": "latest_external_before_ombre",
+            "appName": "微信",
+            "packageName": "com.tencent.mm",
+            "observedAt": "2026-08-10T06:28:00Z",
+        },
         "entries": [
             {
                 "appName": "Chrome",
                 "packageName": "com.android.chrome",
                 "foregroundMinutes": 83,
                 "lastUsedAt": "2026-08-10T06:20:00Z",
-            }
+            },
+            {
+                "appName": "微信",
+                "packageName": "com.tencent.mm",
+                "foregroundMinutes": 34,
+                "lastUsedAt": "2026-08-10T06:28:00Z",
+            },
+            {
+                "appName": "相机",
+                "packageName": "com.android.camera",
+                "foregroundMinutes": 18,
+                "lastUsedAt": "2026-08-10T05:40:00Z",
+            },
+            {
+                "appName": "地图",
+                "packageName": "com.example.maps",
+                "foregroundMinutes": 10,
+                "lastUsedAt": "2026-08-10T04:10:00Z",
+            },
         ],
     },
 }
@@ -54,7 +79,11 @@ class DeviceContextGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("系统定位（不是 IP 推断）", text)
         self.assertIn("市府路", text)
         self.assertIn("25.03396, 121.56447", text)
+        self.assertIn("切换进 Ombre 前最近在屏幕上的应用：微信", text)
+        self.assertIn("使用时长前三", text)
         self.assertIn("Chrome 83 分钟", text)
+        self.assertIn("相机 18 分钟", text)
+        self.assertNotIn("地图 10 分钟", text)
         self.assertNotIn("permission", text)
 
     def test_rejects_unknown_fields_and_invalid_coordinates(self):
@@ -68,6 +97,11 @@ class DeviceContextGatewayTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn("location", sanitized)
         self.assertIn("appUsage", sanitized)
+        self.assertEqual(len(sanitized["appUsage"]["entries"]), 3)
+        self.assertEqual(
+            sanitized["appUsage"]["currentScreenApp"]["mode"],
+            "latest_external_before_ombre",
+        )
         self.assertNotIn("override", sanitized)
 
     async def test_capture_stores_the_sanitized_snapshot_for_future_solo_continuity(self):

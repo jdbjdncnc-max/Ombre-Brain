@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildDeviceMessageContext,
+  deviceCurrentScreenLabel,
   deviceLocationLabel,
   deviceUsageLabel,
   normalizeDeviceContextSnapshot
@@ -36,13 +37,23 @@ const snapshot = {
     startAt: "2026-08-09T16:00:00Z",
     endAt: "2026-08-10T06:30:00Z",
     totalForegroundMinutes: 145,
+    currentScreenApp: {
+      status: "ready",
+      mode: "latest_external_before_ombre",
+      appName: "小红书",
+      packageName: "com.xingin.xhs",
+      observedAt: "2026-08-10T06:29:40Z"
+    },
     entries: [
       {
         appName: "Chrome",
         packageName: "com.android.chrome",
         foregroundMinutes: 83,
         lastUsedAt: "2026-08-10T06:20:00Z"
-      }
+      },
+      { appName: "小红书", packageName: "com.xingin.xhs", foregroundMinutes: 41 },
+      { appName: "网易云音乐", packageName: "com.netease.cloudmusic", foregroundMinutes: 18 },
+      { appName: "第四名", packageName: "example.fourth", foregroundMinutes: 3 }
     ]
   }
 };
@@ -52,8 +63,13 @@ test("normalizes precise system location and today's app usage", () => {
   assert.equal(normalized.location.address.thoroughfare, "市府路");
   assert.equal(normalized.location.accuracyMeters, 12.4);
   assert.equal(normalized.appUsage.entries[0].foregroundMinutes, 83);
+  assert.equal(normalized.appUsage.entries.length, 3);
+  assert.equal(deviceCurrentScreenLabel(normalized.appUsage.currentScreenApp), "小红书");
   assert.equal(deviceLocationLabel(normalized.location), "市府路");
-  assert.equal(deviceUsageLabel(normalized.appUsage), "Chrome 1 小时 23 分");
+  assert.equal(
+    deviceUsageLabel(normalized.appUsage),
+    "Chrome 1 小时 23 分 · 小红书 41 分钟 · 网易云音乐 18 分钟"
+  );
 });
 
 test("message context includes only normalized location and usage fields", () => {
@@ -64,6 +80,7 @@ test("message context includes only normalized location and usage fields", () =>
   });
   assert.equal(context.location.latitude, 25.033964);
   assert.equal(context.appUsage.date, "2026-08-10");
+  assert.equal(context.appUsage.currentScreenApp.appName, "小红书");
   assert.equal("unknown" in context.location, false);
   assert.equal("injected" in context, false);
 });

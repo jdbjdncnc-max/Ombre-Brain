@@ -34,7 +34,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 final class DeviceContextReader {
-    private static final int MAX_USAGE_ENTRIES = 8;
+    private static final int MAX_USAGE_ENTRIES = 3;
     private static final long LOCATION_FRESH_MS = 30 * 1000L;
     private static final long LOCATION_TIMEOUT_MS = 12 * 1000L;
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor();
@@ -265,6 +265,8 @@ final class DeviceContextReader {
         Map<String, Long> foregroundStartedAt = new HashMap<>();
         Map<String, Long> foregroundDurations = new HashMap<>();
         Map<String, Long> lastUsedAt = new HashMap<>();
+        String latestExternalPackage = "";
+        long latestExternalAt = 0L;
         UsageEvents events = manager.queryEvents(startMillis, endMillis);
         UsageEvents.Event event = new UsageEvents.Event();
         while (events != null && events.hasNextEvent()) {
@@ -277,6 +279,12 @@ final class DeviceContextReader {
             if (event.getEventType() == UsageEvents.Event.ACTIVITY_RESUMED) {
                 foregroundStartedAt.putIfAbsent(packageName, timestamp);
                 lastUsedAt.put(packageName, timestamp);
+                if (!packageName.equals(context.getPackageName())
+                    && !isInfrastructurePackage(packageName)
+                    && timestamp >= latestExternalAt) {
+                    latestExternalPackage = packageName;
+                    latestExternalAt = timestamp;
+                }
             } else if (event.getEventType() == UsageEvents.Event.ACTIVITY_PAUSED
                 || event.getEventType() == UsageEvents.Event.ACTIVITY_STOPPED) {
                 Long startedAt = foregroundStartedAt.remove(packageName);
@@ -340,6 +348,15 @@ final class DeviceContextReader {
         result.put("startAt", Instant.ofEpochMilli(startMillis).toString());
         result.put("endAt", Instant.ofEpochMilli(endMillis).toString());
         result.put("totalForegroundMinutes", Math.max(0L, Math.round(totalMillis / 60_000.0)));
+        if (!latestExternalPackage.isEmpty()) {
+            JSObject currentScreenApp = new JSObject();
+            currentScreenApp.put("status", "ready");
+            currentScreenApp.put("mode", "latest_external_before_ombre");
+            currentScreenApp.put("appName", appLabel(context, latestExternalPackage));
+            currentScreenApp.put("packageName", latestExternalPackage);
+            currentScreenApp.put("observedAt", Instant.ofEpochMilli(latestExternalAt).toString());
+            result.put("currentScreenApp", currentScreenApp);
+        }
         result.put("entries", items);
         return result;
     }
@@ -410,7 +427,9 @@ final class DeviceContextReader {
             || value.contains("launcher")
             || value.equals("com.miui.home")
             || value.contains("inputmethod")
-            || value.contains("permissioncontroller");
+            || value.contains("permissioncontroller")
+            || value.contains("packageinstaller")
+            || value.contains("securitycenter");
     }
 
     private static JSObject permissionRequired(String reason) {

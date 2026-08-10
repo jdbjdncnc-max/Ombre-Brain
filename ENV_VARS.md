@@ -59,9 +59,21 @@ OMBRE_SOLO_DAILY_LLM_BUDGET=30
 OMBRE_SOLO_TIMEZONE=Asia/Taipei
 OMBRE_SOLO_MCP_ENABLED=0
 OMBRE_SOLO_MCP_DISCOVERY_TTL_HOURS=24
+
+# Android 原生语音通话
+OMBRE_CALL_ELEVENLABS_API_KEY=your-elevenlabs-key
+OMBRE_CALL_TTS_VOICE_ID=your-saved-voice-id
+OMBRE_CALL_TTS_MODEL=eleven_v3
+OMBRE_CALL_STT_MODEL=scribe_v2
 ```
 
 `OMBRE_SUMMARY_BASE_URL`、`OMBRE_SUMMARY_API_KEY` 和 `OMBRE_SUMMARY_MODEL` 均可省略；省略时分别复用上游对话模型的地址、密钥和模型。前端设置页可覆盖总结模型 ID。总结提示词不会从环境变量读取，只保存在 Companion 当前设备的前端存储中。
+
+Android 拨出电话不需要 Firebase，也不需要把 ElevenLabs 密钥填进手机。把
+`OMBRE_CALL_ELEVENLABS_API_KEY` 和创建音色后得到的 `OMBRE_CALL_TTS_VOICE_ID`
+放进 Zeabur 网关环境变量即可。`OMBRE_CALL_TTS_MODEL` 默认按项目约定使用
+`eleven_v3`；若真机通话时延迟明显，可只把它改成 `eleven_flash_v2_5`，音色 ID
+不需要改变。`GET /api/call/status` 可检查服务器是否已经配齐，但不会返回密钥。
 
 思考内容覆写不需要新增环境变量，也不会使用 `OMBRE_SUMMARY_*`。它始终复用 `OMBRE_UPSTREAM_BASE_URL`、`OMBRE_UPSTREAM_API_KEY` 和 `OMBRE_UPSTREAM_MODEL`；完整对话系统提示词与覆写提示词由当前设备前端随请求提供。
 

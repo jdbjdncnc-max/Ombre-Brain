@@ -5,6 +5,7 @@ export function createBrowserPlatform() {
     notifications: createBrowserNotificationAdapter(),
     health: createBrowserHealthAdapter(),
     deviceContext: createBrowserDeviceContextAdapter(),
+    call: createBrowserCallAdapter(),
     getDefaultApiBaseUrl,
     request,
     readFileAsDataUrl,
@@ -12,6 +13,25 @@ export function createBrowserPlatform() {
     lifecycle: {
       onResume() {},
       onPause() {}
+    }
+  };
+}
+
+function createBrowserCallAdapter() {
+  const unsupported = async () => ({ status: "unsupported", active: false });
+  return {
+    isSupported() {
+      return false;
+    },
+    permission: async () => "unsupported",
+    requestPermission: async () => "unsupported",
+    start: unsupported,
+    hangup: unsupported,
+    setMuted: unsupported,
+    setSpeaker: unsupported,
+    getState: unsupported,
+    onEvent() {
+      return () => {};
     }
   };
 }
