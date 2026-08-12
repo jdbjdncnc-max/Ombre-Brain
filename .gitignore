@@ -19,6 +19,8 @@ data/
 tests/integration/
 tests/regression/
 tests/unit/
+tests/_jd_shopping_tmp/
+tests/_jd_shopping_mcp_tmp/
 
 # Generated package/export artifacts
 *.toolpkg
@@ -50,3 +52,11 @@ mobile/keystore.properties
 mobile/npm-debug.log*
 mobile/android/app/google-services.json
 *firebase-service-account*.json
+
+# Local JD surprise-shopping helper state
+packages/jd-shopping-agent/node_modules/
+packages/jd-shopping-agent/.npm-cache/
+packages/jd-shopping-agent/config.local.json
+packages/jd-shopping-agent/data/
+packages/jd-shopping-agent/screenshots/
+packages/jd-shopping-agent/tests/_tmp/

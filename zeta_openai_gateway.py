@@ -7,7 +7,7 @@ import os
 import re
 import sys
 import time
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +19,7 @@ from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
-from starlette.routing import Route, WebSocketRoute
+from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.websockets import WebSocket
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -33,6 +33,8 @@ from dehydrator import Dehydrator
 from embedding_engine import EmbeddingEngine
 from gateway_system_prompt import GatewaySystemPromptStore, inject_gateway_messages
 from firebase_push import FirebasePushService
+from jd_shopping_gateway import JdShoppingBroker
+from jd_shopping_mcp import build_jd_shopping_mcp
 from solo.appraisal import (
     APPRAISAL_RESPONSE_FORMAT,
     APPRAISAL_TASK_PROMPT,
@@ -269,6 +271,14 @@ class ZetaOpenAIGateway:
         self.solo = SoloService.from_gateway(self)
         self.solo.set_proactive_dispatcher(self.firebase_push.send_proactive)
         call_base_dir = Path(getattr(self.memory_gateway, "base_dir", "") or Path(config["buckets_dir"]) / "gateway")
+        self.jd_shopping = JdShoppingBroker(
+            call_base_dir,
+            enabled=_truthy(_env("OMBRE_JD_SHOPPING_ENABLED")),
+            worker_token=_env("OMBRE_JD_WORKER_TOKEN"),
+            max_budget_cny=float(_env("OMBRE_JD_MAX_BUDGET_CNY", default="500")),
+            task_timeout_seconds=int(_env("OMBRE_JD_TASK_TIMEOUT_SECONDS", default="100")),
+            worker_ttl_seconds=int(_env("OMBRE_JD_WORKER_TTL_SECONDS", default="45")),
+        )
         self.call_delivery = CallDeliveryStore(call_base_dir)
         self.call_push = FirebaseCallPush()
 
@@ -3243,6 +3253,50 @@ Zeta hidden memory protocol:
             return auth
         return JSONResponse(self.solo.mcp.status_snapshot())
 
+    async def jd_shopping_status(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        return JSONResponse(self.jd_shopping.status_snapshot())
+
+    def _authorize_jd_worker(self, request: Request) -> JSONResponse | None:
+        if self.jd_shopping.authorize_worker(request.headers):
+            return None
+        return JSONResponse({"ok": False, "error": "Unauthorized shopping worker"}, status_code=401)
+
+    async def jd_shopping_worker_heartbeat(self, request: Request) -> JSONResponse:
+        auth = self._authorize_jd_worker(request)
+        if auth is not None:
+            return auth
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        return JSONResponse(await self.jd_shopping.heartbeat(body))
+
+    async def jd_shopping_worker_claim(self, request: Request) -> JSONResponse:
+        auth = self._authorize_jd_worker(request)
+        if auth is not None:
+            return auth
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        return JSONResponse(await self.jd_shopping.claim(body))
+
+    async def jd_shopping_worker_complete(self, request: Request) -> JSONResponse:
+        auth = self._authorize_jd_worker(request)
+        if auth is not None:
+            return auth
+        try:
+            body = await request.json()
+            result = await self.jd_shopping.complete(str(request.path_params.get("task_id") or ""), body)
+            return JSONResponse(result)
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        except Exception:
+            return JSONResponse({"ok": False, "error": "Request body must be valid JSON"}, status_code=400)
+
     def _schedule_reflection(
         self,
         *,
@@ -3806,10 +3860,16 @@ Return strict JSON with this shape:
 
 startup_error = ""
 gateway: ZetaOpenAIGateway | None = None
+jd_shopping_mcp_server = None
+jd_shopping_mcp_app = None
 try:
     config = load_config()
     setup_logging(config.get("log_level", "INFO"))
     gateway = ZetaOpenAIGateway(config)
+    jd_shopping_mcp_server, jd_shopping_mcp_app = build_jd_shopping_mcp(
+        gateway.jd_shopping,
+        gateway.gateway_token,
+    )
 except Exception as exc:
     logging.basicConfig(
         level=logging.INFO,
@@ -4081,15 +4141,56 @@ async def solo_mcp_status_route(request: Request) -> Response:
     return await gateway.solo_mcp_status(request)
 
 
+async def jd_shopping_status_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.jd_shopping_status(request)
+
+
+async def jd_shopping_worker_heartbeat_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.jd_shopping_worker_heartbeat(request)
+
+
+async def jd_shopping_worker_claim_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.jd_shopping_worker_claim(request)
+
+
+async def jd_shopping_worker_complete_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.jd_shopping_worker_complete(request)
+
+
 @asynccontextmanager
 async def lifespan(app):
     try:
-        if gateway is not None:
-            try:
-                await gateway.solo.start()
-            except Exception:
-                logger.exception("Solo service failed to start; chat gateway will continue without it")
-        yield
+        async with AsyncExitStack() as stack:
+            if jd_shopping_mcp_app is not None and jd_shopping_mcp_app.router is not None:
+                await stack.enter_async_context(
+                    jd_shopping_mcp_app.router.lifespan_context(jd_shopping_mcp_app.app)
+                )
+            if gateway is not None:
+                try:
+                    await gateway.solo.start()
+                except Exception:
+                    logger.exception("Solo service failed to start; chat gateway will continue without it")
+            yield
     finally:
         if gateway is not None:
             await gateway.close()
@@ -4125,7 +4226,13 @@ routes = [
     Route("/api/solo/mcp/servers/{name}/autonomy", solo_mcp_update_policy_route, methods=["POST"]),
     Route("/api/solo/mcp/servers/{name}/secret", solo_mcp_set_secret_route, methods=["PUT"]),
     Route("/api/solo/mcp/status", solo_mcp_status_route, methods=["GET"]),
+    Route("/api/jd-shopping/status", jd_shopping_status_route, methods=["GET"]),
+    Route("/api/jd-shopping/worker/heartbeat", jd_shopping_worker_heartbeat_route, methods=["POST"]),
+    Route("/api/jd-shopping/worker/claim", jd_shopping_worker_claim_route, methods=["POST"]),
+    Route("/api/jd-shopping/worker/tasks/{task_id:str}/complete", jd_shopping_worker_complete_route, methods=["POST"]),
 ]
+if jd_shopping_mcp_app is not None:
+    routes.append(Mount("/api/jd-shopping", app=jd_shopping_mcp_app))
 
 app = Starlette(routes=routes, lifespan=lifespan)
 app.add_middleware(

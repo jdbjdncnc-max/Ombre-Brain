@@ -60,6 +60,13 @@ OMBRE_SOLO_TIMEZONE=Asia/Taipei
 OMBRE_SOLO_MCP_ENABLED=0
 OMBRE_SOLO_MCP_DISCOVERY_TTL_HOURS=24
 
+# 京东惊喜购物（浏览器仍在用户本机运行）
+OMBRE_JD_SHOPPING_ENABLED=0
+OMBRE_JD_WORKER_TOKEN=use-a-separate-long-random-secret
+OMBRE_JD_MAX_BUDGET_CNY=300
+OMBRE_JD_TASK_TIMEOUT_SECONDS=100
+OMBRE_JD_WORKER_TTL_SECONDS=45
+
 # Android 原生语音通话
 OMBRE_CALL_ELEVENLABS_API_KEY=your-elevenlabs-key
 OMBRE_CALL_TTS_VOICE_ID=your-saved-voice-id
@@ -123,8 +130,14 @@ MCP 客户端默认关闭。设置 `OMBRE_SOLO_MCP_ENABLED=1` 后，工具管理
 MCP 配置中的凭据只能写成 `${ENV_VAR}` 或 `${secret:server.key}`。前一种在 Zeabur 环境
 变量中设置；后一种通过工具管理页写入持久卷里的私密文件，API 永远不会把明文读回。
 
-普通对话会把已测试、已勾选且未停用的工具目录放进 Ombre 系统层；对话模型需要时先发起隐藏请求，
-网关真实调用 MCP 后再把结果交还给模型继续回复。MCP 凭据不会进入提示词、前端响应或日志。
+普通对话会把已测试、已勾选且未停用的工具通过模型原生工具接口提供；网关真实调用 MCP 后
+再把结果交还给模型继续回复。MCP 凭据不会进入提示词、前端响应或日志。
+
+京东购物是普通 MCP，需要同时开启通用 MCP 开关和购物任务桥。设置
+`OMBRE_SOLO_MCP_ENABLED=1`、`OMBRE_JD_SHOPPING_ENABLED=1` 和 `OMBRE_JD_WORKER_TOKEN` 后，
+在工具管理页导入 `https://你的域名/api/jd-shopping/mcp`，测试并勾选工具。设为“停用”时不会把
+购物工具交给对话模型。本机 worker 通过 HTTPS 领取任务；`OMBRE_JD_MAX_BUDGET_CNY` 是云端硬上限，
+本地签名授权还会检查单笔、月度、次数和截止日期。详细设置见 `packages/jd-shopping-agent/README_CN.md`。
 
 独处时的 MCP 行动也复用 `OMBRE_UPSTREAM_*` 对话模型。情绪系统先决定行动方向，对话模型再从
 已授权候选中选择具体服务器、工具和参数；工具的真实返回会写入轨迹，并复用 `OMBRE_SUMMARY_*`

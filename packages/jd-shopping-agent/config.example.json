@@ -1,0 +1,22 @@
+{
+  "gateway": {
+    "url": "https://你的-Ombre-域名",
+    "workerId": "my-windows-pc",
+    "pollIntervalMs": 1500
+  },
+  "policy": {
+    "perOrderCapCny": 300,
+    "monthlyCapCny": 600,
+    "maxOrdersPerMonth": 2,
+    "expiresAt": "2027-08-13",
+    "autoSubmitOrder": true,
+    "tryJdBalancePayment": true,
+    "extraBlockedTerms": []
+  },
+  "browser": {
+    "channel": "edge",
+    "profileDir": "./data/jd-profile",
+    "headless": false,
+    "slowMoMs": 120
+  }
+}
