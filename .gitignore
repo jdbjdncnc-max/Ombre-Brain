@@ -41,8 +41,12 @@ mobile/www/
 mobile/android/.gradle/
 mobile/android/local.properties
 mobile/android/app/build/
+mobile/android/app/google-services.json
+firebase-service-account*.json
 mobile/android/build/
 mobile/*.jks
 mobile/*.keystore
 mobile/keystore.properties
 mobile/npm-debug.log*
+mobile/android/app/google-services.json
+*firebase-service-account*.json

@@ -10,6 +10,7 @@ import time
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -25,12 +26,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from bucket_manager import BucketManager
 from call_audio_pipeline import ElevenLabsAudioPipeline
+from call_delivery import CallDeliveryStore, FirebaseCallPush
 from call_markers import extract_call_markers
 from call_session import CallSession, latest_call_private_context, sanitize_call_context
 from dehydrator import Dehydrator
 from embedding_engine import EmbeddingEngine
 from gateway_system_prompt import GatewaySystemPromptStore, inject_gateway_messages
-from solo.appraisal import APPRAISAL_SYSTEM_PROMPT, build_appraisal_user_text, parse_appraisal_response
+from firebase_push import FirebasePushService
+from solo.appraisal import (
+    APPRAISAL_RESPONSE_FORMAT,
+    APPRAISAL_TASK_PROMPT,
+    build_appraisal_user_text,
+    parse_appraisal_response,
+)
 from solo.duetto import (
     BOOK_NOTE_CREATED,
     DUETTO_APPRAISAL_SYSTEM_PROMPT,
@@ -253,7 +261,16 @@ class ZetaOpenAIGateway:
         ))
 
         self.system_prompt_store = GatewaySystemPromptStore(config["buckets_dir"])
+        self.emotion_prompt_store = GatewaySystemPromptStore(
+            config["buckets_dir"],
+            stem="emotion_prompt",
+        )
+        self.firebase_push = FirebasePushService(config["buckets_dir"])
         self.solo = SoloService.from_gateway(self)
+        self.solo.set_proactive_dispatcher(self.firebase_push.send_proactive)
+        call_base_dir = Path(getattr(self.memory_gateway, "base_dir", "") or Path(config["buckets_dir"]) / "gateway")
+        self.call_delivery = CallDeliveryStore(call_base_dir)
+        self.call_push = FirebaseCallPush()
 
         self.http = httpx.AsyncClient(timeout=120.0)
         self.call_tts_model = _env("OMBRE_CALL_TTS_MODEL", default="eleven_v3")
@@ -267,6 +284,7 @@ class ZetaOpenAIGateway:
             stt_model=self.call_stt_model,
             language_code=_env("OMBRE_CALL_STT_LANGUAGE"),
         )
+        self.solo.set_call_invite_generator(self._create_solo_call_invite)
         if self.upstream_chat_url and self.upstream_api_key and self.upstream_model:
             self.solo.set_proactive_generator(self._generate_proactive_messages)
             self.solo.set_mcp_handlers(
@@ -347,6 +365,8 @@ class ZetaOpenAIGateway:
             "sample_rate": status.sample_rate,
             "transport": "websocket",
             "hangup_mode": "after_final_audio_immediate",
+            "incoming": self.call_delivery.status(),
+            "firebase": self.call_push.status(),
         }
 
     async def call_status(self, request: Request) -> JSONResponse:
@@ -354,6 +374,94 @@ class ZetaOpenAIGateway:
         if auth is not None:
             return auth
         return JSONResponse(self.call_status_snapshot())
+
+    async def call_register_device(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return JSONResponse({"error": "请求正文不是有效 JSON。"}, status_code=400)
+        try:
+            device = self.call_delivery.register_device(
+                body.get("token") if isinstance(body, dict) else "",
+                platform=body.get("platform", "android") if isinstance(body, dict) else "android",
+                app_version=body.get("appVersion", "") if isinstance(body, dict) else "",
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse({"ok": True, "device": device, "incoming": self.call_delivery.status()})
+
+    async def call_invite(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        if request.method == "GET":
+            invite = self.call_delivery.pending_invite(request.query_params.get("id", ""))
+            return JSONResponse({"invite": invite})
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            body = {}
+        invite = await self._create_and_dispatch_call_invite(
+            reason=body.get("reason", "") if isinstance(body, dict) else "",
+            source=body.get("source", "manual") if isinstance(body, dict) else "manual",
+            session_id=body.get("sessionId", "") if isinstance(body, dict) else "",
+        )
+        return JSONResponse({"ok": True, "invite": invite})
+
+    async def call_invite_answer(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        invite_id = str(request.path_params.get("invite_id") or "")
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            body = {}
+        try:
+            invite = self.call_delivery.respond(
+                invite_id,
+                body.get("action", "") if isinstance(body, dict) else "",
+                note=body.get("note", "") if isinstance(body, dict) else "",
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if invite is None:
+            return JSONResponse({"error": "来电邀请不存在。"}, status_code=404)
+        return JSONResponse({"ok": True, "invite": invite})
+
+    async def _create_and_dispatch_call_invite(
+        self,
+        *,
+        reason: Any,
+        source: Any,
+        session_id: Any = "",
+    ) -> dict[str, Any]:
+        invite = self.call_delivery.create_invite(reason, source=source, session_id=session_id)
+        tokens = self.call_delivery.device_tokens()
+        result = await asyncio.to_thread(self.call_push.send_invite, tokens, invite)
+        for token in result.get("invalid_tokens") or []:
+            self.call_delivery.remove_device_token(token)
+        self.call_delivery.mark_push(
+            invite["id"],
+            sent=int(result.get("sent") or 0),
+            failed=int(result.get("failed") or 0),
+            error=result.get("error", ""),
+        )
+        return self.call_delivery.pending_invite(invite["id"]) or invite
+
+    async def _create_solo_call_invite(self, context: dict[str, Any]) -> dict[str, Any]:
+        activity = context.get("activity") if isinstance(context.get("activity"), dict) else {}
+        reason = str(activity.get("felt") or activity.get("summary") or "突然有点想听听你的声音").strip()
+        invite = await self._create_and_dispatch_call_invite(
+            reason=reason,
+            source="solitude",
+            session_id=self.default_session_id,
+        )
+        push = invite.get("push") if isinstance(invite.get("push"), dict) else {}
+        return {"called": True, "invited": True, "pushSent": int(push.get("sent") or 0), "invite": invite}
 
     async def call_websocket(self, websocket: WebSocket) -> None:
         if self.gateway_token:
@@ -526,6 +634,78 @@ class ZetaOpenAIGateway:
                 status_code=400,
             )
         return JSONResponse(status)
+
+    async def emotion_prompt(self, request: Request) -> JSONResponse:
+        if request.method == "PUT" and not self.gateway_token:
+            return JSONResponse(
+                {
+                    "error": {
+                        "message": "OMBRE_GATEWAY_TOKEN must be configured before uploading an emotion prompt",
+                        "type": "gateway_auth_not_configured",
+                    }
+                },
+                status_code=503,
+            )
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        if request.method == "GET":
+            return JSONResponse(self._emotion_prompt_status())
+
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"error": {"message": "Request body must be valid JSON", "type": "invalid_request_error"}},
+                status_code=400,
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"error": {"message": "Request body must be an object", "type": "invalid_request_error"}},
+                status_code=400,
+            )
+        try:
+            status = self._write_emotion_prompt(body.get("content"), body.get("filename"))
+        except ValueError as exc:
+            return JSONResponse(
+                {"error": {"message": str(exc), "type": "invalid_request_error"}},
+                status_code=400,
+            )
+        return JSONResponse(status)
+
+    async def notification_registration(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        if request.method == "GET":
+            return JSONResponse(self.firebase_push.status())
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"error": {"message": "Request body must be valid JSON", "type": "invalid_request_error"}},
+                status_code=400,
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"error": {"message": "Request body must be an object", "type": "invalid_request_error"}},
+                status_code=400,
+            )
+        try:
+            if request.method == "DELETE":
+                result = await self.firebase_push.unregister(body.get("fid"))
+            else:
+                result = await self.firebase_push.register(
+                    body.get("fid"),
+                    device_id=body.get("device_id"),
+                    platform=body.get("platform"),
+                )
+        except ValueError as exc:
+            return JSONResponse(
+                {"error": {"message": str(exc), "type": "invalid_request_error"}},
+                status_code=400,
+            )
+        return JSONResponse(result)
 
     async def duetto_context(self, request: Request) -> JSONResponse:
         if not self.gateway_token:
@@ -1070,13 +1250,13 @@ class ZetaOpenAIGateway:
         auth = self._authorize(request)
         if auth is not None:
             return auth
-        if not self.summary_chat_url or not self.summary_api_key:
+        if not self.upstream_chat_url or not self.upstream_api_key or not self.upstream_model:
             return JSONResponse(
                 {
                     "error": {
-                        "message": "Emotion appraisal model is not configured",
+                        "message": "Conversation model is not configured for emotion appraisal",
                         "type": "server_error",
-                        "hint": "Emotion appraisal reuses the conversation summary model credentials.",
+                        "hint": "Emotion appraisal reuses OMBRE_UPSTREAM_BASE_URL, OMBRE_UPSTREAM_API_KEY, and OMBRE_UPSTREAM_MODEL.",
                     }
                 },
                 status_code=503,
@@ -1101,12 +1281,17 @@ class ZetaOpenAIGateway:
                 status_code=400,
             )
 
-        requested_model = str(payload.get("model") or "").strip()
-        model = requested_model or self.summary_model
-        if not model or len(model) > 200 or any(ord(char) < 32 for char in model):
+        emotion_prompt = self._read_emotion_prompt()
+        if not emotion_prompt:
             return JSONResponse(
-                {"error": {"message": "Emotion appraisal model ID is invalid", "type": "invalid_request_error"}},
-                status_code=400,
+                {
+                    "error": {
+                        "message": "Solitude emotion prompt is not configured",
+                        "type": "server_error",
+                        "hint": "Upload prompt - solitude.md in Settings before emotion appraisal runs.",
+                    }
+                },
+                status_code=503,
             )
         user_reference = str(payload.get("user_reference") or "她").strip() or "她"
         if len(user_reference) > 80 or any(ord(char) < 32 for char in user_reference):
@@ -1185,10 +1370,10 @@ class ZetaOpenAIGateway:
         appraisal_id = "turns_" + hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()[:24]
         try:
             result = await self._run_emotion_appraisal(
-                summary="",
+                summary=str(payload.get("conversation_summary") or "").strip()[:12000],
                 new_messages=messages,
                 current_state=current_state,
-                model=model,
+                model=self.upstream_model,
                 user_reference=user_reference,
                 appraisal_id=appraisal_id,
             )
@@ -1263,10 +1448,15 @@ class ZetaOpenAIGateway:
         solo = getattr(self, "solo", None)
         if solo is None or not bool(getattr(solo, "enabled", False)):
             return None
+        emotion_prompt = self._read_emotion_prompt()
+        if not emotion_prompt:
+            logger.warning("Emotion appraisal skipped because the solitude emotion prompt is not configured")
+            return None
         payload = {
-            "model": model,
+            "model": self.upstream_model,
             "messages": [
-                {"role": "system", "content": APPRAISAL_SYSTEM_PROMPT},
+                {"role": "system", "content": emotion_prompt},
+                {"role": "system", "content": APPRAISAL_TASK_PROMPT},
                 {
                     "role": "user",
                     "content": build_appraisal_user_text(
@@ -1277,12 +1467,17 @@ class ZetaOpenAIGateway:
                     ),
                 },
             ],
+            "response_format": APPRAISAL_RESPONSE_FORMAT,
+            "max_tokens": 4096,
             "stream": False,
         }
+        emotion_session_id = self._openrouter_session_id("solitude-emotion-appraisal")
+        if emotion_session_id:
+            payload["session_id"] = emotion_session_id
         try:
             response = await self.http.post(
-                self.summary_chat_url,
-                headers=self._upstream_headers(self.summary_api_key),
+                self.upstream_chat_url,
+                headers=self._upstream_headers(self.upstream_api_key),
                 json=payload,
                 timeout=self.summary_timeout,
             )
@@ -2020,6 +2215,28 @@ class ZetaOpenAIGateway:
                 "updated_at": "",
             }
 
+    def _read_emotion_prompt(self) -> str:
+        try:
+            return self.emotion_prompt_store.read()
+        except Exception as exc:
+            logger.warning("Unable to read solitude emotion prompt: %s", exc)
+            return ""
+
+    def _emotion_prompt_status(self) -> dict[str, Any]:
+        try:
+            return self.emotion_prompt_store.status()
+        except Exception as exc:
+            logger.warning("Unable to read solitude emotion prompt status: %s", exc)
+            return {
+                "ok": False,
+                "configured": False,
+                "filename": "",
+                "characters": 0,
+                "bytes": 0,
+                "sha256": "",
+                "updated_at": "",
+            }
+
     def _system_prompt_debug_headers(
         self,
         forward_payload: dict[str, Any],
@@ -2049,6 +2266,15 @@ class ZetaOpenAIGateway:
         status = self.system_prompt_store.write(content, filename)
         logger.info(
             "Gateway system prompt updated | filename=%s characters=%s",
+            status["filename"],
+            status["characters"],
+        )
+        return status
+
+    def _write_emotion_prompt(self, content: Any, filename: Any) -> dict[str, Any]:
+        status = self.emotion_prompt_store.write(content, filename)
+        logger.info(
+            "Solitude emotion prompt updated | filename=%s characters=%s",
             status["filename"],
             status["characters"],
         )
@@ -2904,6 +3130,18 @@ Zeta hidden memory protocol:
         items = await self.solo.get_proactive_outbox(limit=limit)
         return JSONResponse({"ok": True, "items": items})
 
+    async def solo_messages(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        try:
+            limit = int(str(request.query_params.get("limit") or "100"))
+        except ValueError:
+            limit = 100
+        after = str(request.query_params.get("after") or "").strip()
+        items = await self.solo.get_proactive_messages(limit=limit, after=after)
+        return JSONResponse({"ok": True, "items": items})
+
     async def solo_outbox_ack(self, request: Request) -> JSONResponse:
         auth = self._authorize(request)
         if auth is not None:
@@ -3623,6 +3861,24 @@ async def call_status_route(request: Request) -> Response:
     return await gateway.call_status(request)
 
 
+async def call_register_device_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse({"error": {"message": f"Gateway startup failed: {startup_error}"}}, status_code=503)
+    return await gateway.call_register_device(request)
+
+
+async def call_invite_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse({"error": {"message": f"Gateway startup failed: {startup_error}"}}, status_code=503)
+    return await gateway.call_invite(request)
+
+
+async def call_invite_answer_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse({"error": {"message": f"Gateway startup failed: {startup_error}"}}, status_code=503)
+    return await gateway.call_invite_answer(request)
+
+
 async def call_websocket_route(websocket: WebSocket) -> None:
     if gateway is None:
         await websocket.accept()
@@ -3690,6 +3946,24 @@ async def system_prompt_route(request: Request) -> Response:
     return await gateway.system_prompt(request)
 
 
+async def emotion_prompt_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.emotion_prompt(request)
+
+
+async def notification_registration_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.notification_registration(request)
+
+
 async def solo_state_route(request: Request) -> Response:
     if gateway is None:
         return JSONResponse(
@@ -3724,6 +3998,15 @@ async def solo_outbox_route(request: Request) -> Response:
             status_code=503,
         )
     return await gateway.solo_outbox(request)
+
+
+async def solo_messages_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.solo_messages(request)
 
 
 async def solo_outbox_ack_route(request: Request) -> Response:
@@ -3817,8 +4100,13 @@ routes = [
     Route("/v1/models", models_route, methods=["GET"]),
     Route("/v1/chat/completions", chat_completions_route, methods=["POST"]),
     Route("/api/call/status", call_status_route, methods=["GET"]),
+    Route("/api/call/devices", call_register_device_route, methods=["POST"]),
+    Route("/api/call/invite", call_invite_route, methods=["GET", "POST"]),
+    Route("/api/call/invite/{invite_id:str}/answer", call_invite_answer_route, methods=["POST"]),
     WebSocketRoute("/api/call/ws", call_websocket_route),
     Route("/api/system-prompt", system_prompt_route, methods=["GET", "PUT"]),
+    Route("/api/emotion-prompt", emotion_prompt_route, methods=["GET", "PUT"]),
+    Route("/api/notifications/register", notification_registration_route, methods=["GET", "POST", "DELETE"]),
     Route("/api/duetto/context", duetto_context_route, methods=["POST"]),
     Route("/api/duetto/events", duetto_event_route, methods=["POST"]),
     Route("/api/conversation-summary", conversation_summary_route, methods=["POST"]),
@@ -3828,6 +4116,7 @@ routes = [
     Route("/api/solo/timeline", solo_timeline_route, methods=["GET"]),
     Route("/api/solo/activities", solo_activities_route, methods=["GET"]),
     Route("/api/solo/outbox", solo_outbox_route, methods=["GET"]),
+    Route("/api/solo/messages", solo_messages_route, methods=["GET"]),
     Route("/api/solo/outbox/ack", solo_outbox_ack_route, methods=["POST"]),
     Route("/api/solo/wake", solo_wake_route, methods=["POST"]),
     Route("/api/solo/mcp/servers", solo_mcp_servers_route, methods=["GET", "POST"]),

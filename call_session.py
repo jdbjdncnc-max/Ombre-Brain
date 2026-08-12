@@ -141,6 +141,9 @@ class CallSession:
             await self._close("configuration", notify=False)
             return
         self.session_id = str(message.get("sessionId") or self.session_id).strip()[:160]
+        invite_id = str(message.get("inviteId") or "").strip()[:80]
+        if invite_id and hasattr(self.gateway, "call_delivery"):
+            self.gateway.call_delivery.respond(invite_id, "answer", note="websocket_connected")
         self.timezone_name = str(message.get("timezone") or self.timezone_name).strip()[:80]
         self.context_messages = sanitize_call_context(message.get("contextMessages"))
         self.private_context = latest_call_private_context(self.context_messages)

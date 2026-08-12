@@ -269,7 +269,7 @@ function createBridgeNotificationAdapter(bridge, fallback, capacitorPlugin) {
       }
       return fallback.show(title, body, options);
     },
-    async configureProactive({ backendUrl = "", gatewayToken = "", title = "" } = {}) {
+    async configureProactive({ backendUrl = "", gatewayToken = "", title = "", sessionId = "", timezone = "" } = {}) {
       if (!hasBridgeMethod(bridge, "configureProactiveNotifications")) {
         return { configured: false, native: false };
       }
@@ -277,7 +277,9 @@ function createBridgeNotificationAdapter(bridge, fallback, capacitorPlugin) {
         const result = await bridge.configureProactiveNotifications({
           backendUrl: String(backendUrl || ""),
           gatewayToken: String(gatewayToken || ""),
-          title: String(title || "")
+          title: String(title || ""),
+          sessionId: String(sessionId || ""),
+          timezone: String(timezone || "")
         });
         return { ...(result || {}), native: true };
       }
@@ -286,9 +288,23 @@ function createBridgeNotificationAdapter(bridge, fallback, capacitorPlugin) {
         "configureProactiveNotifications",
         String(backendUrl || ""),
         String(gatewayToken || ""),
-        String(title || "")
+        String(title || ""),
+        String(sessionId || ""),
+        String(timezone || "")
       );
       return { configured: Boolean(backendUrl), native: true };
+    },
+    async incomingCallStatus() {
+      if (capacitorPlugin && hasBridgeMethod(bridge, "incomingCallStatus")) {
+        return bridge.incomingCallStatus({});
+      }
+      return { supported: false };
+    },
+    async openIncomingCallSettings() {
+      if (capacitorPlugin && hasBridgeMethod(bridge, "openIncomingCallSettings")) {
+        return bridge.openIncomingCallSettings({});
+      }
+      return { supported: false };
     }
   };
 }

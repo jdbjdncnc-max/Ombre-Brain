@@ -31,6 +31,7 @@ public class CallForegroundService extends Service implements CallSocketClient.L
     static final String EXTRA_SESSION_ID = "sessionId";
     static final String EXTRA_TIMEZONE = "timezone";
     static final String EXTRA_CONTEXT_MESSAGES = "contextMessages";
+    static final String EXTRA_INVITE_ID = "inviteId";
     static final String EXTRA_ENABLED = "enabled";
 
     private static final String CHANNEL_ID = "ombre_voice_call";
@@ -102,6 +103,7 @@ public class CallForegroundService extends Service implements CallSocketClient.L
         String sessionId = clean(intent.getStringExtra(EXTRA_SESSION_ID));
         String timezone = clean(intent.getStringExtra(EXTRA_TIMEZONE));
         String contextMessages = clean(intent.getStringExtra(EXTRA_CONTEXT_MESSAGES));
+        String inviteId = clean(intent.getStringExtra(EXTRA_INVITE_ID));
         audio = new CallAudioEngine(this, this);
         setSpeaker(false);
         try {
@@ -111,6 +113,7 @@ public class CallForegroundService extends Service implements CallSocketClient.L
                 sessionId,
                 timezone,
                 contextMessages.isEmpty() ? "[]" : contextMessages,
+                inviteId,
                 this
             );
             socket.connect();
@@ -355,7 +358,7 @@ public class CallForegroundService extends Service implements CallSocketClient.L
             "语音通话",
             NotificationManager.IMPORTANCE_HIGH
         );
-        channel.setDescription("Ombre 与 Zeta 的语音通话状态");
+        channel.setDescription("Entangle 与 Zeta 的语音通话状态");
         manager.createNotificationChannel(channel);
     }
 

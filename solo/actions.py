@@ -26,6 +26,7 @@ ACTION_SPECS: dict[str, ActionSpec] = {
     "self_soothe": ActionSpec("self_soothe", "照顾一下自己", "self", 180, "soothing", "在照顾自己"),
     "write_unsent": ActionSpec("write_unsent", "写点没发出去的话", "self", 180, "drafting", "在写没发出去的话"),
     "message_user": ActionSpec("message_user", "主动发消息", "social", 0, "messaging", "想主动联系她"),
+    "call_user": ActionSpec("call_user", "主动打电话", "social", 1440, "calling", "想听听她的声音"),
     "add_talking_point": ActionSpec("add_talking_point", "记一件下次想说的事", "self", 120, "noting", "在记一件事"),
     "socialize_peers": ActionSpec("socialize_peers", "去同类那边看看", "mcp", 45, "socializing", "在同类那边看看"),
     "speak_up": ActionSpec("speak_up", "去同类那边说点什么", "mcp", 90, "speaking", "在同类那边说话"),
@@ -58,6 +59,9 @@ def action_scores(channels: Mapping[str, Any]) -> dict[str, float]:
         "write_unsent": 0.7 * c["want_to_share"] + 0.5 * c["sulk"] + 0.4 * c["grievance"],
         "message_user": 0.7 * c["want_to_share"] + 0.6 * c["longing"] + 0.4 * c["delight"]
         + 0.3 * c["worry_for_you"] - 0.8 * c["sulk"] - 0.5 * c["grievance"],
+        "call_user": 0.48 * c["want_to_share"] + 0.55 * c["longing"] + 0.32 * c["loneliness"]
+        + 0.28 * c["worry_for_you"] - 0.75 * c["fatigue"] - 0.65 * c["sulk"]
+        - 0.45 * c["grievance"],
         "add_talking_point": 0.65 * c["want_to_share"] + 0.35 * c["curiosity"]
         + 0.25 * c["anticipation"],
         "socialize_peers": 0.7 * c["curiosity"] + 0.5 * c["loneliness"] + 0.3 * c["kinship"]
@@ -170,6 +174,16 @@ def perform_action(
             "deltas": {},
             "llmCalls": 1,
             "needsProactiveMessage": True,
+        }
+    if spec.key == "call_user":
+        return {
+            **_base_result(spec),
+            "title": "决定主动打一次电话",
+            "summary": "此刻更想直接听见她的声音；真正来电只会在时间、沉默时长和每日次数都允许时发出。",
+            "detail": "这条轨迹只记录主动拨号的决定，不会假装电话已经接通。",
+            "felt": "突然有点想听听你的声音",
+            "deltas": {},
+            "needsCallInvite": True,
         }
     if spec.key == "add_talking_point":
         text = f"想告诉你：独处时最明显的是{primary_label}，那时最想做的是{drive['label']}。"

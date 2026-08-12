@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import httpx
 from starlette.requests import Request
 
-from solo.appraisal import APPRAISAL_SYSTEM_PROMPT
+from solo.appraisal import APPRAISAL_RESPONSE_FORMAT, APPRAISAL_TASK_PROMPT
 from solo.emotion_model import default_channels
 from zeta_openai_gateway import ZetaOpenAIGateway
 
@@ -39,12 +39,14 @@ def _request(payload):
 def _gateway():
     gateway = object.__new__(ZetaOpenAIGateway)
     gateway.gateway_token = ""
-    gateway.summary_chat_url = "https://summary.example/v1/chat/completions"
-    gateway.summary_api_key = "summary-secret"
-    gateway.summary_model = "summary-env-model"
+    gateway.upstream_chat_url = "https://dialogue.example/v1/chat/completions"
+    gateway.upstream_api_key = "dialogue-secret"
+    gateway.upstream_model = "openai/gpt-5.1"
     gateway.summary_timeout = 30
     gateway.openrouter_site_url = ""
     gateway.openrouter_app_name = ""
+    gateway._read_emotion_prompt = lambda: "SOLITUDE PERSONA"
+    gateway._openrouter_session_id = lambda _value: "ombre-emotion-session"
     gateway.solo = SimpleNamespace(
         enabled=True,
         timezone_name="Asia/Taipei",
@@ -60,12 +62,11 @@ def _gateway():
     response = httpx.Response(
         200,
         json={"choices": [{"message": {"content": json.dumps({
-            "emotion_deltas": {"delight": 4},
-            "reason": "她连续两轮都在认真回应",
-            "felt": "我更开心了一点",
-            "confidence": 0.85,
+            "emotion_changes": [{"emotion": "delight", "delta": 4}],
+            "mood_words": ["开心"],
+            "events": ["她连续两轮都在认真回应我"],
         }, ensure_ascii=False)}}]},
-        request=httpx.Request("POST", "https://summary.example/v1/chat/completions"),
+        request=httpx.Request("POST", "https://dialogue.example/v1/chat/completions"),
     )
     gateway.http = SimpleNamespace(post=AsyncMock(return_value=response))
     return gateway
@@ -75,8 +76,8 @@ class EmotionAppraisalGatewayTests(unittest.IsolatedAsyncioTestCase):
     async def test_appraises_two_completed_turns_before_returning(self):
         gateway = _gateway()
         request = _request({
-            "model": "",
             "user_reference": "她",
+            "conversation_summary": "我和她正在继续刚才的话题。",
             "messages": [
                 {
                     "role": "user",
@@ -101,11 +102,15 @@ class EmotionAppraisalGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(body["appraisal_id"].startswith("turns_"))
         self.assertEqual(body["applied"], {"delight": 4})
         upstream_payload = gateway.http.post.await_args.kwargs["json"]
-        self.assertEqual(upstream_payload["model"], "summary-env-model")
-        self.assertEqual(upstream_payload["messages"][0]["content"], APPRAISAL_SYSTEM_PROMPT)
-        appraisal_input = json.loads(upstream_payload["messages"][1]["content"].split("\n\n", 1)[1])
-        self.assertEqual(appraisal_input["conversation_summary"], "")
-        self.assertEqual([item["content"] for item in appraisal_input["new_messages"]], [
+        self.assertEqual(upstream_payload["model"], "openai/gpt-5.1")
+        self.assertEqual(upstream_payload["messages"][0]["content"], "SOLITUDE PERSONA")
+        self.assertEqual(upstream_payload["messages"][1]["content"], APPRAISAL_TASK_PROMPT)
+        self.assertEqual(upstream_payload["response_format"], APPRAISAL_RESPONSE_FORMAT)
+        self.assertEqual(upstream_payload["max_tokens"], 4096)
+        self.assertEqual(upstream_payload["session_id"], "ombre-emotion-session")
+        appraisal_input = json.loads(upstream_payload["messages"][2]["content"])
+        self.assertEqual(appraisal_input["最近一次累计摘要"], "我和她正在继续刚才的话题。")
+        self.assertEqual([item["content"] for item in appraisal_input["最近对话"]], [
             "第一轮", "第一轮回复", "第二轮", "第二轮回复"
         ])
         gateway.solo.apply_conversation_appraisal.assert_awaited_once()

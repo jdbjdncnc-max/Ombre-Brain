@@ -18,7 +18,6 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
-
 import java.net.URI;
 
 @CapacitorPlugin(
@@ -83,6 +82,8 @@ public class CompanionNativePlugin extends Plugin {
         String rawBaseUrl = clean(call.getString("backendUrl"));
         String token = clean(call.getString("gatewayToken"));
         String title = clean(call.getString("title"));
+        String sessionId = clean(call.getString("sessionId"));
+        String timezone = clean(call.getString("timezone"));
 
         if (!rawBaseUrl.isEmpty() && !isAllowedBaseUrl(rawBaseUrl)) {
             call.reject("后台通知地址必须是 https 地址（本机调试可用 http://localhost）。");
@@ -98,20 +99,58 @@ public class CompanionNativePlugin extends Plugin {
             .putString(ProactiveNotificationWorker.KEY_BASE_URL, baseUrl)
             .putString(ProactiveNotificationWorker.KEY_TOKEN, token)
             .putString(ProactiveNotificationWorker.KEY_TITLE, title)
+            .putString(ProactiveNotificationWorker.KEY_SESSION_ID, sessionId)
+            .putString(ProactiveNotificationWorker.KEY_TIMEZONE, timezone)
             .apply();
 
         if (baseUrl.isEmpty()) {
             ProactiveNotificationWorker.cancel(getContext());
         } else {
             ProactiveNotificationWorker.schedule(getContext(), true);
+            EntangleFirebaseMessagingService.syncRegistration(getContext());
         }
 
         JSObject result = new JSObject();
         result.put("configured", !baseUrl.isEmpty());
         result.put("intervalMinutes", ProactiveNotificationWorker.PERIODIC_MINUTES);
+        result.put("delivery", "fcm_with_worker_fallback");
         call.resolve(result);
     }
 
+    @PluginMethod
+    public void incomingCallStatus(PluginCall call) {
+        SharedPreferences preferences = getContext().getSharedPreferences(
+            ProactiveNotificationWorker.PREFS_NAME,
+            0
+        );
+        JSObject result = new JSObject();
+        result.put("supported", true);
+        result.put("notificationPermission", currentPermission());
+        result.put("fullScreenAllowed", IncomingCallNotifier.fullScreenAllowed(getContext()));
+        result.put("firebaseStatus", clean(preferences.getString(ProactiveNotificationWorker.KEY_FCM_STATUS, "")));
+        result.put("tokenRegistered", !clean(preferences.getString(ProactiveNotificationWorker.KEY_FCM_TOKEN, "")).isEmpty());
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void openIncomingCallSettings(PluginCall call) {
+        if (Build.VERSION.SDK_INT < 34 || IncomingCallNotifier.fullScreenAllowed(getContext())) {
+            incomingCallStatus(call);
+            return;
+        }
+        try {
+            Intent intent = new Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT)
+                .setData(Uri.parse("package:" + getContext().getPackageName()))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(intent);
+            JSObject result = new JSObject();
+            result.put("opened", true);
+            result.put("fullScreenAllowed", false);
+            call.resolve(result);
+        } catch (Exception error) {
+            call.reject("无法打开锁屏来电授权页面。", error);
+        }
+    }
     @PluginMethod
     public void healthStatus(PluginCall call) {
         call.resolve(healthStatusResult());
@@ -235,7 +274,7 @@ public class CompanionNativePlugin extends Plugin {
         }
         ProactiveNotificationWorker.showNotification(
             getContext(),
-            title.isEmpty() ? "Ombre" : title,
+            title.isEmpty() ? "Entangle" : title,
             body,
             "manual_" + System.currentTimeMillis()
         );

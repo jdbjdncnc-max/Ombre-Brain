@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .actions import ACTION_SPECS, choose_action, perform_action
 from .appraisal import normalize_appraisal
-from .dynamics import advance_emotions
+from .dynamics import advance_emotions, is_quiet_hours
 from .duetto import BOOK_NOTE_CREATED, MUSIC_PLAYED
 from .emotion_model import (
     CHANNELS,
@@ -153,6 +153,19 @@ class SoloService:
         self.daily_llm_budget = daily_llm_budget if daily_llm_budget is not None else _bounded_int(
             os.environ.get("OMBRE_SOLO_DAILY_LLM_BUDGET"), 30, 1, 10000
         )
+        self.proactive_call_enabled = _truthy(os.environ.get("OMBRE_CALL_PROACTIVE_ENABLED", "1"))
+        self.proactive_call_min_silence_hours = _bounded_int(
+            os.environ.get("OMBRE_CALL_MIN_SILENCE_HOURS"), 5, 1, 72
+        )
+        self.proactive_call_start_hour = _bounded_int(
+            os.environ.get("OMBRE_CALL_START_HOUR"), 12, 0, 23
+        )
+        self.proactive_call_end_hour = _bounded_int(
+            os.environ.get("OMBRE_CALL_END_HOUR"), 23, 1, 24
+        )
+        self.proactive_call_daily_limit = _bounded_int(
+            os.environ.get("OMBRE_CALL_DAILY_LIMIT"), 1, 0, 4
+        )
         self.jitter_ratio = max(0.0, min(0.5, float(jitter_ratio)))
         configured_timezone = timezone_name or os.environ.get("OMBRE_SOLO_TIMEZONE", "Asia/Taipei")
         self.timezone_name = normalize_timezone_name(configured_timezone, "Asia/Taipei")
@@ -168,6 +181,8 @@ class SoloService:
         self._task: asyncio.Task | None = None
         self._state_lock = asyncio.Lock()
         self._proactive_generator: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None
+        self._call_invite_generator: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None
+        self._proactive_dispatcher: Callable[[list[dict[str, Any]]], Awaitable[dict[str, Any] | None]] | None = None
         self._mcp_selector: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None
         self._mcp_appraiser: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None
 
@@ -190,6 +205,13 @@ class SoloService:
             "mcpEnabled": self.mcp.enabled,
             "mcpAutonomyReady": self._mcp_selector is not None,
             "proactiveReady": self._proactive_generator is not None,
+            "proactiveCallReady": self.proactive_call_enabled and self._call_invite_generator is not None,
+            "proactiveCallWindow": {
+                "startHour": self.proactive_call_start_hour,
+                "endHour": self.proactive_call_end_hour,
+                "minSilenceHours": self.proactive_call_min_silence_hours,
+                "dailyLimit": self.proactive_call_daily_limit,
+            },
         }
 
     def set_proactive_generator(
@@ -197,6 +219,18 @@ class SoloService:
         generator: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None,
     ) -> None:
         self._proactive_generator = generator
+
+    def set_call_invite_generator(
+        self,
+        generator: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None,
+    ) -> None:
+        self._call_invite_generator = generator
+
+    def set_proactive_dispatcher(
+        self,
+        dispatcher: Callable[[list[dict[str, Any]]], Awaitable[dict[str, Any] | None]] | None,
+    ) -> None:
+        self._proactive_dispatcher = dispatcher
 
     def set_mcp_handlers(
         self,
@@ -315,6 +349,25 @@ class SoloService:
                 if str(item.get("id") or "") not in acked
             ]
             return sorted(items, key=lambda item: str(item.get("ts") or ""))[:safe_limit]
+
+    async def get_proactive_messages(
+        self,
+        *,
+        limit: int = 100,
+        after: Any = None,
+    ) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(500, int(limit)))
+        after_id = self._context_text(after, 100)
+        async with self._state_lock:
+            items = sorted(
+                (deepcopy(item) for item in self._read_jsonl(self.proactive_path, limit=5000)),
+                key=lambda item: str(item.get("ts") or ""),
+            )
+            if after_id:
+                for index, item in enumerate(items):
+                    if str(item.get("id") or "") == after_id:
+                        return items[index + 1:index + 1 + safe_limit]
+            return items[-safe_limit:]
 
     async def ack_proactive_outbox(self, ids: list[Any]) -> dict[str, Any]:
         clean_ids = {
@@ -477,33 +530,51 @@ class SoloService:
             budget = emotion.get("budget") if isinstance(emotion.get("budget"), dict) else {}
             today = current.date().isoformat()
             if str(budget.get("date") or "") != today:
-                budget = {"date": today, "llmCalls": 0, "fetches": 0, "mcpCalls": 0, "proactive": 0}
+                budget = {"date": today, "llmCalls": 0, "fetches": 0, "mcpCalls": 0, "proactive": 0, "calls": 0}
             budget["llmCalls"] = max(0, int(budget.get("llmCalls") or 0)) + 1
             emotion["budget"] = budget
             emotion["channels"] = channels
             emotion["updatedAt"] = _iso(current)
+            mood_words = [
+                self._context_text(value, 40)
+                for value in normalized.get("mood_words", [])
+                if self._context_text(value, 40)
+            ]
+            if mood_words:
+                emotion["moodWords"] = mood_words
             if safe_id:
                 applied_ids.append(safe_id)
                 emotion["appliedAppraisalIds"] = applied_ids[-20:]
+            events = [
+                self._context_text(value, 240)
+                for value in normalized.get("events", [])
+                if self._context_text(value, 240)
+            ]
             emotion["lastAppraisal"] = {
                 "id": safe_id,
                 "at": _iso(current),
-                "reason": normalized.get("reason", ""),
-                "felt": normalized.get("felt", ""),
+                "events": events,
+                "moodWords": mood_words,
                 "confidence": normalized.get("confidence", 0.5),
                 "deltas": applied,
             }
             self._refresh_emotion_derived(emotion)
+            if applied or events:
+                event_texts = events or ["这段对话改变了我此刻的感受"]
+                felt = "、".join(mood_words) or normalized.get("felt") or "我对这段互动有了新的感受"
+                for index, event_text in enumerate(event_texts):
+                    event_deltas = applied if index == 0 else {}
+                    self._record_emotion_event(
+                        emotion,
+                        ts=current,
+                        source="conversation",
+                        cause_key="conversation_appraisal",
+                        deltas=event_deltas,
+                        reason=event_text,
+                        felt=felt,
+                        allow_empty=not event_deltas,
+                    )
             if applied:
-                self._record_emotion_event(
-                    emotion,
-                    ts=current,
-                    source="you",
-                    cause_key="conversation_appraisal",
-                    deltas=applied,
-                    reason=normalized.get("reason") or "这段对话改变了我此刻的感受",
-                    felt=normalized.get("felt") or "我对这段互动有了新的感受",
-                )
                 self._record_hourly_series(emotion, current, force=True)
             self._write_json(self.emotion_path, emotion)
             return {"ok": True, "duplicate": False, "applied": applied}
@@ -577,7 +648,7 @@ class SoloService:
                 budget = emotion.get("budget") if isinstance(emotion.get("budget"), dict) else {}
                 today = current.date().isoformat()
                 if str(budget.get("date") or "") != today:
-                    budget = {"date": today, "llmCalls": 0, "fetches": 0, "mcpCalls": 0, "proactive": 0}
+                    budget = {"date": today, "llmCalls": 0, "fetches": 0, "mcpCalls": 0, "proactive": 0, "calls": 0}
                 budget["llmCalls"] = max(0, int(budget.get("llmCalls") or 0)) + 1
                 emotion["budget"] = budget
 
@@ -689,6 +760,7 @@ class SoloService:
 
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         proactive_activity: dict[str, Any] | None = None
+        call_activity: dict[str, Any] | None = None
         mcp_activity: dict[str, Any] | None = None
         wake_id = ""
         async with self._state_lock:
@@ -719,6 +791,8 @@ class SoloService:
                 result = str(activity.get("type") or "idle") if activity else "idle"
                 if activity and activity.get("type") == "message_user":
                     proactive_activity = deepcopy(activity)
+                if activity and activity.get("type") == "call_user":
+                    call_activity = deepcopy(activity)
                 if activity and activity.get("needsMcpAction"):
                     mcp_activity = deepcopy(activity)
                 state["decisionCount"] = int(state.get("decisionCount") or 0) + 1
@@ -760,6 +834,14 @@ class SoloService:
             decision = response_payload.get("state", {}).get("lastDecision")
             if isinstance(decision, dict):
                 decision["modelCalled"] = bool(generated.get("called"))
+        if call_activity is not None:
+            generated = await self._generate_call_invite(
+                call_activity,
+                wake_id=wake_id,
+                now=current,
+            )
+            response_payload["callInvited"] = bool(generated.get("invited"))
+            response_payload["state"] = await self.get_state()
         if mcp_activity is not None:
             executed = await self._execute_mcp_activity(
                 mcp_activity,
@@ -815,6 +897,7 @@ class SoloService:
                 "fetches": 0,
                 "mcpCalls": 0,
                 "proactive": 0,
+                "calls": 0,
             },
             "lockOwner": "",
         }
@@ -850,7 +933,8 @@ class SoloService:
         last_cause_at = _parse_time(emotion.get("lastAbsenceCauseAt"))
         significant = any(abs(value) >= 0.25 for value in absence_deltas.values())
         cause_due = last_cause_at is None or now - last_cause_at >= timedelta(minutes=30)
-        if last_user_message and significant and cause_due:
+        quiet_hours = is_quiet_hours(now.astimezone(timezone_value))
+        if last_user_message and significant and cause_due and not quiet_hours:
             hours = max(0.0, (now - last_user_message).total_seconds() / 3600.0)
             self._record_emotion_event(
                 emotion,
@@ -876,7 +960,13 @@ class SoloService:
         emotion["buckets"] = {key: round(value, 2) for key, value in bucket_values.items()}
         emotion["dimensions"] = current_dimensions
         emotion["drive"] = drive["label"]
-        emotion["moodLine"] = mood_line(bucket_values, drive)
+        mood_words = [
+            self._context_text(value, 40)
+            for value in emotion.get("moodWords", [])
+            if self._context_text(value, 40)
+        ]
+        emotion["moodWords"] = mood_words
+        emotion["moodLine"] = "、".join(mood_words) if mood_words else mood_line(bucket_values, drive)
         negative_load = max(bucket_values.get("cross", 0.0), bucket_values.get("low", 0.0))
         emotion["sensitivity"] = round(1.0 + 0.4 * negative_load / 100.0, 3)
 
@@ -939,6 +1029,8 @@ class SoloService:
         for key, spec in ACTION_SPECS.items():
             if key == "message_user" and (self._proactive_generator is None or not llm_budget_available):
                 continue
+            if key == "call_user" and not self._call_allowed(runtime, emotion, now):
+                continue
             if key in MCP_ACTION_KEYS and not mcp_catalogs.get(key):
                 continue
             last_action = _parse_time(last_actions.get(key))
@@ -955,7 +1047,7 @@ class SoloService:
             rng=self._rng,
         )
         if (
-            spec.key != "message_user"
+            spec.key not in {"message_user", "call_user"}
             and last_activity
             and (now - last_activity).total_seconds() < self.activity_min_seconds
         ):
@@ -1062,6 +1154,72 @@ class SoloService:
         runtime["lastActivityAt"] = _iso(now)
         runtime["mode"] = deepcopy(outcome.get("mode") or {"key": spec.mode_key, "label": spec.mode_label})
         return activity
+
+    def _call_allowed(self, runtime: dict[str, Any], emotion: dict[str, Any], now: datetime) -> bool:
+        if (
+            not self.proactive_call_enabled
+            or self._call_invite_generator is None
+            or self.proactive_call_daily_limit <= 0
+        ):
+            return False
+        last_message = _parse_time(runtime.get("lastUserMessageAt") or emotion.get("lastUserMessageAt"))
+        if last_message is None or now - last_message < timedelta(hours=self.proactive_call_min_silence_hours):
+            return False
+        local_hour = now.astimezone(timezone_info(runtime.get("userTimezone"), self.timezone_name)).hour
+        if not self.proactive_call_start_hour <= local_hour < self.proactive_call_end_hour:
+            return False
+        budget = emotion.get("budget") if isinstance(emotion.get("budget"), dict) else {}
+        calls = 0 if str(budget.get("date") or "") != now.date().isoformat() else int(budget.get("calls") or 0)
+        return calls < self.proactive_call_daily_limit
+
+    async def _generate_call_invite(
+        self,
+        activity: dict[str, Any],
+        *,
+        wake_id: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        generator = self._call_invite_generator
+        if generator is None:
+            return {"called": False, "invited": False}
+        context = {
+            "triggered_at": _iso(now),
+            "timezone": self.timezone_name,
+            "activity": deepcopy(activity),
+            "state": self.model_context_text(now=now, max_characters=1200),
+        }
+        try:
+            generated = await generator(context)
+        except Exception as exc:
+            logger.warning("Proactive call invitation failed | activity=%s error=%s", activity.get("id"), exc)
+            generated = {"called": True, "invited": False}
+        result = generated if isinstance(generated, dict) else {}
+        invited = bool(result.get("invited"))
+
+        async with self._state_lock:
+            emotion = self._read_json(self.emotion_path)
+            if not isinstance(emotion, dict):
+                emotion = self._new_emotion_state(now, now)
+            budget = emotion.get("budget") if isinstance(emotion.get("budget"), dict) else {}
+            today = now.date().isoformat()
+            if str(budget.get("date") or "") != today:
+                budget = {"date": today, "llmCalls": 0, "fetches": 0, "mcpCalls": 0, "proactive": 0, "calls": 0}
+            if invited:
+                budget["calls"] = max(0, int(budget.get("calls") or 0)) + 1
+            emotion["budget"] = budget
+            emotion["updatedAt"] = _iso(now)
+            self._write_json(self.emotion_path, emotion)
+
+            runtime = self._read_json(self.state_path)
+            if isinstance(runtime, dict):
+                decision = runtime.get("lastDecision")
+                if isinstance(decision, dict) and str(decision.get("id") or "") == wake_id:
+                    decision["callInvited"] = invited
+                    decision["callPushSent"] = int(result.get("pushSent") or 0)
+                    runtime["lastDecision"] = decision
+                    runtime["updatedAt"] = _iso(now)
+                    self._write_json(self.state_path, runtime)
+        return {**result, "invited": invited}
 
     @staticmethod
     def _mcp_catalog_for_action(
@@ -1217,7 +1375,7 @@ class SoloService:
             budget = emotion.get("budget") if isinstance(emotion.get("budget"), dict) else {}
             today = now.date().isoformat()
             if str(budget.get("date") or "") != today:
-                budget = {"date": today, "llmCalls": 0, "fetches": 0, "mcpCalls": 0, "proactive": 0}
+                budget = {"date": today, "llmCalls": 0, "fetches": 0, "mcpCalls": 0, "proactive": 0, "calls": 0}
             budget["llmCalls"] = max(0, int(budget.get("llmCalls") or 0)) + llm_calls
             budget["mcpCalls"] = max(0, int(budget.get("mcpCalls") or 0)) + mcp_calls
             emotion["budget"] = budget
@@ -1382,6 +1540,7 @@ class SoloService:
         ]
         messages = [value for value in messages if value]
 
+        queued_items: list[dict[str, Any]] = []
         async with self._state_lock:
             emotion = self._read_json(self.emotion_path)
             if not isinstance(emotion, dict):
@@ -1389,7 +1548,7 @@ class SoloService:
             budget = emotion.get("budget") if isinstance(emotion.get("budget"), dict) else {}
             today = now.date().isoformat()
             if str(budget.get("date") or "") != today:
-                budget = {"date": today, "llmCalls": 0, "fetches": 0, "mcpCalls": 0, "proactive": 0}
+                budget = {"date": today, "llmCalls": 0, "fetches": 0, "mcpCalls": 0, "proactive": 0, "calls": 0}
             if called:
                 budget["llmCalls"] = max(0, int(budget.get("llmCalls") or 0)) + 1
             if messages:
@@ -1400,14 +1559,17 @@ class SoloService:
 
             queued = 0
             for message in messages:
-                self._append_jsonl(self.proactive_path, {
+                queued_item = {
                     "id": f"proactive_{uuid.uuid4().hex[:16]}",
                     "ts": _iso(now),
                     "title": title,
                     "text": message,
                     "activityId": str(activity.get("id") or "")[:80],
                     "source": "solitude_model",
-                })
+                    "timezone": self.timezone_name,
+                }
+                self._append_jsonl(self.proactive_path, queued_item)
+                queued_items.append(queued_item)
                 queued += 1
 
             runtime = self._read_json(self.state_path)
@@ -1419,7 +1581,15 @@ class SoloService:
                     runtime["lastDecision"] = decision
                     runtime["updatedAt"] = _iso(now)
                     self._write_json(self.state_path, runtime)
-            return {"called": called, "queued": queued}
+        push_result: dict[str, Any] = {}
+        if queued_items and self._proactive_dispatcher is not None:
+            try:
+                dispatched = await self._proactive_dispatcher(deepcopy(queued_items))
+                if isinstance(dispatched, dict):
+                    push_result = dispatched
+            except Exception as exc:
+                logger.warning("Proactive push dispatch failed: %s", exc)
+        return {"called": called, "queued": queued, "push": push_result}
 
     @staticmethod
     def _resting_or_idle_mode(emotion: dict[str, Any]) -> dict[str, str]:
@@ -1573,13 +1743,14 @@ class SoloService:
         reason: str,
         felt: str,
         activity_id: str = "",
+        allow_empty: bool = False,
     ) -> None:
         clean_deltas = {
             key: round(max(-15.0, min(15.0, float(value))), 3)
             for key, value in deltas.items()
             if key in (emotion.get("channels") or {}) and abs(float(value)) >= 0.01
         }
-        if not clean_deltas:
+        if not clean_deltas and not allow_empty:
             return
         self._append_jsonl(self.emotion_events_path, {
             "ts": _iso(ts),

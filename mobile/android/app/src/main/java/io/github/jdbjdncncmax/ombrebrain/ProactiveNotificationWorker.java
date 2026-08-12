@@ -44,6 +44,10 @@ public class ProactiveNotificationWorker extends Worker {
     public static final String KEY_BASE_URL = "backend_url";
     public static final String KEY_TOKEN = "gateway_token";
     public static final String KEY_TITLE = "notification_title";
+    public static final String KEY_SESSION_ID = "session_id";
+    public static final String KEY_TIMEZONE = "timezone";
+    public static final String KEY_FCM_TOKEN = "fcm_token";
+    public static final String KEY_FCM_STATUS = "fcm_status";
     public static final long PERIODIC_MINUTES = 15L;
 
     private static final String KEY_DELIVERED = "delivered_ids";
@@ -67,9 +71,16 @@ public class ProactiveNotificationWorker extends Worker {
         String token = clean(preferences.getString(KEY_TOKEN, ""));
         String defaultTitle = clean(preferences.getString(KEY_TITLE, ""));
 
-        if (baseUrl.isEmpty() || !notificationGranted(context)) {
+        if (baseUrl.isEmpty()) {
             return Result.success();
         }
+        EntangleFirebaseMessagingService.syncRegistration(context);
+        FirebaseRegistration.sync(context);
+        if (!notificationGranted(context)) {
+            return Result.success();
+        }
+
+        pollIncomingCall(context, baseUrl, token);
 
         HttpResult outbox = request("GET", baseUrl + "/api/solo/outbox?limit=10", token, null);
         if (!outbox.isSuccess()) {
@@ -98,7 +109,7 @@ public class ProactiveNotificationWorker extends Worker {
                     String title = clean(item.optString("title"));
                     showNotification(
                         context,
-                        title.isEmpty() ? (defaultTitle.isEmpty() ? "Ombre" : defaultTitle) : title,
+                        title.isEmpty() ? (defaultTitle.isEmpty() ? "Entangle" : defaultTitle) : title,
                         body,
                         id
                     );
@@ -160,6 +171,17 @@ public class ProactiveNotificationWorker extends Worker {
         manager.cancelUniqueWork(IMMEDIATE_WORK_NAME);
     }
 
+    public static void markDelivered(Context context, String id) {
+        String cleanId = clean(id);
+        if (cleanId.isEmpty()) {
+            return;
+        }
+        SharedPreferences preferences = context.getSharedPreferences(PREFS_NAME, 0);
+        Set<String> delivered = new HashSet<>(preferences.getStringSet(KEY_DELIVERED, new HashSet<>()));
+        delivered.add(cleanId);
+        preferences.edit().putStringSet(KEY_DELIVERED, boundedIds(delivered)).apply();
+    }
+
     public static void showNotification(Context context, String title, String body, String id) {
         createNotificationChannel(context);
         Intent intent = new Intent(context, MainActivity.class)
@@ -185,13 +207,49 @@ public class ProactiveNotificationWorker extends Worker {
         }
     }
 
+    private static void pollIncomingCall(Context context, String baseUrl, String token) {
+        HttpResult result = request("GET", baseUrl + "/api/call/invite", token, null);
+        if (!result.isSuccess()) return;
+        try {
+            JSONObject invite = new JSONObject(result.body).optJSONObject("invite");
+            if (invite == null || !"pending".equals(invite.optString("state"))) return;
+            if (invite.optBoolean("ringable", false)) {
+                IncomingCallNotifier.show(
+                    context,
+                    invite.optString("id"),
+                    "Zeta",
+                    invite.optString("reason"),
+                    invite.optString("ringUntil"),
+                    invite.optString("expiresAt")
+                );
+            } else {
+                String inviteId = clean(invite.optString("id"));
+                String reason = clean(invite.optString("reason"));
+                showNotification(
+                    context,
+                    "Zeta 刚才想找你",
+                    reason.isEmpty() ? "刚才有一通没接到的来电" : reason,
+                    "missed_" + inviteId
+                );
+                JSONObject response = new JSONObject();
+                response.put("action", "missed");
+                request(
+                    "POST",
+                    baseUrl + "/api/call/invite/" + inviteId + "/answer",
+                    token,
+                    response.toString()
+                );
+            }
+        } catch (Exception ignored) {}
+    }
+
     private static void createNotificationChannel(Context context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             return;
         }
         NotificationChannel channel = new NotificationChannel(
             CHANNEL_ID,
-            "Ombre 主动消息",
+            "Entangle 主动消息",
             NotificationManager.IMPORTANCE_DEFAULT
         );
         channel.setDescription("独处系统主动想联系你时发出的消息");

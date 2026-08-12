@@ -60,29 +60,29 @@ button {
   width: 100vw;
   height: 100dvh;
   display: grid;
-  place-items: center;
-  padding: 20px;
+  place-items: stretch;
+  padding: 0;
   background: transparent;
 }
 
 .phone-shell {
-  width: min(430px, 100%);
-  height: min(880px, 100%);
-  min-height: 620px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
   display: grid;
   grid-template-rows: auto 1fr auto;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.48);
-  border-radius: 30px;
+  border: 0;
+  border-radius: 0;
   background: transparent;
-  box-shadow: 0 24px 80px rgba(4, 18, 18, 0.34);
+  box-shadow: none;
 }
 
 .top-bar {
   height: 44px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
   padding: 8px 18px 0;
   color: rgba(12, 27, 25, 0.78);
@@ -2345,6 +2345,11 @@ svg {
   color: rgba(17, 28, 27, 0.94);
 }
 
+.message.assistant.pending .message-content,
+.message-content.long-plain-text {
+  white-space: pre-wrap;
+}
+
 .message-body {
   display: grid;
   gap: 8px;
@@ -4352,15 +4357,15 @@ output {
 
 @media (max-width: 560px) {
   .app-shell {
-    padding: 8px;
+    padding: 0;
   }
 
   .phone-shell {
-    width: calc(100vw - 16px);
-    height: calc(100dvh - 16px);
-    min-height: calc(100dvh - 16px);
-    border: 1px solid rgba(255, 255, 255, 0.72);
-    border-radius: 24px;
+    width: 100vw;
+    height: 100dvh;
+    min-height: 100dvh;
+    border: 0;
+    border-radius: 0;
   }
 
   .home-card-grid {

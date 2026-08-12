@@ -13,6 +13,21 @@ def prompt_gateway(base_dir: Path):
 
 
 class GatewaySystemPromptTests(unittest.TestCase):
+    def test_main_and_emotion_prompts_are_stored_separately(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base_dir = Path(directory)
+            main_prompt = GatewaySystemPromptStore(base_dir)
+            emotion_prompt = GatewaySystemPromptStore(base_dir, stem="emotion_prompt")
+
+            main_prompt.write("# Dialogue persona\nKeep dialogue tools.", "dialogue.md")
+            emotion_prompt.write("# Emotion persona\nNo tool instructions.", "prompt - solitude.md")
+
+            self.assertEqual(main_prompt.read(), "# Dialogue persona\nKeep dialogue tools.")
+            self.assertEqual(emotion_prompt.read(), "# Emotion persona\nNo tool instructions.")
+            self.assertEqual(main_prompt.status()["filename"], "dialogue.md")
+            self.assertEqual(emotion_prompt.status()["filename"], "prompt - solitude.md")
+            self.assertNotEqual(main_prompt.prompt_path, emotion_prompt.prompt_path)
+
     def test_system_prompt_is_saved_without_exposing_content(self):
         with tempfile.TemporaryDirectory() as directory:
             gateway = prompt_gateway(Path(directory))

@@ -1,7 +1,7 @@
 import json
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -90,12 +90,14 @@ class ProactiveServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_model_messages_enter_outbox_and_ack_once(self):
         contexts = []
+        dispatcher = AsyncMock(return_value={"configured": True, "sent": 2, "failed": 0})
 
         async def generate(context):
             contexts.append(context)
             return {"called": True, "title": "Zeta", "messages": ["第一条", "第二条"]}
 
         self.service.set_proactive_generator(generate)
+        self.service.set_proactive_dispatcher(dispatcher)
         with patch("solo.service.choose_action", return_value=ACTION_SPECS["message_user"]):
             result = await self.service.pulse_once(now=self.now)
 
@@ -105,10 +107,20 @@ class ProactiveServiceTests(unittest.IsolatedAsyncioTestCase):
 
         items = await self.service.get_proactive_outbox(limit=10)
         self.assertEqual([item["text"] for item in items], ["第一条", "第二条"])
+        self.assertTrue(all(item["timezone"] == "Asia/Taipei" for item in items))
+        dispatcher.assert_awaited_once()
+        self.assertEqual(
+            [item["id"] for item in dispatcher.await_args.args[0]],
+            [item["id"] for item in items],
+        )
         acked = await self.service.ack_proactive_outbox([items[0]["id"], "unknown"])
         self.assertEqual(acked["acked"], [items[0]["id"]])
         remaining = await self.service.get_proactive_outbox(limit=10)
         self.assertEqual([item["id"] for item in remaining], [items[1]["id"]])
+        history = await self.service.get_proactive_messages(limit=10)
+        self.assertEqual([item["id"] for item in history], [item["id"] for item in items])
+        after_first = await self.service.get_proactive_messages(limit=10, after=items[0]["id"])
+        self.assertEqual([item["id"] for item in after_first], [items[1]["id"]])
 
         emotion = self.service._read_json(self.service.emotion_path)
         self.assertEqual(emotion["budget"]["llmCalls"], 1)
@@ -133,6 +145,26 @@ class ProactiveServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotEqual(result["state"]["lastDecision"]["result"], "message_user")
         generator.assert_not_awaited()
+
+    async def test_proactive_call_requires_silence_window_and_counts_once(self):
+        self.service.proactive_call_enabled = True
+        self.service.solo_dir.mkdir(parents=True, exist_ok=True)
+        last_message = self.now - timedelta(hours=6)
+        runtime = self.service._new_state(self.now)
+        runtime["lastUserMessageAt"] = last_message.isoformat().replace("+00:00", "Z")
+        emotion = self.service._new_emotion_state(self.now, last_message)
+        self.service._write_json(self.service.state_path, runtime)
+        self.service._write_json(self.service.emotion_path, emotion)
+        generator = AsyncMock(return_value={"called": True, "invited": True, "pushSent": 1})
+        self.service.set_call_invite_generator(generator)
+
+        with patch("solo.service.choose_action", return_value=ACTION_SPECS["call_user"]):
+            result = await self.service.pulse_once(now=self.now, force_decision=True)
+
+        self.assertTrue(result["callInvited"])
+        generator.assert_awaited_once()
+        saved = self.service._read_json(self.service.emotion_path)
+        self.assertEqual(saved["budget"]["calls"], 1)
 
 
 class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
@@ -193,6 +225,7 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         gateway.gateway_token = "secret"
         gateway.solo = SimpleNamespace(
             get_proactive_outbox=AsyncMock(return_value=[{"id": "p1", "text": "找你"}]),
+            get_proactive_messages=AsyncMock(return_value=[{"id": "p0", "text": "之前找过你"}]),
             ack_proactive_outbox=AsyncMock(return_value={"ok": True, "acked": ["p1"]}),
         )
 
@@ -202,6 +235,9 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         response = await gateway.solo_outbox(
             _request("GET", "/api/solo/outbox", query="limit=7")
         )
+        history = await gateway.solo_messages(
+            _request("GET", "/api/solo/messages", query="limit=9&after=p-old")
+        )
         ack = await gateway.solo_outbox_ack(
             _request("POST", "/api/solo/outbox/ack", payload={"ids": ["p1"]})
         )
@@ -209,6 +245,8 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unauthorized.status_code, 401)
         self.assertEqual(json.loads(response.body)["items"][0]["id"], "p1")
         gateway.solo.get_proactive_outbox.assert_awaited_once_with(limit=7)
+        self.assertEqual(json.loads(history.body)["items"][0]["id"], "p0")
+        gateway.solo.get_proactive_messages.assert_awaited_once_with(limit=9, after="p-old")
         self.assertEqual(json.loads(ack.body)["acked"], ["p1"])
         gateway.solo.ack_proactive_outbox.assert_awaited_once_with(["p1"])
 

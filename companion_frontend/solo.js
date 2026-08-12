@@ -1,5 +1,6 @@
 const SOURCE_LABELS = {
   you: "因为你",
+  conversation: "因为我和她",
   world: "因为世界",
   peer: "因为同类",
   self: "因为自己"

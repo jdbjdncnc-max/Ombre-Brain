@@ -16,11 +16,11 @@ export function parseChatExport(text) {
   try {
     payload = JSON.parse(source);
   } catch {
-    throw new Error("无法读取这个 JSON 文件，请选择 Ombre 导出的聊天记录。");
+    throw new Error("无法读取这个 JSON 文件，请选择 Entangle 导出的聊天记录。");
   }
 
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    throw new Error("这个文件不是有效的 Ombre 聊天记录。");
+    throw new Error("这个文件不是有效的 Entangle 聊天记录。");
   }
   if (payload.format !== CHAT_EXPORT_FORMAT) {
     throw new Error("文件格式不匹配，请选择由“导出聊天记录”生成的 JSON 文件。");

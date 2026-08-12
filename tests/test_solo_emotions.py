@@ -88,6 +88,41 @@ class EmotionModelTests(unittest.TestCase):
         self.assertLessEqual(miss_change, 35.0)
         self.assertLessEqual(cross_change, 35.0)
 
+    def test_absence_rates_are_hourly_not_reapplied_every_ten_minutes(self):
+        start = datetime(2026, 8, 6, 12, 0, tzinfo=timezone.utc)
+        channels = default_channels()
+        updated, _ = advance_emotions(
+            channels,
+            start=start,
+            end=start + timedelta(minutes=10),
+            last_user_message_at=start - timedelta(days=2),
+        )
+        self.assertLess(updated["longing"] - channels["longing"], 5.0)
+
+    def test_quiet_hours_slow_absence_growth_without_freezing_decay(self):
+        local_timezone = timezone(timedelta(hours=8))
+        quiet_start = datetime(2026, 8, 5, 18, 0, tzinfo=timezone.utc)  # 02:00 local
+        day_start = datetime(2026, 8, 6, 6, 0, tzinfo=timezone.utc)  # 14:00 local
+        channels = default_channels()
+        quiet, _ = advance_emotions(
+            channels,
+            start=quiet_start,
+            end=quiet_start + timedelta(hours=1),
+            last_user_message_at=quiet_start - timedelta(hours=8),
+            localize=lambda value: value.astimezone(local_timezone),
+        )
+        day, _ = advance_emotions(
+            channels,
+            start=day_start,
+            end=day_start + timedelta(hours=1),
+            last_user_message_at=day_start - timedelta(hours=8),
+            localize=lambda value: value.astimezone(local_timezone),
+        )
+        quiet_longing = quiet["longing"] - channels["longing"]
+        day_longing = day["longing"] - channels["longing"]
+        self.assertGreater(quiet_longing, 0)
+        self.assertLess(quiet_longing, day_longing * 0.25)
+
     def test_user_return_keeps_grievance_but_drops_short_term_irritation(self):
         channels = default_channels()
         channels["irritation"] = 80

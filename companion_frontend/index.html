@@ -3,27 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Companion 1.0</title>
+  <title>Entangle</title>
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
-  <link rel="stylesheet" href="styles.css?v=20260810.2">
+  <link rel="stylesheet" href="styles.css?v=20260810.3">
 </head>
 <body>
   <div id="app" class="app-shell">
-    <section id="phoneShell" class="phone-shell" aria-label="Companion app">
+    <section id="phoneShell" class="phone-shell" aria-label="Entangle app">
       <header class="top-bar">
-        <span id="clock" class="clock">09:41</span>
         <span id="serverStatus" class="server-status">连接中</span>
       </header>
 
       <main class="screen">
         <section id="chatView" class="view view-active" aria-label="对话">
-          <div class="chat-header">
-            <div>
-              <p class="eyebrow">Companion</p>
-              <h1>对话</h1>
-            </div>
-          </div>
-
           <div id="messageList" class="message-list" aria-live="polite"></div>
 
           <button
@@ -173,7 +165,7 @@
             <button id="callBackButton" class="icon-button call-back-button" type="button" title="返回今天" aria-label="返回今天">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
             </button>
-            <span>加密连接 · Ombre</span>
+            <span>加密连接 · Entangle</span>
             <i aria-hidden="true"></i>
           </div>
 
@@ -274,7 +266,7 @@
                 <div class="sail-context-item">
                   <span>刚才的屏幕</span>
                   <strong id="sailCurrentApp">暂无记录</strong>
-                  <small id="sailCurrentAppMeta">显示切换进 Ombre 前的应用</small>
+                  <small id="sailCurrentAppMeta">显示切换进 Entangle 前的应用</small>
                 </div>
               </div>
             </section>
@@ -674,13 +666,22 @@
             <label class="field">
               <span>Duetto 地址</span>
               <input id="duettoUrl" type="url" inputmode="url" placeholder="https://music.example.com/pkg/index.html">
-              <small>部署 Duetto 后填完整网页地址；“一起听歌”会在 Ombre 应用内打开，不再跳转外部浏览器。</small>
+              <small>部署 Duetto 后填完整网页地址；“一起听歌”会在 Entangle 应用内打开，不再跳转外部浏览器。</small>
             </label>
 
             <label class="field">
               <span>网关令牌</span>
               <input id="gatewayToken" type="password" autocomplete="current-password" placeholder="OMBRE_GATEWAY_TOKEN">
             </label>
+
+            <section class="field" aria-labelledby="incomingCallSettingsTitle">
+              <span id="incomingCallSettingsTitle">锁屏即时来电</span>
+              <div class="button-row">
+                <button id="incomingCallPermissionButton" class="secondary-button" type="button">检查并开启</button>
+                <output id="incomingCallStatus">等待 APP 配置</output>
+              </div>
+              <small>Android 14 及以上需要单独允许全屏来电；Firebase 文件尚未加入时会显示“等待配置”。</small>
+            </section>
 
             <label class="field">
               <span>温度</span>
@@ -707,6 +708,25 @@
               </div>
               <input id="systemPromptFile" type="file" accept=".md,.markdown,text/markdown,text/plain" hidden>
               <small>从本地选择 .md 或 .markdown 文件并上传到网关；网页、Operit 和 Duetto 会共用这一份。修改文件后重新上传即可，不需要重新部署前端。</small>
+            </div>
+
+            <div class="field prompt-file-field">
+              <span>情绪评估提示词</span>
+              <div class="prompt-file-row">
+                <code id="emotionPromptFileName">正在读取网关…</code>
+                <output id="emotionPromptStatus">读取中</output>
+              </div>
+              <div class="button-row prompt-file-actions">
+                <button id="chooseEmotionPromptButton" class="secondary-button" type="button">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M6 3h8l4 4v14H6z"/>
+                    <path d="M14 3v5h5M9 13h6M9 17h4"/>
+                  </svg>
+                  <span>选择独处 Prompt</span>
+                </button>
+              </div>
+              <input id="emotionPromptFile" type="file" accept=".md,.markdown,text/markdown,text/plain" hidden>
+              <small>只供独立情绪评估调用使用，不会替换聊天模型的系统提示词，也不会加入 MCP 工具。</small>
             </div>
 
             <section class="field summary-settings" aria-labelledby="summarySettingsTitle">
@@ -939,6 +959,6 @@
   <script src="vendor/dompurify/purify.min.js"></script>
   <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/katex/auto-render.min.js"></script>
-    <script src="app.js?v=20260810.5" type="module"></script>
+    <script src="app.js?v=20260812.1" type="module"></script>
 </body>
 </html>

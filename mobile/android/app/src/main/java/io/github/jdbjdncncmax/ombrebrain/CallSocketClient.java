@@ -30,6 +30,7 @@ final class CallSocketClient {
     private final String sessionId;
     private final String timezone;
     private final String contextMessages;
+    private final String inviteId;
     private final Listener listener;
     private WebSocket socket;
 
@@ -39,6 +40,7 @@ final class CallSocketClient {
         String sessionId,
         String timezone,
         String contextMessages,
+        String inviteId,
         Listener listener
     ) {
         this.backendUrl = backendUrl;
@@ -46,6 +48,7 @@ final class CallSocketClient {
         this.sessionId = sessionId;
         this.timezone = timezone;
         this.contextMessages = contextMessages;
+        this.inviteId = inviteId;
         this.listener = listener;
         this.client = new OkHttpClient.Builder()
             .pingInterval(20, TimeUnit.SECONDS)
@@ -69,6 +72,7 @@ final class CallSocketClient {
                     start.put("sessionId", sessionId);
                     start.put("timezone", timezone);
                     start.put("contextMessages", new JSONArray(contextMessages));
+                    start.put("inviteId", inviteId);
                 } catch (Exception ignored) {}
                 webSocket.send(start.toString());
                 listener.onOpen();

@@ -45,11 +45,20 @@ def inject_gateway_messages(
 
 
 class GatewaySystemPromptStore:
-    def __init__(self, buckets_dir: str | os.PathLike[str]):
+    def __init__(
+        self,
+        buckets_dir: str | os.PathLike[str],
+        *,
+        stem: str = "system_prompt",
+    ):
         prompt_dir = Path(buckets_dir) / "gateway"
         prompt_dir.mkdir(parents=True, exist_ok=True)
-        self.prompt_path = prompt_dir / "system_prompt.md"
-        self.meta_path = prompt_dir / "system_prompt.meta.json"
+        safe_stem = re.sub(r"[^a-z0-9_-]+", "_", str(stem or "").strip().lower()).strip("_")
+        if not safe_stem:
+            raise ValueError("Prompt store name must not be empty")
+        self.stem = safe_stem
+        self.prompt_path = prompt_dir / f"{safe_stem}.md"
+        self.meta_path = prompt_dir / f"{safe_stem}.meta.json"
 
     def read(self) -> str:
         try:
@@ -69,7 +78,7 @@ class GatewaySystemPromptStore:
         return {
             "ok": True,
             "configured": bool(content),
-            "filename": str(metadata.get("filename") or ("system_prompt.md" if content else "")),
+            "filename": str(metadata.get("filename") or (f"{self.stem}.md" if content else "")),
             "characters": len(content),
             "bytes": len(content.encode("utf-8")),
             "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest() if content else "",
@@ -78,7 +87,7 @@ class GatewaySystemPromptStore:
 
     def write(self, content: Any, filename: Any) -> dict[str, Any]:
         text = str(content or "").strip()
-        safe_filename = Path(str(filename or "system_prompt.md")).name
+        safe_filename = Path(str(filename or f"{self.stem}.md")).name
         if not re.search(r"\.(md|markdown)$", safe_filename, flags=re.IGNORECASE):
             raise ValueError("Please choose a .md or .markdown file")
         if not text:

@@ -18,6 +18,10 @@ ABSENCE_RATES = {
     "want_to_share": 6.0,
 }
 
+QUIET_HOURS_START = 2
+QUIET_HOURS_END = 10
+QUIET_HOURS_ABSENCE_MULTIPLIER = 0.15
+
 
 def decay(value: Any, baseline: Any, half_life_min: Any, elapsed_min: Any) -> float:
     current = float(value)
@@ -50,6 +54,11 @@ def circadian_fatigue(local_time: datetime) -> float:
     if 18 <= hour < 23:
         return 20.0
     return 35.0
+
+
+def is_quiet_hours(local_time: datetime) -> bool:
+    hour = local_time.hour + local_time.minute / 60.0
+    return QUIET_HOURS_START <= hour < QUIET_HOURS_END
 
 
 def advance_emotions(
@@ -87,11 +96,21 @@ def advance_emotions(
         if last_user_message_at is not None:
             hours = max(0.0, (step_end - last_user_message_at).total_seconds() / 3600.0)
             pressure = absence_pressure(hours, expected_gap_hours)
-            dt_factor = elapsed / 10.0
+            # ABSENCE_RATES are hourly rates. The previous ten-minute factor
+            # made a full hour roughly six times stronger than intended.
+            dt_factor = elapsed / 60.0
+            quiet_factor = (
+                QUIET_HOURS_ABSENCE_MULTIPLIER
+                if is_quiet_hours(localize(step_end))
+                else 1.0
+            )
             planned: dict[str, float] = {}
             for key, rate in ABSENCE_RATES.items():
                 personality = sulk if key in {"grievance", "irritation"} else 1.0
-                planned[key] = min(15.0, rate * pressure * dt_factor * personality)
+                planned[key] = min(
+                    15.0,
+                    rate * pressure * dt_factor * personality * quiet_factor,
+                )
 
             # The continuity limit is symmetric: no display bucket may move by
             # more than 35 points per hour, regardless of whether it is pleasant.

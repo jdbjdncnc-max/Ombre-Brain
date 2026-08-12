@@ -20,9 +20,13 @@ const javaRoot = path.join(
 test("Android uses a native background worker for proactive notifications", async () => {
   const worker = await readFile(path.join(javaRoot, "ProactiveNotificationWorker.java"), "utf8");
   const plugin = await readFile(path.join(javaRoot, "CompanionNativePlugin.java"), "utf8");
+  const registration = await readFile(path.join(javaRoot, "FirebaseRegistration.java"), "utf8");
+  const firebaseService = await readFile(path.join(javaRoot, "EntangleFirebaseMessagingService.java"), "utf8");
   const activity = await readFile(path.join(javaRoot, "MainActivity.java"), "utf8");
   const manifest = await readFile(path.join(appRoot, "src", "main", "AndroidManifest.xml"), "utf8");
+  const strings = await readFile(path.join(appRoot, "src", "main", "res", "values", "strings.xml"), "utf8");
   const gradle = await readFile(path.join(appRoot, "build.gradle"), "utf8");
+  const frontend = await readFile(path.join(mobileRoot, "..", "companion_frontend", "app.js"), "utf8");
 
   assert.match(worker, /PeriodicWorkRequest/);
   assert.match(worker, /PERIODIC_MINUTES = 15L/);
@@ -30,11 +34,23 @@ test("Android uses a native background worker for proactive notifications", asyn
   assert.match(worker, /\/api\/solo\/outbox\/ack/);
   assert.match(worker, /NotificationManagerCompat/);
   assert.match(plugin, /configureProactiveNotifications/);
+  assert.match(plugin, /EntangleFirebaseMessagingService\.syncRegistration/);
+  assert.match(registration, /\/api\/notifications\/register/);
+  assert.match(registration, /"fid"/);
+  assert.match(firebaseService, /onNewToken/);
+  assert.match(firebaseService, /onMessageReceived/);
+  assert.match(firebaseService, /ombre_proactive/);
   assert.match(activity, /registerPlugin\(CompanionNativePlugin\.class\)/);
   assert.ok(
     activity.indexOf("registerPlugin(CompanionNativePlugin.class)") < activity.indexOf("super.onCreate(savedInstanceState)"),
     "Capacitor local plugins must be registered before BridgeActivity starts"
   );
   assert.match(manifest, /android\.permission\.POST_NOTIFICATIONS/);
+  assert.match(manifest, /EntangleFirebaseMessagingService/);
+  assert.match(manifest, /firebase_messaging_installation_id_enabled/);
+  assert.match(strings, /<string name="app_name">Entangle<\/string>/);
   assert.match(gradle, /androidx\.work:work-runtime:2\.11\.2/);
+  assert.match(gradle, /com\.google\.firebase:firebase-messaging/);
+  assert.match(frontend, /\/api\/solo\/messages/);
+  assert.match(frontend, /proactiveId/);
 });

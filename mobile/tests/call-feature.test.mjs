@@ -57,3 +57,28 @@ test("Android call service owns microphone, VAD, websocket, audio routing and im
   assert.match(manifest, /android\.permission\.RECORD_AUDIO/);
   assert.match(manifest, /android:foregroundServiceType="microphone"/);
 });
+
+test("Android supports Firebase lock-screen incoming calls and Entangle branding", async () => {
+  const manifest = await readFile(
+    path.join(mobileRoot, "android", "app", "src", "main", "AndroidManifest.xml"),
+    "utf8"
+  );
+  const messaging = await readFile(path.join(javaRoot, "EntangleFirebaseMessagingService.java"), "utf8");
+  const notifier = await readFile(path.join(javaRoot, "IncomingCallNotifier.java"), "utf8");
+  const activity = await readFile(path.join(javaRoot, "IncomingCallActivity.java"), "utf8");
+  const strings = await readFile(
+    path.join(mobileRoot, "android", "app", "src", "main", "res", "values", "strings.xml"),
+    "utf8"
+  );
+
+  assert.match(manifest, /USE_FULL_SCREEN_INTENT/);
+  assert.match(manifest, /EntangleFirebaseMessagingService/);
+  assert.match(manifest, /IncomingCallActivity/);
+  assert.match(messaging, /call_invite/);
+  assert.match(messaging, /\/api\/call\/devices/);
+  assert.match(notifier, /setFullScreenIntent/);
+  assert.match(notifier, /CallStyle\.forIncomingCall/);
+  assert.match(activity, /EXTRA_INVITE_ID/);
+  assert.match(activity, /CallForegroundService\.ACTION_START/);
+  assert.match(strings, />Entangle</);
+});
