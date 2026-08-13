@@ -61,11 +61,23 @@ class SoloMcpConfigurationTests(unittest.IsolatedAsyncioTestCase):
             ),
             MCP_JD_SHOPPING_CALL_TIMEOUT,
         )
+        self.assertEqual(
+            mcp_operation_timeout(
+                "任意导入名称",
+                "call_tool",
+                {"url": "https://relay.example/mcp"},
+                {"name": "search_surprise_gift"},
+            ),
+            MCP_JD_SHOPPING_CALL_TIMEOUT,
+        )
         self.assertEqual(mcp_operation_timeout("forum", "call_tool", {}), MCP_CALL_TIMEOUT)
         self.assertEqual(
             mcp_operation_timeout("ombre-jd-shopping", "list_tools", {}),
             MCP_CALL_TIMEOUT,
         )
+        status = self.bridge.status_snapshot()
+        self.assertEqual(status["bridgeRevision"], "jd-tool-timeout-v2")
+        self.assertEqual(status["jdShoppingCallTimeoutSeconds"], 150.0)
 
     async def test_plaintext_credentials_are_rejected(self):
         with self.assertRaisesRegex(McpConfigurationError, "plaintext credentials"):

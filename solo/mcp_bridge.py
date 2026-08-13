@@ -28,6 +28,7 @@ MCP_RESULT_CHAR_LIMIT = 8192
 MCP_IDLE_SECONDS = 600
 MCP_CALL_TIMEOUT = 30.0
 MCP_JD_SHOPPING_CALL_TIMEOUT = 150.0
+MCP_JD_SHOPPING_TOOLS = {"search_surprise_gift", "submit_authorized_jd_order"}
 
 _SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 _SECRET_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
@@ -57,12 +58,15 @@ def mcp_operation_timeout(
     server_name: str,
     operation: str,
     config: Mapping[str, Any] | None = None,
+    payload: Mapping[str, Any] | None = None,
 ) -> float:
     """Give the browser-backed JD tool more time without slowing other MCPs."""
     url = str((config or {}).get("url") or "").lower()
+    tool_name = str((payload or {}).get("name") or "").strip()
     is_jd_shopping = (
         str(server_name or "").strip().lower() == "ombre-jd-shopping"
         or "/api/jd-shopping/" in url
+        or tool_name in MCP_JD_SHOPPING_TOOLS
     )
     if operation == "call_tool" and is_jd_shopping:
         return MCP_JD_SHOPPING_CALL_TIMEOUT
@@ -170,7 +174,12 @@ class _ServerWorker:
                         future.set_result(True)
                     break
                 try:
-                    operation_timeout = mcp_operation_timeout(self.name, operation, self.config)
+                    operation_timeout = mcp_operation_timeout(
+                        self.name,
+                        operation,
+                        self.config,
+                        payload if isinstance(payload, dict) else None,
+                    )
                     if operation == "list_tools":
                         result = await asyncio.wait_for(session.list_tools(), timeout=MCP_CALL_TIMEOUT)
                     elif operation == "call_tool":
@@ -534,6 +543,8 @@ class SoloMcpBridge:
         snapshot = self.public_snapshot()
         return {
             "ok": True,
+            "bridgeRevision": "jd-tool-timeout-v2",
+            "jdShoppingCallTimeoutSeconds": MCP_JD_SHOPPING_CALL_TIMEOUT,
             "enabled": snapshot["enabled"],
             "servers": [
                 {
@@ -593,7 +604,12 @@ class SoloMcpBridge:
             return await worker.request(
                 operation,
                 payload,
-                timeout=mcp_operation_timeout(name, operation, config),
+                timeout=mcp_operation_timeout(
+                    name,
+                    operation,
+                    config,
+                    payload if isinstance(payload, dict) else None,
+                ),
             )
         except Exception as exc:
             self._mark_failed(name, exc)
