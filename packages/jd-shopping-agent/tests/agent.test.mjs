@@ -50,8 +50,10 @@ test('search uses model-provided queries and requires no preference form', async
   const seen = [];
   const browser = {
     ensureLoggedIn: async () => true,
-    search: async (query) => {
+    search: async (query, _limit, options) => {
       seen.push(query);
+      assert.ok(options.deadlineEpoch > Date.now());
+      assert.ok(options.deadlineEpoch <= Date.now() + 90_000);
       return [candidate(`10012345678${seen.length}`), candidate(`10012345679${seen.length}`)];
     }
   };
@@ -61,6 +63,73 @@ test('search uses model-provided queries and requires no preference form', async
   });
   assert.deepEqual(seen, ['她会喜欢的桌面礼物']);
   assert.equal(result.candidates.length, 2);
+});
+
+test('search deduplicates repeated model queries', async () => {
+  const config = makeConfig();
+  const seen = [];
+  const browser = {
+    ensureLoggedIn: async () => true,
+    search: async (query) => {
+      seen.push(query);
+      return [candidate('100123450001'), candidate('100123450002')];
+    }
+  };
+  const result = await searchGiftCandidates(config, browser, {
+    id: 'jd_dddddddddddddddddddddddddddddddd',
+    payload: { queries: ['桌面礼物', ' 桌面礼物 ', '桌面礼物'], budgetCny: 300, maxCandidates: 10 }
+  });
+  assert.deepEqual(seen, ['桌面礼物']);
+  assert.equal(result.candidates.length, 2);
+});
+
+test('search stops immediately on a JD rate-limit page instead of retrying', async () => {
+  const config = makeConfig();
+  let searches = 0;
+  const browser = {
+    ensureLoggedIn: async () => true,
+    search: async () => {
+      searches += 1;
+      const error = new Error('京东空页');
+      error.code = 'JD_SEARCH_UNAVAILABLE';
+      throw error;
+    }
+  };
+  await assert.rejects(() => searchGiftCandidates(config, browser, {
+    id: 'jd_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    payload: { queries: ['桌面礼物', '随身礼物', '宿舍礼物'], budgetCny: 300, maxCandidates: 10 }
+  }), /京东空页/);
+  assert.equal(searches, 1);
+});
+
+test('search stops after the first query once two safe candidates exist', async () => {
+  const config = makeConfig();
+  const seen = [];
+  const browser = {
+    ensureLoggedIn: async () => true,
+    search: async (query) => {
+      seen.push(query);
+      return [candidate('100123450011'), candidate('100123450012')];
+    }
+  };
+  const result = await searchGiftCandidates(config, browser, {
+    id: 'jd_gggggggggggggggggggggggggggggggg',
+    payload: { queries: ['桌面礼物', '随身礼物', '宿舍礼物'], budgetCny: 300, maxCandidates: 10 }
+  });
+  assert.equal(result.candidates.length, 2);
+  assert.deepEqual(seen, ['桌面礼物']);
+});
+
+test('search explains when parsed products fail budget or safety rules', async () => {
+  const config = makeConfig();
+  const browser = {
+    ensureLoggedIn: async () => true,
+    search: async () => [{ ...candidate('100123450003'), priceCny: 999 }]
+  };
+  await assert.rejects(() => searchGiftCandidates(config, browser, {
+    id: 'jd_ffffffffffffffffffffffffffffffff',
+    payload: { queries: ['桌面礼物'], budgetCny: 300, maxCandidates: 10 }
+  }), /1 件超过 300 元预算.*不要继续搜索同一个具体型号/);
 });
 
 test('a completed purchase task is idempotent', async () => {

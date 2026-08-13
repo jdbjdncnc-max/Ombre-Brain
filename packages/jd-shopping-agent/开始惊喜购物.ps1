@@ -14,13 +14,6 @@ try {
 }
 
 Write-Host ''
-Write-Host '先打开京东登录窗口。已经登录过的话，它会很快完成。'
-npm run login
-if ($LASTEXITCODE -ne 0) {
-    throw '京东登录没有完成，本地助手不会启动。'
-}
-
-Write-Host ''
 Write-Host '你将建立长期授权：额度和每月订单数以 config.local.json 为准。她会自己选择礼物，不会询问喜好或展示候选。'
 $authorization = Read-Host '如果同意，请输入：授权'
 if ($authorization -ne '授权') {
@@ -33,8 +26,10 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host ''
-Write-Host '本地助手开始常驻。保持这个窗口和电脑开启，她就能使用购物工具；按 Ctrl+C 可以随时暂停。'
-Write-Host 'Edge 会真实打开京东；如果你不想看到礼物，请不要查看浏览器窗口。'
+Write-Host '请先用平时的 Edge 打开京东并正常登录，然后保持该京东标签页开启。'
+Write-Host '稍后 Playwright 授权页出现时，请选择这个京东标签页并点击 Allow & select（允许并选择）。'
+Write-Host '本地助手开始常驻。保持这个窗口、Edge 和京东标签页开启；按 Ctrl+C 可以随时暂停。'
+Write-Host '如果你不想看到礼物，请不要查看已经授权的京东标签页。'
 npm start
 
 Write-Host ''

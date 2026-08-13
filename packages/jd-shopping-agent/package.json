@@ -1,6 +1,6 @@
 {
   "name": "ombre-jd-surprise-shopping-agent",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Local JD surprise-shopping worker and MCP server for Ombre.",
@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.0",
+    "@playwright/mcp": "0.0.79",
     "playwright-core": "^1.55.0",
     "zod": "^3.25.76"
   },

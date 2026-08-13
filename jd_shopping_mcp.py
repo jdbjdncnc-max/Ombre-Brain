@@ -66,7 +66,11 @@ def build_jd_shopping_mcp(
     @server.tool(
         name=SEARCH_TOOL,
         title="搜索京东商品",
-        description="根据当前对话拟定一到四个搜索词，并返回京东真实候选。提交订单前必须先调用此工具。",
+        description=(
+            "根据当前对话拟定两到四个互不重复的京东搜索词，并返回带实时价格的真实候选。"
+            "搜索词应是预算内可能买到的宽泛品类，不要只搜索某个可能明显超预算的具体型号。"
+            "若工具提示超预算，应主动改搜更便宜的品类；提交订单前必须先调用此工具。"
+        ),
     )
     async def search_jd_products(
         queries: Annotated[list[str], Field(min_length=1, max_length=4)],
