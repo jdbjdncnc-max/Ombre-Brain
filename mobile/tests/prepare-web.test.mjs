@@ -34,6 +34,8 @@ test("prepared frontend contains the web app and platform adapters", async () =>
   assert.match(app, /syncNativeProactiveNotifications/);
   assert.match(app, /persistImportedChat/);
   assert.match(app, /createChatHistoryStore/);
+  assert.match(app, /promptCacheContext: normalizePromptCacheContext/);
+  assert.match(app, /promptCache \? \{ promptCache \} : \{\}/);
   assert.match(chatStorage, /entangle-chat-history/);
   assert.match(app, /url\("background\.svg"\)/);
   assert.doesNotMatch(app, /url\("\/frontend\//);

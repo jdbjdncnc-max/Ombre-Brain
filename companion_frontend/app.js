@@ -1371,8 +1371,22 @@ function normalizeRecallSnapshot(value) {
     count: memories.length,
     memories,
     injectionText: String(value?.injection_text || ""),
+    promptCacheContext: normalizePromptCacheContext(value?.prompt_cache_context),
     timestamp: Number(value?.timestamp) || Math.floor(Date.now() / 1000)
   };
+}
+
+function normalizePromptCacheContext(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const version = Number(value.version);
+  const payload = String(value.payload || "").trim();
+  const signature = String(value.signature || "").trim();
+  if (version !== 1 || !payload || !/^[a-f0-9]{64}$/i.test(signature)) {
+    return null;
+  }
+  return { version, payload, signature };
 }
 
 function openRecallModal(message) {
@@ -1792,15 +1806,21 @@ function messageForGateway(message) {
     && typeof message.deviceContext === "object"
     ? message.deviceContext
     : null;
+  const promptCache = message.role === "assistant"
+    && message.recall?.promptCacheContext
+    && typeof message.recall.promptCacheContext === "object"
+    ? message.recall.promptCacheContext
+    : null;
   return {
     role: message.role,
     content: message.role === "user" ? buildUserMessageContent(message) : message.content,
-    ...(sentAt || health || device
+    ...(sentAt || health || device || promptCache
       ? {
           context: {
             ...(sentAt ? { sentAt, timezone } : {}),
             ...(health ? { health } : {}),
-            ...(device ? { device } : {})
+            ...(device ? { device } : {}),
+            ...(promptCache ? { promptCache } : {})
           }
         }
       : {})

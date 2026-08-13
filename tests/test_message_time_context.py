@@ -1,4 +1,5 @@
 import unittest
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -10,6 +11,8 @@ from zeta_openai_gateway import ZetaOpenAIGateway
 class MessageTimeContextTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.gateway = object.__new__(ZetaOpenAIGateway)
+        self.gateway.upstream_api_key = "test-upstream-secret"
+        self.gateway.gateway_token = "test-gateway-token"
 
     def test_keeps_message_bodies_clean_and_removes_custom_context_fields(self):
         messages = [
@@ -260,6 +263,106 @@ class MessageTimeContextTests(unittest.IsolatedAsyncioTestCase):
             self.gateway._openrouter_session_id("real-session"),
         )
         self.assertNotEqual(forwarded["session_id"], "client-controlled")
+
+    def test_signed_dynamic_tail_restores_the_exact_previous_prompt_prefix(self):
+        self.gateway.upstream_chat_url = "https://openrouter.ai/api/v1/chat/completions"
+        session_id = "cache-session"
+        layer = self.gateway._compose_ombre_system_layer(memory_context="第一轮召回")
+        first_payload = {
+            "messages": [{
+                "role": "user",
+                "content": "第一轮",
+                "context": {
+                    "sentAt": "2026-08-14T03:00:00Z",
+                    "timezone": "Asia/Taipei",
+                },
+            }]
+        }
+        self.gateway._remember_recall_debug(
+            session_id=session_id,
+            user_text="第一轮",
+            recalled={"memories": [], "injection_text": "第一轮召回"},
+        )
+        first = self.gateway._prepare_forward_payload(
+            first_payload,
+            layer,
+            "稳定主 Prompt",
+            "Asia/Taipei",
+            session_id=session_id,
+        )
+        cache_context = deepcopy(
+            self.gateway.recall_debug_by_session[session_id]["prompt_cache_context"]
+        )
+
+        second_payload = {
+            "messages": [
+                first_payload["messages"][0],
+                {
+                    "role": "assistant",
+                    "content": "第一轮回答",
+                    "context": {
+                        "sentAt": "2026-08-14T03:00:05Z",
+                        "timezone": "Asia/Taipei",
+                        "promptCache": cache_context,
+                    },
+                },
+                {
+                    "role": "user",
+                    "content": "第二轮",
+                    "context": {
+                        "sentAt": "2026-08-14T03:01:00Z",
+                        "timezone": "Asia/Taipei",
+                    },
+                },
+            ]
+        }
+        self.gateway._remember_recall_debug(
+            session_id=session_id,
+            user_text="第二轮",
+            recalled={"memories": [], "injection_text": "第二轮召回"},
+        )
+        second = self.gateway._prepare_forward_payload(
+            second_payload,
+            self.gateway._compose_ombre_system_layer(memory_context="第二轮召回"),
+            "稳定主 Prompt",
+            "Asia/Taipei",
+            session_id=session_id,
+        )
+
+        self.assertEqual(second["messages"][:len(first["messages"])], first["messages"])
+        self.assertEqual(
+            second["messages"][len(first["messages"])],
+            {"role": "assistant", "content": "第一轮回答"},
+        )
+        self.assertNotIn("promptCache", str(second["messages"]))
+
+    def test_tampered_or_cross_session_cache_context_is_never_replayed(self):
+        dynamic_text = (
+            "[Ombre 动态资料｜本轮]\n\n可信资料\n\n[Ombre 动态资料结束]"
+        )
+        context = self.gateway._encode_prompt_cache_context("session-a", dynamic_text)
+        tampered = deepcopy(context)
+        tampered["payload"] += "A"
+        messages = [
+            {"role": "user", "content": "你好"},
+            {
+                "role": "assistant",
+                "content": "你好呀",
+                "context": {"promptCache": tampered},
+            },
+        ]
+
+        self.assertEqual(
+            self.gateway._restore_prompt_cache_turns(messages, "session-a"),
+            [
+                {"role": "user", "content": "你好"},
+                {"role": "assistant", "content": "你好呀"},
+            ],
+        )
+        self.assertEqual(
+            self.gateway._decode_prompt_cache_context("session-b", context),
+            "",
+        )
 
     def test_health_context_uses_only_the_latest_user_message(self):
         messages = [

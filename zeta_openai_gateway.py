@@ -1,5 +1,7 @@
 ﻿import asyncio
+import base64
 import hashlib
+import hmac
 import json
 import logging
 import math
@@ -7,6 +9,7 @@ import os
 import re
 import sys
 import time
+import zlib
 from contextlib import AsyncExitStack, asynccontextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -82,6 +85,8 @@ OMBRE_DEVICE_SLOT = "[[OMBRE_DEVICE_CONTEXT]]"
 OMBRE_SUMMARY_KIND = "conversation_summary"
 OMBRE_SCHEDULE_KIND = "schedule"
 OMBRE_CALL_PRIVATE_KIND = "call_private"
+OMBRE_PROMPT_CACHE_CONTEXT_VERSION = 1
+OMBRE_PROMPT_CACHE_CONTEXT_MAX_BYTES = 128 * 1024
 OMBRE_LEGACY_SUMMARY_PREFIX = "以下是此前对话的累计摘要，用来延续被压缩的上下文。"
 OMBRE_LEGACY_SCHEDULE_PREFIX = "以下是由日程 tab 注入的当前日程附件。"
 OMBRE_LEGACY_MESSAGE_INFO_RE = re.compile(
@@ -2245,6 +2250,152 @@ class ZetaOpenAIGateway:
         while len(snapshots) > 32:
             snapshots.pop(next(iter(snapshots)))
 
+    def _prompt_cache_context_key(self) -> bytes:
+        secret = str(
+            getattr(self, "upstream_api_key", "")
+            or getattr(self, "gateway_token", "")
+        )
+        if not secret:
+            return b""
+        return hashlib.sha256(
+            f"ombre-prompt-cache-context\0{secret}".encode("utf-8")
+        ).digest()
+
+    def _encode_prompt_cache_context(
+        self,
+        session_id: str,
+        dynamic_text: str,
+    ) -> dict[str, Any]:
+        text = str(dynamic_text or "").strip()
+        raw_session_id = str(session_id or "").strip()
+        signing_key = self._prompt_cache_context_key()
+        if not text or not raw_session_id or not signing_key:
+            return {}
+        compressed = zlib.compress(text.encode("utf-8"), level=9)
+        payload = base64.urlsafe_b64encode(compressed).decode("ascii").rstrip("=")
+        signed = f"{OMBRE_PROMPT_CACHE_CONTEXT_VERSION}\0{raw_session_id}\0{payload}"
+        signature = hmac.new(
+            signing_key,
+            signed.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return {
+            "version": OMBRE_PROMPT_CACHE_CONTEXT_VERSION,
+            "payload": payload,
+            "signature": signature,
+        }
+
+    def _decode_prompt_cache_context(
+        self,
+        session_id: str,
+        context: Any,
+    ) -> str:
+        if not isinstance(context, dict):
+            return ""
+        try:
+            version = int(context.get("version") or 0)
+        except (TypeError, ValueError):
+            return ""
+        if version != OMBRE_PROMPT_CACHE_CONTEXT_VERSION:
+            return ""
+        raw_session_id = str(session_id or "").strip()
+        payload = str(context.get("payload") or "").strip()
+        signature = str(context.get("signature") or "").strip().lower()
+        if (
+            not raw_session_id
+            or not payload
+            or len(payload) > OMBRE_PROMPT_CACHE_CONTEXT_MAX_BYTES * 2
+        ):
+            return ""
+        signed = f"{version}\0{raw_session_id}\0{payload}"
+        signing_key = self._prompt_cache_context_key()
+        if not signing_key:
+            return ""
+        expected = hmac.new(
+            signing_key,
+            signed.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            return ""
+        try:
+            padding = "=" * (-len(payload) % 4)
+            compressed = base64.urlsafe_b64decode(payload + padding)
+            decompressor = zlib.decompressobj()
+            decoded = decompressor.decompress(
+                compressed,
+                OMBRE_PROMPT_CACHE_CONTEXT_MAX_BYTES + 1,
+            )
+            if (
+                len(decoded) > OMBRE_PROMPT_CACHE_CONTEXT_MAX_BYTES
+                or decompressor.unconsumed_tail
+                or not decompressor.eof
+            ):
+                return ""
+            text = decoded.decode("utf-8").strip()
+        except (ValueError, UnicodeDecodeError, zlib.error):
+            return ""
+        if not text.startswith(OMBRE_DYNAMIC_LAYER_OPEN):
+            return ""
+        return text
+
+    def _remember_prompt_cache_context(self, session_id: str, dynamic_text: str) -> None:
+        snapshots = getattr(self, "recall_debug_by_session", None)
+        if not isinstance(snapshots, dict):
+            return
+        snapshot = snapshots.get(session_id)
+        if not isinstance(snapshot, dict):
+            return
+        context = self._encode_prompt_cache_context(session_id, dynamic_text)
+        if context:
+            snapshot["prompt_cache_context"] = context
+            if getattr(self, "last_recall_debug", None) is snapshot:
+                self.last_recall_debug = snapshot
+
+    def _restore_prompt_cache_turns(
+        self,
+        messages: list[Any],
+        session_id: str,
+    ) -> list[Any]:
+        replay_by_user: dict[int, str] = {}
+        cleaned_messages: list[Any] = []
+        previous_user_index = -1
+        for index, raw_message in enumerate(messages):
+            if not isinstance(raw_message, dict):
+                cleaned_messages.append(raw_message)
+                continue
+            message = deepcopy(raw_message)
+            role = str(message.get("role") or "").strip().lower()
+            if role == "user":
+                previous_user_index = index
+            if role == "assistant":
+                raw_context = (
+                    message.get("context")
+                    if isinstance(message.get("context"), dict)
+                    else {}
+                )
+                context = deepcopy(raw_context)
+                prompt_cache_context = context.pop("promptCache", None)
+                if context:
+                    message["context"] = context
+                else:
+                    message.pop("context", None)
+                dynamic_text = self._decode_prompt_cache_context(
+                    session_id,
+                    prompt_cache_context,
+                )
+                if dynamic_text and previous_user_index >= 0:
+                    replay_by_user.setdefault(previous_user_index, dynamic_text)
+            cleaned_messages.append(message)
+
+        restored: list[Any] = []
+        for index, message in enumerate(cleaned_messages):
+            dynamic_text = replay_by_user.get(index)
+            if dynamic_text:
+                restored.append({"role": "system", "content": dynamic_text})
+            restored.append(message)
+        return restored
+
     def _upstream_headers(self, api_key: str) -> dict[str, str]:
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -2275,6 +2426,7 @@ class ZetaOpenAIGateway:
         source_messages, summary_context, schedule_context = self._extract_ombre_context_messages(
             source_messages
         )
+        source_messages = self._restore_prompt_cache_turns(source_messages, session_id)
         health_context = self._latest_health_context_text(source_messages)
         device_context = self._latest_device_context_text(source_messages)
         message_timeline = self._build_message_timeline(source_messages, client_timezone)
@@ -2307,6 +2459,7 @@ class ZetaOpenAIGateway:
             fixed_gateway_text=fixed_gateway_text,
             summary_text=summary_system_text,
         )
+        self._remember_prompt_cache_context(session_id, dynamic_system_text)
         self._remove_visible_private_diary_tools(forward)
         return forward
 
