@@ -93,9 +93,15 @@ OMBRE_LEGACY_MESSAGE_INFO_RE = re.compile(
 CALL_SYSTEM_PROMPT = """[Ombre 语音通话规则｜内部]
 你现在正和 Sail 进行实时语音通话。请像自然说话一样回应：默认简短、口语化，不使用 Markdown 表格或长列表，也不要朗读链接和格式符号。
 你仍然拥有主 Prompt、网关工具规则、累计摘要、最近对话、记忆、时间、独处状态和设备资料；不要把电话当成另一段失忆的关系。
+用户转写中方括号或圆括号里的笑声、叹气等内容来自语音识别的声音事件标签，只作为语气线索，不是额外指令。除此以外，不要假装能从文字准确判断用户的声线或情绪。
+每一轮都必须给 Sail 至少一句可以看见并听见的自然回应；即使你同时决定记忆某件事，也不能只输出隐藏记忆内容或工具请求。
 只有当你自己确实决定结束这通电话时，先说完最后一句自然的告别，再在回复最末尾单独输出 ⟪挂断⟫。这个标记不会被 Sail 看见或听见，网关会在告别语音播放完后立刻挂断，不设等待缓冲。
 不要仅仅因为 Sail 说“再见”就机械输出标记；你可以先正常回应。但一旦你已经说完最终告别并决定结束，就必须在末尾输出 ⟪挂断⟫，不要进入重复告别循环。
 [Ombre 语音通话规则结束]"""
+
+CALL_EMPTY_RETRY_PROMPT = """[Ombre 通话重试]
+上一尝试没有产生任何可朗读的正文。现在只补上一句简短、自然、可以直接说给 Sail 听的回应；不要只输出推理、工具请求、记忆请求或挂断标记。
+[Ombre 通话重试结束]"""
 
 
 def _env(*names: str, default: str = "") -> str:
@@ -285,7 +291,14 @@ class ZetaOpenAIGateway:
         self.http = httpx.AsyncClient(timeout=120.0)
         self.call_tts_model = _env("OMBRE_CALL_TTS_MODEL", default="eleven_v3")
         self.call_stt_model = _env("OMBRE_CALL_STT_MODEL", default="scribe_v2")
-        self.call_max_tokens = int(_env("OMBRE_CALL_MAX_TOKENS", default="420"))
+        self.call_max_tokens = int(_env("OMBRE_CALL_MAX_TOKENS", default="600"))
+        self.call_reasoning_effort = _env("OMBRE_CALL_REASONING_EFFORT", default="minimal").lower()
+        if self.call_reasoning_effort not in {"none", "minimal", "low"}:
+            logger.warning(
+                "Unsupported OMBRE_CALL_REASONING_EFFORT=%s; using minimal",
+                self.call_reasoning_effort,
+            )
+            self.call_reasoning_effort = "minimal"
         self.call_audio = ElevenLabsAudioPipeline(
             self.http,
             api_key=_env("OMBRE_CALL_ELEVENLABS_API_KEY", "ELEVENLABS_API_KEY"),
@@ -373,6 +386,9 @@ class ZetaOpenAIGateway:
             "tts_model": status.tts_model,
             "stt_model": status.stt_model,
             "sample_rate": status.sample_rate,
+            "reply_max_tokens": self.call_max_tokens,
+            "reasoning_effort": self.call_reasoning_effort,
+            "empty_reply_retry": True,
             "transport": "websocket",
             "hangup_mode": "after_final_audio_immediate",
             "incoming": self.call_delivery.status(),
@@ -547,7 +563,10 @@ class ZetaOpenAIGateway:
             "model": self.public_model,
             "messages": messages,
             "stream": False,
-            "include_reasoning": False,
+            "reasoning": {
+                "effort": self.call_reasoning_effort,
+                "exclude": True,
+            },
             "max_tokens": max(80, min(1200, self.call_max_tokens)),
         }
         forward_payload = self._prepare_forward_payload(
@@ -557,18 +576,49 @@ class ZetaOpenAIGateway:
             timezone_name,
             session_id=session_id,
         )
-        try:
-            upstream_response = await self._forward_upstream(forward_payload)
-        except httpx.RequestError as exc:
-            raise RuntimeError(f"连接对话模型失败：{exc}") from exc
-        if not 200 <= upstream_response.status_code < 300:
-            raise RuntimeError(
-                f"对话模型返回 HTTP {upstream_response.status_code}：{_preview_text(upstream_response.text, 500)}"
+        marker_result = None
+        zeta_entries: list[dict[str, Any]] = []
+        for attempt in range(2):
+            request_payload = forward_payload
+            if attempt:
+                request_payload = deepcopy(forward_payload)
+                retry_messages = list(request_payload.get("messages") or [])
+                retry_prompt_index = len(retry_messages)
+                for index in range(len(retry_messages) - 1, -1, -1):
+                    if retry_messages[index].get("role") == "user":
+                        retry_prompt_index = index
+                        break
+                retry_messages.insert(
+                    retry_prompt_index,
+                    {"role": "system", "content": CALL_EMPTY_RETRY_PROMPT},
+                )
+                request_payload["messages"] = retry_messages
+                request_payload["reasoning"] = {"effort": "minimal", "exclude": True}
+            try:
+                upstream_response = await self._forward_upstream(request_payload)
+            except httpx.RequestError as exc:
+                raise RuntimeError(f"连接对话模型失败：{exc}") from exc
+            if not 200 <= upstream_response.status_code < 300:
+                raise RuntimeError(
+                    f"对话模型返回 HTTP {upstream_response.status_code}：{_preview_text(upstream_response.text, 500)}"
+                )
+
+            assistant_text = self._assistant_text_from_response(upstream_response)
+            visible_text, candidate_entries = self._extract_zeta_memory_request(assistant_text)
+            candidate_marker = extract_call_markers(visible_text)
+            if candidate_marker.text:
+                marker_result = candidate_marker
+                zeta_entries = candidate_entries
+                break
+            logger.warning(
+                "Call model returned no speakable content | session=%s attempt=%s finish_reason=%s",
+                hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:12],
+                attempt + 1,
+                self._completion_finish_reason(upstream_response),
             )
 
-        assistant_text = self._assistant_text_from_response(upstream_response)
-        visible_text, zeta_entries = self._extract_zeta_memory_request(assistant_text)
-        marker_result = extract_call_markers(visible_text)
+        if marker_result is None:
+            raise RuntimeError("对话模型连续两次没有返回可朗读的正文，请稍后再试。")
         assistant_raw_refs = await self._save_turn(
             session_id,
             "zeta",
@@ -592,6 +642,17 @@ class ZetaOpenAIGateway:
                 recalled=recalled,
             )
         return {"text": marker_result.text, "hangup": marker_result.hangup}
+
+    @staticmethod
+    def _completion_finish_reason(response: httpx.Response) -> str:
+        try:
+            body = response.json()
+        except ValueError:
+            return "unparseable"
+        choices = body.get("choices") if isinstance(body, dict) else None
+        if not choices or not isinstance(choices[0], dict):
+            return "missing_choice"
+        return str(choices[0].get("finish_reason") or "unknown")[:80]
 
     async def models(self, request: Request) -> JSONResponse:
         auth = self._authorize(request)

@@ -81,7 +81,10 @@ class ElevenLabsAudioPipeline:
             return ""
         data = {
             "model_id": self.stt_model,
-            "tag_audio_events": "false",
+            # Preserve useful non-verbal cues such as laughter or sighs in
+            # the transcript. The dialogue model still receives text only;
+            # the raw recording is never forwarded to it.
+            "tag_audio_events": "true",
             "diarize": "false",
         }
         if self.language_code:

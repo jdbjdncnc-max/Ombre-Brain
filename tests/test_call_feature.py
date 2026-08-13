@@ -8,7 +8,7 @@ import pytest
 from call_audio_pipeline import CallConfigurationError, ElevenLabsAudioPipeline, pcm16_to_wav
 from call_markers import extract_call_markers
 from call_session import MAX_CONTEXT_CHARACTERS, sanitize_call_context
-from zeta_openai_gateway import CALL_SYSTEM_PROMPT, ZetaOpenAIGateway
+from zeta_openai_gateway import CALL_EMPTY_RETRY_PROMPT, CALL_SYSTEM_PROMPT, ZetaOpenAIGateway
 
 
 def test_hangup_marker_is_private_and_immediate_signal():
@@ -47,6 +47,29 @@ def test_audio_pipeline_reports_missing_server_configuration():
             raise AssertionError("missing credentials must be rejected")
     finally:
         asyncio.run(pipeline.http.aclose())
+
+
+@pytest.mark.asyncio
+async def test_audio_pipeline_keeps_scribe_audio_event_tags():
+    class FakeHttp:
+        def __init__(self):
+            self.data = None
+
+        async def post(self, *args, **kwargs):
+            self.data = kwargs.get("data")
+            return httpx.Response(200, json={"text": "（轻笑）你好"})
+
+    fake_http = FakeHttp()
+    pipeline = ElevenLabsAudioPipeline(
+        fake_http,
+        api_key="secret",
+        voice_id="voice",
+    )
+
+    text = await pipeline.transcribe_pcm(b"\x00\x00" * 8000)
+
+    assert text == "（轻笑）你好"
+    assert fake_http.data["tag_audio_events"] == "true"
 
 
 def test_call_context_keeps_summary_recent_messages_and_private_device_context():
@@ -104,6 +127,7 @@ async def test_call_reply_reuses_context_and_hides_hangup_marker():
     gateway.upstream_api_key = "secret"
     gateway.public_model = "zeta"
     gateway.call_max_tokens = 420
+    gateway.call_reasoning_effort = "minimal"
     gateway.recall_max_results = 5
     gateway.keyword_limit = 2
     gateway.semantic_limit = 3
@@ -153,6 +177,57 @@ async def test_call_reply_reuses_context_and_hides_hangup_marker():
     messages = captured["payload"]["messages"]
     assert messages[0]["content"] == CALL_SYSTEM_PROMPT
     assert messages[-1]["context"]["device"]["currentApp"]["label"] == "地图"
+    assert captured["payload"]["reasoning"] == {"effort": "minimal", "exclude": True}
+
+
+@pytest.mark.asyncio
+async def test_call_reply_retries_once_when_model_returns_no_speakable_text():
+    gateway = ZetaOpenAIGateway.__new__(ZetaOpenAIGateway)
+    gateway.upstream_chat_url = "https://example.test/v1/chat/completions"
+    gateway.upstream_api_key = "secret"
+    gateway.public_model = "zeta"
+    gateway.call_max_tokens = 600
+    gateway.call_reasoning_effort = "minimal"
+    gateway.recall_max_results = 5
+    gateway.keyword_limit = 2
+    gateway.semantic_limit = 3
+    gateway.hidden_memory_enabled = False
+    gateway.solo = _FakeSolo()
+    gateway.memory_gateway = _FakeMemory()
+    gateway._log_recall = lambda *args, **kwargs: None
+    gateway._remember_recall_debug = lambda *args, **kwargs: None
+    gateway._build_gateway_system_text = lambda recalled: "gateway rules"
+    gateway._read_system_prompt = lambda: "persona"
+    gateway._prepare_forward_payload = lambda payload, *args, **kwargs: payload
+    gateway._save_turn = _fake_save_turn
+    gateway._write_zeta_memory_requests = _fake_write_memories
+    gateway._should_run_reflection = lambda count: False
+    payloads = []
+
+    async def forward(payload):
+        payloads.append(payload)
+        if len(payloads) == 1:
+            return httpx.Response(200, json={
+                "choices": [{"message": {"content": ""}, "finish_reason": "length"}]
+            })
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": "我在，刚才走神了一下。"}, "finish_reason": "stop"}]
+        })
+
+    gateway._forward_upstream = forward
+
+    result = await gateway.generate_call_reply(
+        context_messages=[],
+        user_text="你听得到吗？",
+        session_id="session-retry",
+        client_timezone="Asia/Taipei",
+    )
+
+    assert result == {"text": "我在，刚才走神了一下。", "hangup": False}
+    assert len(payloads) == 2
+    assert payloads[1]["messages"][-2] == {"role": "system", "content": CALL_EMPTY_RETRY_PROMPT}
+    assert payloads[1]["messages"][-1]["role"] == "user"
+    assert payloads[1]["reasoning"] == {"effort": "minimal", "exclude": True}
 
 
 class _FakeSolo:
@@ -165,3 +240,11 @@ class _FakeSolo:
 class _FakeMemory:
     async def recall(self, payload):
         return {"memories": [], "injection_text": ""}
+
+
+async def _fake_save_turn(*args, **kwargs):
+    return ["raw:1"]
+
+
+async def _fake_write_memories(**kwargs):
+    return 0
