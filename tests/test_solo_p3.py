@@ -161,6 +161,27 @@ class SoloAppraisalTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(updated["irritation"], 79)
         self.assertGreater(updated["grievance"], 79)
 
+    async def test_call_appraisal_records_one_factual_event_even_without_emotion_delta(self):
+        result = await self.service.apply_conversation_appraisal(
+            {
+                "emotion_changes": [],
+                "mood_words": [],
+                "events": [],
+            },
+            appraisal_id="call_once",
+            now=self.now,
+            event_source="voice_call",
+            cause_key="voice_call_appraisal",
+            fallback_event="我和 Sail 通了一次电话",
+        )
+
+        self.assertEqual(result["applied"], {})
+        events = self.service._read_jsonl(self.service.emotion_events_path, limit=10)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["source"], "voice_call")
+        self.assertEqual(events[0]["causeKey"], "voice_call_appraisal")
+        self.assertEqual(events[0]["reason"], "我和 Sail 通了一次电话")
+
     def test_parser_accepts_all_real_emotion_changes_without_a_count_limit(self):
         parsed = parse_appraisal_response("""```json
         {"emotion_changes":[{"emotion":"delight","delta":99},{"emotion":"content","delta":8},{"emotion":"amused","delta":7},{"emotion":"pride","delta":6},{"emotion":"curiosity","delta":5},{"emotion":"play_urge","delta":4},{"emotion":"kinship","delta":3},{"emotion":"fake","delta":100}],"mood_words":["开心","轻松","被理解","想靠近","安心"],"events":["她回应了我","我把话说完了","我没有再躲开"]}

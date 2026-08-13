@@ -1,13 +1,16 @@
 import asyncio
 import io
 import wave
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
 from call_audio_pipeline import CallConfigurationError, ElevenLabsAudioPipeline, pcm16_to_wav
 from call_markers import extract_call_markers
-from call_session import MAX_CONTEXT_CHARACTERS, sanitize_call_context
+from call_session import CallSession, MAX_CONTEXT_CHARACTERS, sanitize_call_context
+from solo.appraisal import CALL_APPRAISAL_TASK_PROMPT
 from zeta_openai_gateway import CALL_EMPTY_RETRY_PROMPT, CALL_SYSTEM_PROMPT, ZetaOpenAIGateway
 
 
@@ -228,6 +231,76 @@ async def test_call_reply_retries_once_when_model_returns_no_speakable_text():
     assert payloads[1]["messages"][-2] == {"role": "system", "content": CALL_EMPTY_RETRY_PROMPT}
     assert payloads[1]["messages"][-1]["role"] == "user"
     assert payloads[1]["reasoning"] == {"effort": "minimal", "exclude": True}
+
+
+@pytest.mark.asyncio
+async def test_call_session_finalizes_completed_transcript_only_once():
+    finalizer = AsyncMock(return_value={"ok": True})
+    gateway = SimpleNamespace(
+        default_session_id="session-call",
+        solo=SimpleNamespace(timezone_name="Asia/Taipei"),
+        finalize_call_appraisal=finalizer,
+    )
+    session = CallSession(gateway, object(), object())
+    session.started = True
+    session.call_id = "call-1"
+    session.end_reason = "user"
+    session.call_turns = [
+        {"role": "user", "content": "（轻笑）你在吗？"},
+        {"role": "assistant", "content": "我在。"},
+    ]
+
+    await session._finalize_appraisal()
+    await session._finalize_appraisal()
+
+    finalizer.assert_awaited_once_with(
+        call_id="call-1",
+        session_id="session-call",
+        messages=session.call_turns,
+        end_reason="user",
+    )
+
+
+@pytest.mark.asyncio
+async def test_completed_call_routes_one_appraisal_into_voice_call_event():
+    gateway = ZetaOpenAIGateway.__new__(ZetaOpenAIGateway)
+    gateway.upstream_chat_url = "https://example.test/v1/chat/completions"
+    gateway.upstream_api_key = "secret"
+    gateway.upstream_model = "openai/gpt-5.1"
+    gateway.solo = SimpleNamespace(
+        enabled=True,
+        appraisal_snapshot=lambda: {"channels": {"delight": 20}, "dimensions": {}},
+    )
+    gateway._run_emotion_appraisal = AsyncMock(return_value={"ok": True})
+
+    result = await gateway.finalize_call_appraisal(
+        call_id="call-2",
+        session_id="session-call",
+        messages=[
+            {"role": "user", "content": "（叹气）今天有点累。"},
+            {"role": "assistant", "content": "那就先歇一会儿，我陪你。"},
+        ],
+        end_reason="assistant",
+    )
+
+    assert result == {"ok": True}
+    kwargs = gateway._run_emotion_appraisal.await_args.kwargs
+    assert kwargs["task_prompt"] == CALL_APPRAISAL_TASK_PROMPT
+    assert kwargs["event_source"] == "voice_call"
+    assert kwargs["cause_key"] == "voice_call_appraisal"
+    assert kwargs["fallback_event"] == "我和 Sail 通了一次电话"
+    assert kwargs["event_limit"] == 1
+    assert "（叹气）今天有点累" in kwargs["summary"]
+
+    gateway._run_emotion_appraisal.reset_mock()
+    skipped = await gateway.finalize_call_appraisal(
+        call_id="call-incomplete",
+        session_id="session-call",
+        messages=[{"role": "user", "content": "喂？"}],
+        end_reason="disconnect",
+    )
+    assert skipped is None
+    gateway._run_emotion_appraisal.assert_not_awaited()
 
 
 class _FakeSolo:

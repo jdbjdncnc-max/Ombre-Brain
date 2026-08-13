@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import uuid
 from typing import Any
 
 from starlette.websockets import WebSocket, WebSocketDisconnect
@@ -76,13 +77,17 @@ class CallSession:
         self.session_id = gateway.default_session_id
         self.timezone_name = gateway.solo.timezone_name
         self.context_messages: list[dict[str, Any]] = []
+        self.call_turns: list[dict[str, str]] = []
         self.private_context: dict[str, Any] = {}
+        self.call_id = uuid.uuid4().hex
+        self.end_reason = "disconnect"
         self.audio = bytearray()
         self.speech_active = False
         self.started = False
         self.closed = False
         self.response_task: asyncio.Task | None = None
         self.send_lock = asyncio.Lock()
+        self.appraisal_finalized = False
 
     async def run(self) -> None:
         await self.websocket.accept()
@@ -105,6 +110,7 @@ class CallSession:
         finally:
             self.closed = True
             await self._cancel_response()
+            await self._finalize_appraisal()
 
     async def _handle_text(self, raw_text: str) -> None:
         try:
@@ -142,6 +148,8 @@ class CallSession:
             return
         self.session_id = str(message.get("sessionId") or self.session_id).strip()[:160]
         invite_id = str(message.get("inviteId") or "").strip()[:80]
+        if invite_id:
+            self.call_id = invite_id
         if invite_id and hasattr(self.gateway, "call_delivery"):
             self.gateway.call_delivery.respond(invite_id, "answer", note="websocket_connected")
         self.timezone_name = str(message.get("timezone") or self.timezone_name).strip()[:80]
@@ -193,6 +201,8 @@ class CallSession:
                 await self.send_json({"type": "status", "state": "listening"})
                 return
             await self.send_json({"type": "transcript", "speaker": "user", "text": user_text})
+            self.call_turns.append({"role": "user", "content": user_text})
+            self.call_turns = sanitize_call_context(self.call_turns)
             await self.send_json({"type": "status", "state": "thinking"})
             answer = await self.gateway.generate_call_reply(
                 context_messages=self.context_messages,
@@ -212,6 +222,8 @@ class CallSession:
             ])
             self.context_messages = sanitize_call_context(self.context_messages)
             if visible_text:
+                self.call_turns.append({"role": "assistant", "content": visible_text})
+                self.call_turns = sanitize_call_context(self.call_turns)
                 await self.send_json({"type": "transcript", "speaker": "assistant", "text": visible_text})
                 await self.send_json({"type": "status", "state": "speaking"})
                 pcm_reply = await self.pipeline.synthesize_pcm(visible_text)
@@ -226,6 +238,7 @@ class CallSession:
                         await asyncio.sleep(0)
                     await self.send_json({"type": "audio_end"})
             if hangup:
+                self.end_reason = "assistant"
                 await self.send_json({"type": "marker", "name": "hangup", "immediate": True})
                 return
             await self.send_json({"type": "status", "state": "listening"})
@@ -250,9 +263,29 @@ class CallSession:
         except asyncio.CancelledError:
             pass
 
+    async def _finalize_appraisal(self) -> None:
+        if self.appraisal_finalized:
+            return
+        self.appraisal_finalized = True
+        if not self.started or not self.call_turns:
+            return
+        finalizer = getattr(self.gateway, "finalize_call_appraisal", None)
+        if not callable(finalizer):
+            return
+        try:
+            await finalizer(
+                call_id=self.call_id,
+                session_id=self.session_id,
+                messages=list(self.call_turns),
+                end_reason=self.end_reason,
+            )
+        except Exception as exc:
+            logger.warning("Unable to finalize voice call appraisal | error=%s", exc)
+
     async def _close(self, reason: str, *, notify: bool = True) -> None:
         if self.closed:
             return
+        self.end_reason = str(reason or "disconnect")[:40]
         if notify:
             await self.send_json({"type": "ended", "reason": reason})
         self.closed = True

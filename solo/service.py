@@ -498,6 +498,9 @@ class SoloService:
         *,
         appraisal_id: str,
         now: datetime | None = None,
+        event_source: str = "conversation",
+        cause_key: str = "conversation_appraisal",
+        fallback_event: str = "",
     ) -> dict[str, Any]:
         """Validate and persist semantic emotion deltas from one summary batch."""
 
@@ -550,6 +553,11 @@ class SoloService:
                 for value in normalized.get("events", [])
                 if self._context_text(value, 240)
             ]
+            safe_fallback_event = self._context_text(fallback_event, 240)
+            if not events and safe_fallback_event:
+                events = [safe_fallback_event]
+            safe_event_source = self._context_text(event_source, 40) or "conversation"
+            safe_cause_key = self._context_text(cause_key, 80) or "conversation_appraisal"
             emotion["lastAppraisal"] = {
                 "id": safe_id,
                 "at": _iso(current),
@@ -567,8 +575,8 @@ class SoloService:
                     self._record_emotion_event(
                         emotion,
                         ts=current,
-                        source="conversation",
-                        cause_key="conversation_appraisal",
+                        source=safe_event_source,
+                        cause_key=safe_cause_key,
                         deltas=event_deltas,
                         reason=event_text,
                         felt=felt,

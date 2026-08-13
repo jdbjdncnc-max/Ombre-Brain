@@ -38,6 +38,7 @@ from jd_shopping_mcp import build_jd_shopping_mcp
 from solo.appraisal import (
     APPRAISAL_RESPONSE_FORMAT,
     APPRAISAL_TASK_PROMPT,
+    CALL_APPRAISAL_TASK_PROMPT,
     build_appraisal_user_text,
     parse_appraisal_response,
 )
@@ -1506,6 +1507,84 @@ class ZetaOpenAIGateway:
         asyncio.create_task(runner())
         return True
 
+    async def finalize_call_appraisal(
+        self,
+        *,
+        call_id: str,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        end_reason: str,
+    ) -> dict[str, Any] | None:
+        """Appraise one completed voice call exactly once after its socket closes."""
+
+        solo = getattr(self, "solo", None)
+        if solo is None or not bool(getattr(solo, "enabled", False)):
+            return None
+        if not self.upstream_chat_url or not self.upstream_api_key or not self.upstream_model:
+            return None
+
+        call_messages = [
+            {"role": str(item.get("role") or "").strip().lower(), "content": str(item.get("content") or "").strip()}
+            for item in sanitize_call_context(messages)
+            if str(item.get("role") or "").strip().lower() in {"user", "assistant"}
+            and str(item.get("content") or "").strip()
+        ]
+        roles = {item["role"] for item in call_messages}
+        if not {"user", "assistant"}.issubset(roles):
+            return None
+        try:
+            current_state = solo.appraisal_snapshot()
+        except Exception as exc:
+            logger.warning("Unable to read solitude state for call appraisal: %s", exc)
+            return None
+        if not current_state:
+            return None
+
+        reason_labels = {
+            "user": "Sail 主动挂断",
+            "assistant": "我主动结束",
+            "disconnect": "连接结束",
+        }
+        transcript_lines = [
+            f"{'Sail' if item['role'] == 'user' else '我'}：{re.sub(r'\\s+', ' ', item['content']).strip()}"
+            for item in call_messages
+        ]
+        transcript = "\n".join(transcript_lines)
+        if len(transcript) > 11000:
+            transcript = transcript[:5200] + "\n……（中间部分因安全长度限制省略）……\n" + transcript[-5200:]
+        summary = (
+            "场景：刚结束的一次实时语音通话。"
+            f"结束方式：{reason_labels.get(str(end_reason or '').strip(), '连接结束')}。\n"
+            f"通话转写：\n{transcript}"
+        )
+        fingerprint = json.dumps(
+            {
+                "call_id": str(call_id or "")[:160],
+                "session_id": str(session_id or "")[:160],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        appraisal_id = "call_" + hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:24]
+        try:
+            return await self._run_emotion_appraisal(
+                summary=summary,
+                new_messages=call_messages,
+                current_state=current_state,
+                model=self.upstream_model,
+                user_reference="Sail",
+                appraisal_id=appraisal_id,
+                task_prompt=CALL_APPRAISAL_TASK_PROMPT,
+                event_source="voice_call",
+                cause_key="voice_call_appraisal",
+                fallback_event="我和 Sail 通了一次电话",
+                event_limit=1,
+            )
+        except Exception as exc:
+            logger.warning("Voice call emotion appraisal failed | id=%s error=%s", appraisal_id, exc)
+            return None
+
     async def _run_emotion_appraisal(
         self,
         *,
@@ -1515,6 +1594,11 @@ class ZetaOpenAIGateway:
         model: str,
         user_reference: str,
         appraisal_id: str,
+        task_prompt: str = APPRAISAL_TASK_PROMPT,
+        event_source: str = "conversation",
+        cause_key: str = "conversation_appraisal",
+        fallback_event: str = "",
+        event_limit: int | None = None,
     ) -> dict[str, Any] | None:
         solo = getattr(self, "solo", None)
         if solo is None or not bool(getattr(solo, "enabled", False)):
@@ -1527,7 +1611,7 @@ class ZetaOpenAIGateway:
             "model": self.upstream_model,
             "messages": [
                 {"role": "system", "content": emotion_prompt},
-                {"role": "system", "content": APPRAISAL_TASK_PROMPT},
+                {"role": "system", "content": task_prompt},
                 {
                     "role": "user",
                     "content": build_appraisal_user_text(
@@ -1567,9 +1651,15 @@ class ZetaOpenAIGateway:
         if appraisal is None:
             logger.warning("Emotion appraisal returned invalid JSON | id=%s", appraisal_id)
             return None
+        if event_limit is not None:
+            limit = max(0, int(event_limit))
+            appraisal["events"] = list(appraisal.get("events") or [])[:limit]
         result = await solo.apply_conversation_appraisal(
             appraisal,
             appraisal_id=appraisal_id,
+            event_source=event_source,
+            cause_key=cause_key,
+            fallback_event=fallback_event,
         )
         logger.info(
             "Conversation emotion appraisal applied | id=%s duplicate=%s deltas=%s",

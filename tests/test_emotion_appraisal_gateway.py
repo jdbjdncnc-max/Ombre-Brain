@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import httpx
 from starlette.requests import Request
 
-from solo.appraisal import APPRAISAL_RESPONSE_FORMAT, APPRAISAL_TASK_PROMPT
+from solo.appraisal import APPRAISAL_RESPONSE_FORMAT, APPRAISAL_TASK_PROMPT, CALL_APPRAISAL_TASK_PROMPT
 from solo.emotion_model import default_channels
 from zeta_openai_gateway import ZetaOpenAIGateway
 
@@ -114,6 +114,43 @@ class EmotionAppraisalGatewayTests(unittest.IsolatedAsyncioTestCase):
             "第一轮", "第一轮回复", "第二轮", "第二轮回复"
         ])
         gateway.solo.apply_conversation_appraisal.assert_awaited_once()
+
+    async def test_call_appraisal_limits_event_and_preserves_voice_call_source(self):
+        gateway = _gateway()
+        gateway.http.post.return_value = httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps({
+                "emotion_changes": [],
+                "mood_words": ["安心"],
+                "events": ["我听见 Sail 叹气了", "这条不应成为第二个事件"],
+            }, ensure_ascii=False)}}]},
+            request=httpx.Request("POST", "https://dialogue.example/v1/chat/completions"),
+        )
+
+        await gateway._run_emotion_appraisal(
+            summary="刚结束一次通话。",
+            new_messages=[
+                {"role": "user", "content": "（叹气）今天有点累。"},
+                {"role": "assistant", "content": "我陪你歇一会儿。"},
+            ],
+            current_state=gateway.solo.appraisal_snapshot(),
+            model="openai/gpt-5.1",
+            user_reference="Sail",
+            appraisal_id="call_test",
+            task_prompt=CALL_APPRAISAL_TASK_PROMPT,
+            event_source="voice_call",
+            cause_key="voice_call_appraisal",
+            fallback_event="我和 Sail 通了一次电话",
+            event_limit=1,
+        )
+
+        request_payload = gateway.http.post.await_args.kwargs["json"]
+        self.assertEqual(request_payload["messages"][1]["content"], CALL_APPRAISAL_TASK_PROMPT)
+        apply_call = gateway.solo.apply_conversation_appraisal.await_args
+        self.assertEqual(apply_call.args[0]["events"], ["我听见 Sail 叹气了"])
+        self.assertEqual(apply_call.kwargs["event_source"], "voice_call")
+        self.assertEqual(apply_call.kwargs["cause_key"], "voice_call_appraisal")
+        self.assertEqual(apply_call.kwargs["fallback_event"], "我和 Sail 通了一次电话")
 
     async def test_rejects_a_single_user_turn_without_calling_model(self):
         gateway = _gateway()
