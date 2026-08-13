@@ -1,4 +1,5 @@
 import { platform } from "./platform.js";
+import { createChatHistoryStore } from "./chat_storage.js?v=20260813.1";
 import { createCallController } from "./call.js?v=20260810.1";
 import { createSoloPanel } from "./solo.js?v=20260807.2";
 import { formatTokenUsage, normalizeTokenUsage, readOpenAiStream } from "./openai_stream.js?v=20260810.1";
@@ -158,7 +159,12 @@ const COURSE_COLORS = [
 
 const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
 
-const storedMessages = loadJson(storageKeys.messages, []);
+const chatHistoryStore = await createChatHistoryStore({
+  legacyStorage: platform.storage,
+  legacyKey: storageKeys.messages
+});
+const chatHistoryLoad = await chatHistoryStore.load();
+const storedMessages = Array.isArray(chatHistoryLoad.messages) ? chatHistoryLoad.messages : [];
 const hasUnfinishedStoredReply = Array.isArray(storedMessages)
   && storedMessages.some((message) => message?.role === "assistant" && message?.pending);
 const state = {
@@ -196,6 +202,9 @@ const state = {
   emotionPromptSha256: "",
   emotionPromptError: "",
   proactiveMessageCursor: platform.storage.getString(storageKeys.proactiveMessageCursor),
+  chatStorageError: "",
+  chatStorageInfo: null,
+  chatStorageMigrated: Boolean(chatHistoryLoad.migrated),
   mcpLoaded: false,
   mcpServers: [],
   sessionId: platform.storage.getString(storageKeys.sessionId) || crypto.randomUUID(),
@@ -387,6 +396,7 @@ const els = {
   importChatButton: document.querySelector("#importChatButton"),
   importChatFile: document.querySelector("#importChatFile"),
   importChatStatus: document.querySelector("#importChatStatus"),
+  chatStorageStatus: document.querySelector("#chatStorageStatus"),
   clearChatButton: document.querySelector("#clearChatButton"),
   recallModal: document.querySelector("#recallModal"),
   closeRecallModalButton: document.querySelector("#closeRecallModalButton"),
@@ -452,6 +462,7 @@ if (hasUnfinishedStoredReply) {
   saveMessages();
 }
 renderComposerState();
+void refreshChatStorageStatus();
 restoreNavigationState();
 callController.restore().catch(() => {});
 initSchedule();
@@ -469,12 +480,14 @@ loadSchedule().catch(() => {
 setInterval(checkScheduleNudges, 30000);
 setInterval(() => refreshHealthSnapshot({ silent: true }), 60000);
 setInterval(() => syncProactiveMessages({ silent: true }), 30000);
-platform.lifecycle.onResume(() => {
+  platform.lifecycle.onResume(() => {
   refreshHealth();
   refreshHealthSnapshot({ silent: true });
   refreshDeviceContextSnapshot({ silent: true });
-  void syncProactiveMessages({ silent: true });
-});
+    void syncProactiveMessages({ silent: true });
+    void syncNativeProactiveNotifications({ force: true });
+    void refreshIncomingCallStatus();
+  });
 platform.lifecycle.onPause?.(() => saveMessages());
 window.addEventListener("pagehide", saveMessages);
 
@@ -526,12 +539,21 @@ function bindEvents() {
       closeChatLocator();
     }
   });
-  els.chatLocatorSearchInput.addEventListener("input", renderChatLocatorResults);
+  els.chatLocatorSearchInput.addEventListener("input", () => {
+    chatLocatorPage = 0;
+    renderChatLocatorResults();
+  });
   els.chatLocatorJumpForm.addEventListener("submit", (event) => {
     event.preventDefault();
     jumpToChatMessage(Number(els.chatLocatorJumpInput.value));
   });
   els.chatLocatorResults.addEventListener("click", (event) => {
+    const pageButton = event.target.closest("[data-locator-page]");
+    if (pageButton) {
+      chatLocatorPage = Math.max(0, chatLocatorPage + Number(pageButton.dataset.locatorPage || 0));
+      renderChatLocatorResults();
+      return;
+    }
     const button = event.target.closest("[data-locator-number]");
     if (button) {
       jumpToChatMessage(Number(button.dataset.locatorNumber));
@@ -657,10 +679,20 @@ function bindEvents() {
     });
   });
 
-  els.clearChatButton.addEventListener("click", () => {
+  els.clearChatButton.addEventListener("click", async () => {
+    if (!window.confirm(`确定清空当前 ${state.messages.length} 条聊天记录吗？建议先导出备份。`)) {
+      return;
+    }
+    const previousMessages = state.messages;
+    const previousEmotionCursor = state.emotionAppraisalUserCount;
     state.messages = [];
     setEmotionAppraisalCursor(0);
-    saveMessages();
+    if (!await saveMessages()) {
+      state.messages = previousMessages;
+      setEmotionAppraisalCursor(previousEmotionCursor);
+      renderMessages(false);
+      return;
+    }
     renderMessages();
   });
 
@@ -798,12 +830,12 @@ async function sendMessage() {
   applySettings({ refreshMessages: false });
 
   const replacedExistingHistory = Boolean(state.editingMessageId);
+  const messagesBeforeSend = state.messages.slice();
   if (state.editingMessageId) {
     if (!applyUserMessageEdit(state.editingMessageId, { content: text, userThinking, images })) {
       cancelMessageEdit();
       return;
     }
-    cancelMessageEdit({ clearInput: false });
   } else {
     await refreshHealthSnapshot({ silent: true });
     await refreshDeviceContextSnapshot({ silent: true });
@@ -822,10 +854,17 @@ async function sendMessage() {
     });
   }
 
+  if (!await saveMessages()) {
+    state.messages = messagesBeforeSend;
+    renderMessages(false);
+    return;
+  }
+  if (replacedExistingHistory) {
+    cancelMessageEdit({ clearInput: false });
+  }
   if (text) {
     captureTodoFromMessage(text);
   }
-  saveMessages();
   if (replacedExistingHistory) {
     renderMessages(false);
   } else {
@@ -858,7 +897,11 @@ async function generateAssistantReply() {
 
   state.messages.push(assistantMessage);
   setBusy(true);
-  saveMessages();
+  if (!await saveMessages()) {
+    state.messages.pop();
+    setBusy(false);
+    return;
+  }
   appendMessageToView(state.messages.length - 1, true);
   const streamUpdates = createStreamUpdateCoordinator({
     onRender: (message) => renderMessageInPlace(message, {
@@ -1006,8 +1049,12 @@ async function regenerateAssistantMessage(messageId) {
   if (state.editingMessageId) {
     cancelMessageEdit();
   }
+  const messagesBeforeRegenerate = state.messages;
   state.messages = previousMessages;
-  saveMessages();
+  if (!await saveMessages()) {
+    state.messages = messagesBeforeRegenerate;
+    return;
+  }
   renderMessages(false);
   await generateAssistantReply();
 }
@@ -1433,23 +1480,16 @@ async function exportChatHistory() {
     messageCount: state.messages.length,
     messages: state.messages
   };
-  const filename = `ombre-chat-${dateKey(exportedAt)}-${pad2(exportedAt.getHours())}${pad2(exportedAt.getMinutes())}.json`;
+  const filename = `ombre-chat-${dateKey(exportedAt)}-${pad2(exportedAt.getHours())}${pad2(exportedAt.getMinutes())}${pad2(exportedAt.getSeconds())}.json`;
   const json = JSON.stringify(payload, null, 2);
-  const blob = new Blob([json], { type: "application/json;charset=utf-8" });
-  const file = typeof File === "function" ? new File([blob], filename, { type: blob.type }) : null;
   els.exportChatStatus.textContent = "正在准备导出…";
   try {
-    const canShareFile = file
-      && /Android|iPhone|iPad/i.test(navigator.userAgent)
-      && typeof navigator.share === "function"
-      && typeof navigator.canShare === "function"
-      && navigator.canShare({ files: [file] });
-    if (canShareFile) {
-      await navigator.share({ files: [file], title: "Entangle 聊天记录" });
-    } else {
-      downloadBlob(blob, filename);
+    const result = await platform.files.saveChatExport({ filename, content: json });
+    if (!result?.saved) {
+      throw new Error("设备没有确认文件保存成功。请重试一次。");
     }
-    els.exportChatStatus.textContent = `已导出 ${state.messages.length} 条记录`;
+    const pathLabel = String(result.path || "").trim();
+    els.exportChatStatus.textContent = `已导出 ${state.messages.length} 条记录${pathLabel ? ` · ${pathLabel}` : ""}`;
   } catch (error) {
     if (error?.name === "AbortError") {
       els.exportChatStatus.textContent = "已取消导出";
@@ -1513,7 +1553,7 @@ async function importChatHistory() {
       return;
     }
 
-    persistImportedChat(nextMessages, continueSession ? imported.sessionId : "");
+    await persistImportedChat(nextMessages, continueSession ? imported.sessionId : "");
     els.importChatStatus.textContent = mode === "merge"
       ? `已合并 ${importedMessages.length} 条记录，现在共有 ${nextMessages.length} 条`
       : `已恢复 ${nextMessages.length} 条聊天记录${continueSession ? "，原会话已延续" : ""}`;
@@ -1522,7 +1562,7 @@ async function importChatHistory() {
   }
 }
 
-function persistImportedChat(messages, importedSessionId) {
+async function persistImportedChat(messages, importedSessionId) {
   const previousMessages = state.messages;
   const previousSessionId = state.sessionId;
   const previousEditingMessageId = state.editingMessageId;
@@ -1533,9 +1573,7 @@ function persistImportedChat(messages, importedSessionId) {
     if (importedSessionId) {
       state.sessionId = importedSessionId;
     }
-    platform.storage.setJson(storageKeys.messages, state.messages);
-    const storedMessages = platform.storage.getJson(storageKeys.messages, null);
-    if (JSON.stringify(storedMessages) !== JSON.stringify(state.messages)) {
+    if (!await saveMessages() || !await chatHistoryStore.verify(state.messages)) {
       throw new Error("设备没有成功保存这些聊天记录，可能是储存空间不足。当前记录已恢复原状。");
     }
     if (importedSessionId) {
@@ -1553,7 +1591,7 @@ function persistImportedChat(messages, importedSessionId) {
     state.messages = previousMessages;
     state.sessionId = previousSessionId;
     state.editingMessageId = previousEditingMessageId;
-    platform.storage.setJson(storageKeys.messages, previousMessages);
+    await chatHistoryStore.save(previousMessages).catch(() => {});
     platform.storage.setString(storageKeys.sessionId, previousSessionId);
     setEmotionAppraisalCursor(previousEmotionCursor);
     renderMessages(false);
@@ -1576,18 +1614,6 @@ function formatChatImportDate(value) {
     minute: "2-digit",
     hour12: false
   }).format(date);
-}
-
-function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.rel = "noopener";
-  document.body.append(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function buildGatewayHeaders() {
@@ -3928,6 +3954,8 @@ function identityInitial(name) {
 
 let chatLocatorScrollFrame = 0;
 let chatLocatorHighlightTimer = 0;
+const CHAT_LOCATOR_PAGE_SIZE = 160;
+let chatLocatorPage = 0;
 
 function chatLocatorEntries() {
   const entries = [];
@@ -4033,6 +4061,7 @@ function openChatLocator() {
   }
   const currentNumber = currentChatLocatorNumber(entries) || entries.length;
   els.chatLocatorSearchInput.value = "";
+  chatLocatorPage = Math.floor(Math.max(0, currentNumber - 1) / CHAT_LOCATOR_PAGE_SIZE);
   els.chatLocatorJumpInput.min = "1";
   els.chatLocatorJumpInput.max = String(entries.length);
   els.chatLocatorJumpInput.value = String(currentNumber);
@@ -4057,15 +4086,20 @@ function renderChatLocatorResults() {
   const matches = query
     ? entries.filter((entry) => chatLocatorSearchText(entry.message).includes(query))
     : entries;
-  const visibleMatches = matches.slice(0, 160);
+  const pageCount = Math.max(1, Math.ceil(matches.length / CHAT_LOCATOR_PAGE_SIZE));
+  chatLocatorPage = Math.min(chatLocatorPage, pageCount - 1);
+  const pageStart = chatLocatorPage * CHAT_LOCATOR_PAGE_SIZE;
+  const visibleMatches = matches.slice(pageStart, pageStart + CHAT_LOCATOR_PAGE_SIZE);
+  const rangeStart = visibleMatches.length ? pageStart + 1 : 0;
+  const rangeEnd = pageStart + visibleMatches.length;
 
   els.chatLocatorMeta.classList.remove("error");
   if (query) {
     els.chatLocatorMeta.textContent = matches.length
-      ? `找到 ${matches.length} 条${matches.length > visibleMatches.length ? `，先显示前 ${visibleMatches.length} 条` : ""}`
+      ? `找到 ${matches.length} 条 · 当前显示第 ${rangeStart}–${rangeEnd} 条结果`
       : "没有找到包含这个关键词的聊天";
   } else {
-    els.chatLocatorMeta.textContent = `当前第 ${currentNumber} 条 · 共 ${entries.length} 条`;
+    els.chatLocatorMeta.textContent = `当前第 ${currentNumber} 条 · 共 ${entries.length} 条 · 列表 ${rangeStart}–${rangeEnd}`;
   }
 
   els.chatLocatorResults.innerHTML = "";
@@ -4097,6 +4131,21 @@ function renderChatLocatorResults() {
     fragment.append(button);
   }
   els.chatLocatorResults.append(fragment);
+
+  if (pageCount > 1) {
+    const pager = document.createElement("div");
+    pager.className = "chat-locator-pager";
+    if (chatLocatorPage > 0) {
+      pager.append(chatLocatorPageButton(-1, "较早的记录"));
+    }
+    const pageLabel = document.createElement("span");
+    pageLabel.textContent = `第 ${chatLocatorPage + 1} / ${pageCount} 页`;
+    pager.append(pageLabel);
+    if (chatLocatorPage + 1 < pageCount) {
+      pager.append(chatLocatorPageButton(1, "较新的记录"));
+    }
+    els.chatLocatorResults.append(pager);
+  }
 
   if (!query) {
     requestAnimationFrame(() => {
@@ -5710,8 +5759,63 @@ function autosizeTextarea(textarea) {
   textarea.style.height = `${Math.min(textarea.scrollHeight, 140)}px`;
 }
 
-function saveMessages() {
-  platform.storage.setJson(storageKeys.messages, state.messages);
+async function saveMessages() {
+  try {
+    await chatHistoryStore.save(state.messages);
+    state.chatStorageError = "";
+    void refreshChatStorageStatus();
+    return true;
+  } catch (error) {
+    state.chatStorageError = error instanceof Error ? error.message : String(error);
+    renderChatStorageStatus();
+    showHomeNotice(`聊天记录保存失败：${state.chatStorageError}。请先导出备份，不要清后台。`);
+    console.error("Unable to persist chat history", error);
+    return false;
+  }
+}
+
+function chatLocatorPageButton(delta, label) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "secondary-button";
+  button.dataset.locatorPage = String(delta);
+  button.textContent = label;
+  return button;
+}
+
+async function refreshChatStorageStatus() {
+  state.chatStorageInfo = await chatHistoryStore.estimate();
+  renderChatStorageStatus();
+}
+
+function renderChatStorageStatus() {
+  if (!els.chatStorageStatus) return;
+  els.chatStorageStatus.classList.toggle("error", Boolean(state.chatStorageError));
+  if (state.chatStorageError) {
+    els.chatStorageStatus.textContent = `聊天数据库异常：${state.chatStorageError}`;
+    return;
+  }
+  const info = state.chatStorageInfo;
+  if (!info) {
+    els.chatStorageStatus.textContent = "正在检查聊天数据库…";
+    return;
+  }
+  if (!info.durable) {
+    els.chatStorageStatus.textContent = "聊天数据库不可用，请先导出备份";
+    els.chatStorageStatus.classList.add("error");
+    return;
+  }
+  const usage = info.usage ? formatStorageBytes(info.usage) : "少于 1 MB";
+  const quota = info.quota ? formatStorageBytes(info.quota) : "动态空间";
+  const migrated = state.chatStorageMigrated ? " · 已迁移旧记录" : "";
+  els.chatStorageStatus.textContent = `聊天数据库正常 · 已用 ${usage} / ${quota}${migrated}`;
+}
+
+function formatStorageBytes(value) {
+  const bytes = Math.max(0, Number(value || 0));
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
 function saveSettings() {

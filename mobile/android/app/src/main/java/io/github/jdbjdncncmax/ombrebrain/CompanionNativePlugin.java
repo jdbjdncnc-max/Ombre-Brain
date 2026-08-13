@@ -1,12 +1,16 @@
 package io.github.jdbjdncncmax.ombrebrain;
 
 import android.Manifest;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Environment;
 import android.provider.Settings;
+import android.provider.MediaStore;
 
 import androidx.core.content.ContextCompat;
 
@@ -19,6 +23,8 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 import java.net.URI;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 
 @CapacitorPlugin(
     name = "CompanionNative",
@@ -49,6 +55,7 @@ import java.net.URI;
     }
 )
 public class CompanionNativePlugin extends Plugin {
+    private static final int MAX_CHAT_EXPORT_BYTES = 64 * 1024 * 1024;
     private static final String[] HEALTH_PERMISSION_ALIASES = {
         "healthSteps",
         "healthHeartRate",
@@ -128,13 +135,18 @@ public class CompanionNativePlugin extends Plugin {
         result.put("notificationPermission", currentPermission());
         result.put("fullScreenAllowed", IncomingCallNotifier.fullScreenAllowed(getContext()));
         result.put("firebaseStatus", clean(preferences.getString(ProactiveNotificationWorker.KEY_FCM_STATUS, "")));
-        result.put("tokenRegistered", !clean(preferences.getString(ProactiveNotificationWorker.KEY_FCM_TOKEN, "")).isEmpty());
+        boolean tokenRegistered = !clean(preferences.getString(ProactiveNotificationWorker.KEY_FCM_TOKEN, "")).isEmpty();
+        result.put("tokenRegistered", tokenRegistered);
+        if (!tokenRegistered && !clean(preferences.getString(ProactiveNotificationWorker.KEY_BASE_URL, "")).isEmpty()) {
+            EntangleFirebaseMessagingService.syncRegistration(getContext());
+        }
         call.resolve(result);
     }
 
     @PluginMethod
     public void openIncomingCallSettings(PluginCall call) {
         if (Build.VERSION.SDK_INT < 34 || IncomingCallNotifier.fullScreenAllowed(getContext())) {
+            EntangleFirebaseMessagingService.syncRegistration(getContext());
             incomingCallStatus(call);
             return;
         }
@@ -149,6 +161,62 @@ public class CompanionNativePlugin extends Plugin {
             call.resolve(result);
         } catch (Exception error) {
             call.reject("无法打开锁屏来电授权页面。", error);
+        }
+    }
+
+    @PluginMethod
+    public void saveChatExport(PluginCall call) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            call.reject("当前 Android 版本暂不支持直接保存到 Entangle 文件夹。请使用浏览器版导出。");
+            return;
+        }
+        String filename = safeExportFilename(call.getString("filename"));
+        String content = call.getString("content");
+        if (content == null || content.isEmpty()) {
+            call.reject("聊天记录文件是空的。");
+            return;
+        }
+        byte[] contentBytes = content.getBytes(StandardCharsets.UTF_8);
+        if (contentBytes.length > MAX_CHAT_EXPORT_BYTES) {
+            call.reject("聊天记录超过 64 MB，请先分段导出。");
+            return;
+        }
+
+        ContentResolver resolver = getContext().getContentResolver();
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.MediaColumns.DISPLAY_NAME, filename);
+        values.put(MediaStore.MediaColumns.MIME_TYPE, "application/json");
+        values.put(
+            MediaStore.MediaColumns.RELATIVE_PATH,
+            Environment.DIRECTORY_DOWNLOADS + "/Entangle/"
+        );
+        values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+        Uri uri = null;
+        try {
+            uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            if (uri == null) {
+                throw new IllegalStateException("系统没有创建导出文件。");
+            }
+            try (OutputStream output = resolver.openOutputStream(uri, "w")) {
+                if (output == null) {
+                    throw new IllegalStateException("系统无法写入导出文件。");
+                }
+                output.write(contentBytes);
+                output.flush();
+            }
+            ContentValues completed = new ContentValues();
+            completed.put(MediaStore.MediaColumns.IS_PENDING, 0);
+            resolver.update(uri, completed, null, null);
+            JSObject result = new JSObject();
+            result.put("saved", true);
+            result.put("filename", filename);
+            result.put("path", "内部存储/Download/Entangle/" + filename);
+            call.resolve(result);
+        } catch (Exception error) {
+            if (uri != null) {
+                resolver.delete(uri, null, null);
+            }
+            call.reject("无法把聊天记录保存到 Entangle 文件夹。", error);
         }
     }
     @PluginMethod
@@ -377,5 +445,13 @@ public class CompanionNativePlugin extends Plugin {
 
     private static String clean(String value) {
         return value == null ? "" : value.trim();
+    }
+
+    private static String safeExportFilename(String value) {
+        String filename = clean(value).replaceAll("[^A-Za-z0-9._-]", "_");
+        if (filename.isEmpty()) {
+            filename = "entangle-chat.json";
+        }
+        return filename.endsWith(".json") ? filename : filename + ".json";
     }
 }

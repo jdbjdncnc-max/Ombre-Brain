@@ -18,7 +18,7 @@ public final class FirebaseRegistration {
 
     private FirebaseRegistration() {}
 
-    public static void storeAndSchedule(Context context, String fid) {
+    public static void storeToken(Context context, String fid) {
         String cleanFid = clean(fid);
         if (cleanFid.isEmpty()) {
             return;
@@ -27,7 +27,8 @@ public final class FirebaseRegistration {
             .edit()
             .putString(KEY_FIREBASE_FID, cleanFid)
             .apply();
-        ProactiveNotificationWorker.schedule(context, true);
+        // The configured worker already has a periodic schedule. Scheduling a new
+        // immediate worker here would create a getToken -> worker -> getToken loop.
     }
 
     public static boolean sync(Context context) {

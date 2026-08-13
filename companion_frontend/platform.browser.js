@@ -2,6 +2,7 @@ export function createBrowserPlatform() {
   return {
     kind: "browser",
     storage: createLocalStorageAdapter(),
+    files: createBrowserFileAdapter(),
     notifications: createBrowserNotificationAdapter(),
     health: createBrowserHealthAdapter(),
     deviceContext: createBrowserDeviceContextAdapter(),
@@ -96,6 +97,32 @@ function createLocalStorageAdapter() {
       try {
         localStorage.setItem(key, JSON.stringify(value));
       } catch {}
+    },
+    remove(key) {
+      try {
+        localStorage.removeItem(key);
+      } catch {}
+    }
+  };
+}
+
+function createBrowserFileAdapter() {
+  return {
+    isSupported() {
+      return true;
+    },
+    async saveChatExport({ filename = "entangle-chat.json", content = "" } = {}) {
+      const blob = new Blob([String(content)], { type: "application/json;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = String(filename || "entangle-chat.json");
+      link.rel = "noopener";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      return { saved: true, path: "浏览器下载目录" };
     }
   };
 }

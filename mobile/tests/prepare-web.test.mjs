@@ -13,6 +13,7 @@ test("prepared frontend contains the web app and platform adapters", async () =>
   const platform = await readFile(path.join(outputDir, "platform.js"), "utf8");
   const androidPlatform = await readFile(path.join(outputDir, "platform.android.js"), "utf8");
   const chatTransfer = await readFile(path.join(outputDir, "chat_transfer.js"), "utf8");
+  const chatStorage = await readFile(path.join(outputDir, "chat_storage.js"), "utf8");
   const solo = await readFile(path.join(outputDir, "solo.js"), "utf8");
   assert.match(index, /<head(?:\s|>)/i);
   assert.match(index, /id="soloEmotionChart"/);
@@ -32,6 +33,8 @@ test("prepared frontend contains the web app and platform adapters", async () =>
   assert.match(app, /skip_emotion_appraisal: true/);
   assert.match(app, /syncNativeProactiveNotifications/);
   assert.match(app, /persistImportedChat/);
+  assert.match(app, /createChatHistoryStore/);
+  assert.match(chatStorage, /entangle-chat-history/);
   assert.match(app, /url\("background\.svg"\)/);
   assert.doesNotMatch(app, /url\("\/frontend\//);
   assert.match(platform, /Capacitor\?\.Plugins\?\.CompanionNative/);
@@ -47,6 +50,7 @@ test("prepared frontend contains the web app and platform adapters", async () =>
   assert.equal((await stat(path.join(outputDir, "platform.browser.js"))).isFile(), true);
   assert.equal((await stat(path.join(outputDir, "platform.android.js"))).isFile(), true);
   assert.equal((await stat(path.join(outputDir, "chat_transfer.js"))).isFile(), true);
+  assert.equal((await stat(path.join(outputDir, "chat_storage.js"))).isFile(), true);
 });
 
 test("fallback bundle publishes a versioned native bridge contract", async () => {
@@ -70,5 +74,6 @@ test("production config uses bundled assets instead of a remote server URL", asy
   assert.equal(config.webDir, "www");
   assert.equal(config.appId, "io.github.jdbjdncncmax.ombrebrain");
   assert.equal(config.appName, "Entangle");
+  assert.equal(config.loggingBehavior, "none");
   assert.equal(config.server?.url, undefined);
 });

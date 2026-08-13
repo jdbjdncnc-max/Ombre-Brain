@@ -3184,6 +3184,20 @@ svg {
   overscroll-behavior: contain;
 }
 
+.chat-locator-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 2px 2px;
+}
+
+.chat-locator-pager > span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
 .chat-locator-result {
   width: 100%;
   display: grid;

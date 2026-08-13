@@ -9,6 +9,7 @@ export function createAndroidPlatform(
   return {
     kind: "android",
     storage: createBridgeStorageAdapter(bridge, fallback.storage),
+    files: createBridgeFileAdapter(bridge, fallback.files, capacitorPlugin),
     notifications: createBridgeNotificationAdapter(bridge, fallback.notifications, capacitorPlugin),
     health: createBridgeHealthAdapter(bridge, fallback.health, capacitorPlugin),
     deviceContext: createBridgeDeviceContextAdapter(bridge, fallback.deviceContext, capacitorPlugin),
@@ -39,6 +40,36 @@ export function createAndroidPlatform(
       },
       onPause(handler) {
         window.CompanionOnPause = handler;
+      }
+    }
+  };
+}
+
+function createBridgeFileAdapter(bridge, fallback, capacitorPlugin) {
+  return {
+    isSupported() {
+      return hasBridgeMethod(bridge, "saveChatExport") || fallback.isSupported();
+    },
+    async saveChatExport(options = {}) {
+      if (!hasBridgeMethod(bridge, "saveChatExport")) {
+        return fallback.saveChatExport(options);
+      }
+      if (capacitorPlugin) {
+        return (await bridge.saveChatExport({
+          filename: String(options.filename || "entangle-chat.json"),
+          content: String(options.content || "")
+        })) || {};
+      }
+      const value = callBridgeString(
+        bridge,
+        "saveChatExport",
+        String(options.filename || "entangle-chat.json"),
+        String(options.content || "")
+      );
+      try {
+        return JSON.parse(value || "{}") || {};
+      } catch {
+        return {};
       }
     }
   };
@@ -218,6 +249,11 @@ function createBridgeStorageAdapter(bridge, fallback) {
       const text = JSON.stringify(value);
       if (!callBridgeVoid(bridge, "setStorage", key, text)) {
         fallback.setJson(key, value);
+      }
+    },
+    remove(key) {
+      if (!callBridgeVoid(bridge, "removeStorage", key)) {
+        fallback.remove(key);
       }
     }
   };
