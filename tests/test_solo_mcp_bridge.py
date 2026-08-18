@@ -8,11 +8,14 @@ from unittest.mock import AsyncMock, patch
 from mcp.types import CallToolResult, TextContent, Tool
 
 from solo.mcp_bridge import (
+    MCP_CALL_TIMEOUT,
+    MCP_JD_SHOPPING_CALL_TIMEOUT,
     MCP_MASK,
     McpConfigurationError,
     McpConnectionError,
     McpPermissionError,
     SoloMcpBridge,
+    mcp_operation_timeout,
 )
 
 
@@ -44,6 +47,37 @@ class SoloMcpConfigurationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["servers"][0]["endpoint"], "https://forum.example/mcp")
         self.assertEqual(result["servers"][0]["credentialMask"], MCP_MASK)
         self.assertNotIn("Authorization", json.dumps(result, ensure_ascii=False))
+
+    def test_only_jd_shopping_tool_calls_receive_the_long_timeout(self):
+        self.assertEqual(
+            mcp_operation_timeout("ombre-jd-shopping", "call_tool", {}),
+            MCP_JD_SHOPPING_CALL_TIMEOUT,
+        )
+        self.assertEqual(
+            mcp_operation_timeout(
+                "shopping-alias",
+                "call_tool",
+                {"url": "https://example.test/api/jd-shopping/mcp"},
+            ),
+            MCP_JD_SHOPPING_CALL_TIMEOUT,
+        )
+        self.assertEqual(
+            mcp_operation_timeout(
+                "任意导入名称",
+                "call_tool",
+                {"url": "https://relay.example/mcp"},
+                {"name": "search_surprise_gift"},
+            ),
+            MCP_JD_SHOPPING_CALL_TIMEOUT,
+        )
+        self.assertEqual(mcp_operation_timeout("forum", "call_tool", {}), MCP_CALL_TIMEOUT)
+        self.assertEqual(
+            mcp_operation_timeout("ombre-jd-shopping", "list_tools", {}),
+            MCP_CALL_TIMEOUT,
+        )
+        status = self.bridge.status_snapshot()
+        self.assertEqual(status["bridgeRevision"], "jd-tool-timeout-v2")
+        self.assertEqual(status["jdShoppingCallTimeoutSeconds"], 150.0)
 
     async def test_plaintext_credentials_are_rejected(self):
         with self.assertRaisesRegex(McpConfigurationError, "plaintext credentials"):

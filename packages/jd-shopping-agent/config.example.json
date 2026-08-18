@@ -14,9 +14,6 @@
     "extraBlockedTerms": []
   },
   "browser": {
-    "channel": "edge",
-    "profileDir": "./data/jd-profile",
-    "headless": false,
-    "slowMoMs": 120
+    "channel": "edge"
   }
 }

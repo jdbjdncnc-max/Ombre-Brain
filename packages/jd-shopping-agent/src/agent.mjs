@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { inspectCandidate, ensureLocalSecret, verifyStandingAuthorization, checkStandingAllowance, monthKey } from './safety.mjs';
 
+const SEARCH_TASK_BUDGET_MS = 90_000;
+
 export function writeJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = `${file}.tmp`;
@@ -45,23 +47,63 @@ function findExistingTask(ledger, taskId) {
 export async function searchGiftCandidates(config, browser, task) {
   const payload = task?.payload || {};
   const budgetCny = Number(payload.budgetCny);
-  const queries = Array.isArray(payload.queries) ? payload.queries.map(String).filter(Boolean).slice(0, 4) : [];
+  const queryKeys = new Set();
+  const queries = Array.isArray(payload.queries) ? payload.queries
+    .map((value) => String(value).trim())
+    .filter((value) => {
+      const key = value.toLocaleLowerCase('zh-CN');
+      if (!value || queryKeys.has(key)) return false;
+      queryKeys.add(key);
+      return true;
+    })
+    .slice(0, 4) : [];
   const maxCandidates = Math.min(30, Math.max(4, Number(payload.maxCandidates || 20)));
   if (!Number.isFinite(budgetCny) || budgetCny <= 0 || !queries.length) throw new Error('搜索任务参数无效');
   if (!await browser.ensureLoggedIn()) throw new Error('京东尚未登录，请先运行登录步骤');
 
   const candidates = [];
+  const deadlineEpoch = Date.now() + SEARCH_TASK_BUDGET_MS;
+  let parsedCount = 0;
+  const rejectedCounts = new Map();
   for (const query of queries) {
-    const found = await browser.search(query, Math.ceil(maxCandidates / queries.length));
+    const found = await browser.search(
+      query,
+      Math.max(4, Math.ceil(maxCandidates / queries.length)),
+      { deadlineEpoch }
+    );
+    parsedCount += found.length;
     for (const item of found) {
       const inspected = inspectCandidate(item, budgetCny, config.policy.extraBlockedTerms);
       if (inspected.ok && !candidates.some((old) => old.sku === inspected.candidate.sku)) {
         candidates.push(inspected.candidate);
+      } else if (!inspected.ok) {
+        rejectedCounts.set(inspected.reason, (rejectedCounts.get(inspected.reason) || 0) + 1);
       }
       if (candidates.length >= maxCandidates) break;
     }
+    // Two verified choices are enough for the model to choose safely. Avoid
+    // hammering JD with every suggested query after a usable page succeeds.
+    if (candidates.length >= 2) break;
   }
-  if (candidates.length < 2) throw new Error('安全候选商品不足两件');
+  if (candidates.length < 2) {
+    if (parsedCount === 0) {
+      throw new Error('京东搜索页没有返回可解析的商品，可能是页面结构变化；未进入下单');
+    }
+    const overBudget = rejectedCounts.get('商品价格超过预算') || 0;
+    const blocked = [...rejectedCounts.entries()]
+      .filter(([reason]) => reason.startsWith('商品属于禁止范围'))
+      .reduce((sum, [, count]) => sum + count, 0);
+    const other = Math.max(0, parsedCount - candidates.length - overBudget - blocked);
+    const details = [
+      overBudget ? `${overBudget} 件超过 ${budgetCny} 元预算` : '',
+      blocked ? `${blocked} 件属于禁止范围` : '',
+      other ? `${other} 件缺少可核对信息` : ''
+    ].filter(Boolean).join('，');
+    const guidance = overBudget
+      ? '请改用更便宜的宽泛品类词，不要继续搜索同一个具体型号'
+      : '请换用两到四个不同的宽泛品类词';
+    throw new Error(`京东返回了 ${parsedCount} 件可解析商品，但只有 ${candidates.length} 件符合条件${details ? `（${details}）` : ''}；${guidance}`);
+  }
   const searchRecord = {
     taskId: task.id,
     createdAt: new Date().toISOString(),

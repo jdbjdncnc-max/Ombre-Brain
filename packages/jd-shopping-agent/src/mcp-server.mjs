@@ -31,11 +31,11 @@ function toolResult(value, isError = false) {
   };
 }
 
-const server = new McpServer({ name: 'ombre-jd-shopping', version: '0.3.0' });
+const server = new McpServer({ name: 'ombre-jd-shopping', version: '0.4.0' });
 
 server.registerTool('search_surprise_gift', {
   title: '搜索京东商品',
-  description: '根据当前对话生成搜索词，并返回京东真实候选。提交订单前必须先调用此工具。',
+  description: '根据当前对话生成两到四个互不重复、预算内可能买到的宽泛品类词，并返回带实时价格的京东真实候选。不要只搜索可能明显超预算的具体型号；若提示超预算，应主动改搜更便宜的品类。提交订单前必须先调用此工具。',
   inputSchema: {
     queries: z.array(z.string().min(1).max(40)).min(1).max(4),
     budgetCny: z.number().min(10).max(5000),

@@ -26,9 +26,7 @@ export function loadConfig() {
   config.policy.autoSubmitOrder = config.policy.autoSubmitOrder === true;
   config.policy.tryJdBalancePayment = config.policy.tryJdBalancePayment === true;
   config.policy.extraBlockedTerms = Array.isArray(config.policy.extraBlockedTerms) ? config.policy.extraBlockedTerms.map(String) : [];
-  config.browser.headless = config.browser.headless === true;
-  config.browser.slowMoMs = Math.min(1000, Math.max(0, Number(config.browser.slowMoMs || 120)));
-  config.browser.profileDir = path.resolve(packageRoot, config.browser.profileDir || './data/jd-profile');
+  config.browser.channel = String(config.browser.channel || 'edge').toLowerCase();
   config.paths = {
     packageRoot,
     dataDir: path.join(packageRoot, 'data'),
