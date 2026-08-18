@@ -67,7 +67,7 @@ class GatewaySystemPromptTests(unittest.TestCase):
         )
         self.assertEqual(payload["messages"][0]["content"], "Duetto scene patch")
 
-    def test_cache_layers_keep_fixed_rules_and_summary_before_history(self):
+    def test_cache_layers_keep_summary_in_the_dynamic_tail_after_history(self):
         source = [
             {"role": "system", "content": "Duetto scene patch"},
             {"role": "user", "content": "Earlier question"},
@@ -88,11 +88,10 @@ class GatewaySystemPromptTests(unittest.TestCase):
             [
                 "Canonical persona",
                 "Fixed gateway and tool rules",
-                "Ten-turn rolling summary",
                 "Duetto scene patch",
                 "Earlier question",
                 "Earlier answer",
-                "Current time and recalled memory",
+                "Ten-turn rolling summary\n\nCurrent time and recalled memory",
                 "Newest question",
             ],
         )

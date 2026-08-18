@@ -185,13 +185,12 @@ class MessageTimeContextTests(unittest.IsolatedAsyncioTestCase):
 
         messages = forwarded["messages"]
         self.assertEqual([message["role"] for message in messages], [
-            "system", "system", "system", "system", "user", "assistant", "system", "user"
+            "system", "system", "system", "user", "assistant", "system", "user"
         ])
         self.assertEqual(messages[0]["content"], "主 Prompt 哨兵")
         fixed_layer = messages[1]["content"]
-        summary_layer = messages[2]["content"]
-        self.assertEqual(messages[3]["content"], "外部场景补丁")
-        dynamic_layer = messages[6]["content"]
+        self.assertEqual(messages[2]["content"], "外部场景补丁")
+        dynamic_layer = messages[5]["content"]
 
         self.assertIn("[Ombre 系统层｜内部资料]", fixed_layer)
         self.assertIn("【内部能力规则】", fixed_layer)
@@ -199,15 +198,11 @@ class MessageTimeContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("她此前说最近很忙。", fixed_layer)
         self.assertNotIn("2026-08-06 21:36:00", fixed_layer)
 
-        self.assertIn("[Ombre 累计对话摘要｜资料]", summary_layer)
-        self.assertIn("她此前说最近很忙。", summary_layer)
-        self.assertNotIn("一条召回记忆", summary_layer)
-
         self.assertIn("[Ombre 动态资料｜本轮]", dynamic_layer)
         self.assertIn("1. 她｜2026-08-06 21:36:00｜Asia/Taipei", dynamic_layer)
         self.assertIn("2. 我｜2026-08-06 21:37:00｜Asia/Taipei", dynamic_layer)
         self.assertIn("3. 她｜2026-08-06 21:38:00｜Asia/Taipei", dynamic_layer)
-        self.assertIn("累计摘要已作为较早的独立资料提供", dynamic_layer)
+        self.assertIn("她此前说最近很忙。", dynamic_layer)
         self.assertIn("1. 20:00｜todo｜交作业", dynamic_layer)
         self.assertIn("一条召回记忆", dynamic_layer)
         self.assertIn("最新 78 bpm", dynamic_layer)
@@ -217,12 +212,33 @@ class MessageTimeContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("除非她主动询问时间", dynamic_layer)
         self.assertNotIn("这一层由 Ombre 系统提供", dynamic_layer)
         self.assertNotIn("位于我的主 Prompt 之后", dynamic_layer)
-        self.assertEqual(messages[4]["content"], "今天好累")
-        self.assertNotIn("context", messages[4])
-        self.assertEqual(messages[5]["content"], "我还在生气。")
-        self.assertEqual(messages[7]["content"], "那你陪陪我")
-        self.assertNotIn("context", messages[7])
-        self.assertNotIn("[Ombre 消息信息]", messages[7]["content"])
+        self.assertEqual(messages[3]["content"], "今天好累")
+        self.assertNotIn("context", messages[3])
+        self.assertEqual(messages[4]["content"], "我还在生气。")
+        self.assertEqual(messages[6]["content"], "那你陪陪我")
+        self.assertNotIn("context", messages[6])
+        self.assertNotIn("[Ombre 消息信息]", messages[6]["content"])
+
+    def test_tools_are_canonicalized_without_changing_schema_arrays(self):
+        first = {
+            "tools": [
+                {"function": {"description": "B", "name": "beta", "parameters": {"type": "object", "required": ["z", "a"]}}, "type": "function"},
+                {"type": "function", "function": {"name": "alpha", "parameters": {"properties": {"b": {"type": "string"}, "a": {"type": "string"}}, "type": "object"}}},
+            ]
+        }
+        second = {
+            "tools": [
+                {"function": {"parameters": {"type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "string"}}}, "name": "alpha"}, "type": "function"},
+                {"type": "function", "function": {"parameters": {"required": ["z", "a"], "type": "object"}, "name": "beta", "description": "B"}},
+            ]
+        }
+
+        self.gateway._canonicalize_prompt_tools(first)
+        self.gateway._canonicalize_prompt_tools(second)
+
+        self.assertEqual(first["tools"], second["tools"])
+        self.assertEqual([tool["function"]["name"] for tool in first["tools"]], ["alpha", "beta"])
+        self.assertEqual(first["tools"][1]["function"]["parameters"]["required"], ["z", "a"])
 
     def test_openrouter_session_stickiness_uses_a_stable_private_identifier(self):
         self.gateway.upstream_chat_url = "https://openrouter.ai/api/v1/chat/completions"
@@ -335,6 +351,48 @@ class MessageTimeContextTests(unittest.IsolatedAsyncioTestCase):
             {"role": "assistant", "content": "第一轮回答"},
         )
         self.assertNotIn("promptCache", str(second["messages"]))
+
+    def test_changed_summary_stays_in_the_new_dynamic_tail(self):
+        self.gateway.upstream_chat_url = "https://openrouter.ai/api/v1/chat/completions"
+        session_id = "summary-cache-session"
+        first_user = {"role": "user", "content": "第一轮"}
+        self.gateway._remember_recall_debug(
+            session_id=session_id,
+            user_text="第一轮",
+            recalled={"memories": [], "injection_text": ""},
+        )
+        first = self.gateway._prepare_forward_payload(
+            {"messages": [
+                {"role": "system", "ombre_context_kind": "conversation_summary", "content": "第一版摘要"},
+                first_user,
+            ]},
+            self.gateway._compose_ombre_system_layer(),
+            "稳定主 Prompt",
+            session_id=session_id,
+        )
+        cache_context = deepcopy(
+            self.gateway.recall_debug_by_session[session_id]["prompt_cache_context"]
+        )
+        self.gateway._remember_recall_debug(
+            session_id=session_id,
+            user_text="第二轮",
+            recalled={"memories": [], "injection_text": ""},
+        )
+        second = self.gateway._prepare_forward_payload(
+            {"messages": [
+                {"role": "system", "ombre_context_kind": "conversation_summary", "content": "更新后的摘要"},
+                first_user,
+                {"role": "assistant", "content": "第一轮回答", "context": {"promptCache": cache_context}},
+                {"role": "user", "content": "第二轮"},
+            ]},
+            self.gateway._compose_ombre_system_layer(),
+            "稳定主 Prompt",
+            session_id=session_id,
+        )
+
+        self.assertEqual(second["messages"][:len(first["messages"])], first["messages"])
+        self.assertIn("更新后的摘要", second["messages"][-2]["content"])
+        self.assertNotIn("更新后的摘要", first["messages"][-2]["content"])
 
     def test_tampered_or_cross_session_cache_context_is_never_replayed(self):
         dynamic_text = (

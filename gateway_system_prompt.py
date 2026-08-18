@@ -22,7 +22,7 @@ def inject_gateway_messages(
     messages = deepcopy(source_messages)
     stable_prefix = [
         text.strip()
-        for text in (system_prompt, fixed_gateway_text, summary_text)
+        for text in (system_prompt, fixed_gateway_text)
         if str(text or "").strip()
     ]
     if stable_prefix:
@@ -31,7 +31,13 @@ def inject_gateway_messages(
             for text in stable_prefix
         ]
 
-    dynamic = str(dynamic_text or "").strip()
+    # Summaries are session data, not a stable prefix.  Keep them beside the
+    # newest dynamic context so a refreshed summary never invalidates history.
+    dynamic = "\n\n".join(
+        text.strip()
+        for text in (summary_text, dynamic_text)
+        if str(text or "").strip()
+    )
     if dynamic:
         insert_at = len(messages)
         if (

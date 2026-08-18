@@ -2434,16 +2434,17 @@ class ZetaOpenAIGateway:
             source_messages,
             client_timezone,
         )
-        summary_placeholder = (
-            "（累计摘要已作为较早的独立资料提供）"
-            if summary_context
-            else "（暂无）"
-        )
+        # A conversation summary changes whenever old turns are compressed.  It
+        # must therefore stay in the per-turn tail: putting it before the whole
+        # conversation would invalidate the cached history every time it updates.
+        # The signed tail snapshot restores the previous version beside the turn
+        # it described, so the rendered prefix remains byte-for-byte identical.
+        summary_for_dynamic_tail = summary_context or "（暂无）"
         combined_system_text = self._materialize_ombre_system_layer(
             injected_text,
             client_timezone=client_timezone,
             message_timeline=message_timeline,
-            summary_context=summary_placeholder,
+            summary_context=summary_for_dynamic_tail,
             schedule_context=schedule_context,
             health_context=health_context,
             device_context=device_context,
@@ -2451,16 +2452,15 @@ class ZetaOpenAIGateway:
         fixed_gateway_text, dynamic_system_text = self._split_ombre_system_layer(
             combined_system_text
         )
-        summary_system_text = self._conversation_summary_system_layer(summary_context)
         forward["messages"] = inject_gateway_messages(
             contextual_messages,
             dynamic_system_text,
             system_prompt,
             fixed_gateway_text=fixed_gateway_text,
-            summary_text=summary_system_text,
         )
         self._remember_prompt_cache_context(session_id, dynamic_system_text)
         self._remove_visible_private_diary_tools(forward)
+        self._canonicalize_prompt_tools(forward)
         return forward
 
     def _openrouter_session_id(self, session_id: str) -> str:
@@ -2606,6 +2606,44 @@ class ZetaOpenAIGateway:
         else:
             payload.pop("tools", None)
             payload.pop("tool_choice", None)
+
+    @staticmethod
+    def _canonicalize_prompt_tools(payload: dict[str, Any]) -> None:
+        """Make an unchanged tool set render identically on every chat turn.
+
+        Tool definitions are rendered before system messages by several upstream
+        providers.  Thus a harmless difference such as key insertion order or
+        discovery order can otherwise invalidate the main-prompt cache too.
+        Lists inside a JSON schema are deliberately left in their original order:
+        some schema arrays (for example ``oneOf``) can be meaningful.
+        """
+        tools = payload.get("tools")
+        if not isinstance(tools, list):
+            return
+
+        def canonicalize(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {
+                    str(key): canonicalize(item)
+                    for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+                }
+            if isinstance(value, list):
+                return [canonicalize(item) for item in value]
+            return value
+
+        canonical_tools = [canonicalize(tool) for tool in tools]
+
+        def tool_sort_key(tool: Any) -> tuple[str, str]:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            name = ""
+            if isinstance(function, dict):
+                name = str(function.get("name") or "")
+            elif isinstance(tool, dict):
+                name = str(tool.get("name") or "")
+            rendered = json.dumps(tool, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+            return name, rendered
+
+        payload["tools"] = sorted(canonical_tools, key=tool_sort_key)
 
     def _is_visible_private_diary_tool(self, tool: Any) -> bool:
         if not isinstance(tool, dict):
