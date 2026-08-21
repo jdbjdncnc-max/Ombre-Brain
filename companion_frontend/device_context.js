@@ -176,7 +176,7 @@ function normalizeScreenApp(value) {
   }
   return {
     status: "ready",
-    mode: "latest_external_before_ombre",
+    mode: "current_foreground_app",
     appName: appName || packageName,
     packageName,
     observedAt: isoTimestamp(value.observedAt)

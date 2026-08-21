@@ -1,5 +1,5 @@
 import { platform } from "./platform.js";
-import { createChatHistoryStore } from "./chat_storage.js?v=20260813.1";
+import { createChatHistoryStore } from "./chat_storage.js?v=20260822.1";
 import { createCallController } from "./call.js?v=20260810.1";
 import { createSoloPanel } from "./solo.js?v=20260807.2";
 import { formatTokenUsage, normalizeTokenUsage, readOpenAiStream } from "./openai_stream.js?v=20260810.1";
@@ -4616,8 +4616,8 @@ function renderDeviceContextSnapshot() {
   }
   if (els.sailCurrentAppMeta) {
     els.sailCurrentAppMeta.textContent = currentScreenApp
-      ? `切换进 Entangle 前 · ${observedTimeLabel(currentScreenApp.observedAt) || "今天"}`
-      : "这里不会把 Entangle 自己误认为正在使用的外部应用";
+      ? `当前屏幕应用 · ${observedTimeLabel(currentScreenApp.observedAt) || "今天"}`
+      : "等待 Android 系统识别当前屏幕应用";
   }
   if (els.sailUsageTotal) {
     els.sailUsageTotal.textContent = usageReady

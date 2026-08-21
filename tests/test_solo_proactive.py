@@ -10,7 +10,7 @@ import httpx
 from starlette.requests import Request
 
 from solo.actions import ACTION_SPECS, action_scores
-from solo.proactive import PROACTIVE_SYSTEM_PROMPT, parse_proactive_response
+from solo.proactive import parse_proactive_response
 from solo.service import SoloService
 from zeta_openai_gateway import ZetaOpenAIGateway
 
@@ -146,6 +146,40 @@ class ProactiveServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(result["state"]["lastDecision"]["result"], "message_user")
         generator.assert_not_awaited()
 
+    async def test_proactive_messages_are_spread_across_the_day(self):
+        self.service.proactive_daily_limit = 6
+        self.service.proactive_min_gap_minutes = 120
+        self.service.proactive_window_hours = 6
+        self.service.proactive_window_limit = 2
+        self.service.solo_dir.mkdir(parents=True, exist_ok=True)
+        runtime = self.service._new_state(self.now)
+        runtime["lastActionAt"] = {"message_user": (self.now - timedelta(minutes=30)).isoformat()}
+        emotion = self.service._new_emotion_state(self.now, self.now)
+        self.assertFalse(self.service._proactive_message_allowed(runtime, emotion, self.now))
+
+        runtime["lastActionAt"] = {"message_user": (self.now - timedelta(hours=3)).isoformat()}
+        self.service._append_jsonl(self.service.proactive_path, {
+            "id": "proactive_a",
+            "ts": (self.now - timedelta(hours=5)).isoformat(),
+            "text": "a",
+        })
+        self.service._append_jsonl(self.service.proactive_path, {
+            "id": "proactive_b",
+            "ts": (self.now - timedelta(hours=3)).isoformat(),
+            "text": "b",
+        })
+        self.assertFalse(self.service._proactive_message_allowed(runtime, emotion, self.now))
+
+    async def test_model_context_includes_current_screen_app(self):
+        self.service.solo_dir.mkdir(parents=True, exist_ok=True)
+        self.service._write_json(self.service.emotion_path, self.service._new_emotion_state(self.now, self.now))
+        self.service._write_json(self.service.state_path, self.service._new_state(self.now))
+        await self.service.note_device_context({
+            "capturedAt": self.now.isoformat(),
+            "appUsage": {"currentScreenApp": {"appName": "微信", "observedAt": self.now.isoformat()}},
+        })
+        self.assertIn("当前屏幕应用：微信", self.service.model_context_text(now=self.now))
+
     async def test_proactive_call_requires_silence_window_and_counts_once(self):
         self.service.proactive_call_enabled = True
         self.service.solo_dir.mkdir(parents=True, exist_ok=True)
@@ -173,6 +207,7 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         gateway.upstream_chat_url = "https://dialogue.example/v1/chat/completions"
         gateway.upstream_api_key = "dialogue-key"
         gateway.upstream_model = "dialogue-model"
+        gateway.public_model = "dialogue-model"
         gateway.summary_timeout = 30
         gateway.openrouter_site_url = ""
         gateway.openrouter_app_name = ""
@@ -182,10 +217,7 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         gateway._current_local_time = lambda _timezone: "2026-08-08 12:00:00"
         gateway.http = SimpleNamespace(post=AsyncMock(return_value=httpx.Response(
             200,
-            json={"choices": [{"message": {"content": json.dumps({
-                "title": "Zeta",
-                "messages": ["突然有点想找你。"],
-            }, ensure_ascii=False)}}]},
+            json={"choices": [{"message": {"content": "突然有点想找你。"}}]},
             request=httpx.Request("POST", "https://dialogue.example/v1/chat/completions"),
         )))
 
@@ -201,8 +233,7 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["model"], "dialogue-model")
         self.assertEqual(payload["messages"][0]["content"], "MAIN PROMPT")
         self.assertEqual(payload["messages"][1]["content"], "OMBRE STATE")
-        self.assertEqual(payload["messages"][2]["content"], PROACTIVE_SYSTEM_PROMPT)
-        self.assertEqual(payload["messages"][3]["role"], "user")
+        self.assertEqual(payload["messages"][2], {"role": "user", "content": "想对她说什么？"})
 
     async def test_generation_stops_when_main_prompt_is_missing(self):
         gateway = object.__new__(ZetaOpenAIGateway)

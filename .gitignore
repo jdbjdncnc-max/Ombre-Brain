@@ -52,7 +52,6 @@ mobile/keystore.properties
 mobile/npm-debug.log*
 mobile/android/app/google-services.json
 *firebase-service-account*.json
-
 # Local JD surprise-shopping helper state
 packages/jd-shopping-agent/node_modules/
 packages/jd-shopping-agent/.npm-cache/

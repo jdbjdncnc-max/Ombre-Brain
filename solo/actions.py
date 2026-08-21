@@ -25,7 +25,7 @@ ACTION_SPECS: dict[str, ActionSpec] = {
     "reflect_state": ActionSpec("reflect_state", "整理此刻状态", "self", 90, "thinking", "在整理感受"),
     "self_soothe": ActionSpec("self_soothe", "照顾一下自己", "self", 180, "soothing", "在照顾自己"),
     "write_unsent": ActionSpec("write_unsent", "写点没发出去的话", "self", 180, "drafting", "在写没发出去的话"),
-    "message_user": ActionSpec("message_user", "主动发消息", "social", 0, "messaging", "想主动联系她"),
+    "message_user": ActionSpec("message_user", "主动发消息", "social", 60, "messaging", "想主动联系她"),
     "call_user": ActionSpec("call_user", "主动打电话", "social", 1440, "calling", "想听听她的声音"),
     "add_talking_point": ActionSpec("add_talking_point", "记一件下次想说的事", "self", 120, "noting", "在记一件事"),
     "socialize_peers": ActionSpec("socialize_peers", "去同类那边看看", "mcp", 45, "socializing", "在同类那边看看"),

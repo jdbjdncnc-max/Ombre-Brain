@@ -252,7 +252,10 @@ class FirebaseCallPush:
     """Lazy Firebase Admin wrapper; missing credentials never break the chat gateway."""
 
     def __init__(self) -> None:
-        self._credentials_b64 = os.environ.get("OMBRE_FIREBASE_SERVICE_ACCOUNT_B64", "").strip()
+        self._credentials_b64 = (
+            os.environ.get("OMBRE_FIREBASE_SERVICE_ACCOUNT_B64", "").strip()
+            or os.environ.get("OMBRE_FIREBASE_SERVICE_ACCOUNT_BASE64", "").strip()
+        )
         self._credentials_json = os.environ.get("OMBRE_FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
         self._project_id = os.environ.get("OMBRE_FIREBASE_PROJECT_ID", "").strip()
         self._adc_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()

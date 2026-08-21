@@ -76,6 +76,7 @@ public class ProactiveNotificationWorker extends Worker {
         }
         EntangleFirebaseMessagingService.syncRegistration(context);
         FirebaseRegistration.sync(context);
+        uploadDeviceContext(context, baseUrl, token);
         if (!notificationGranted(context)) {
             return Result.success();
         }
@@ -240,6 +241,13 @@ public class ProactiveNotificationWorker extends Worker {
                     response.toString()
                 );
             }
+        } catch (Exception ignored) {}
+    }
+
+    private static void uploadDeviceContext(Context context, String baseUrl, String token) {
+        try {
+            JSONObject snapshot = new JSONObject(DeviceContextReader.readUsageSnapshot(context).toString());
+            GatewayHttp.post(baseUrl + "/api/solo/device-context", token, snapshot);
         } catch (Exception ignored) {}
     }
 

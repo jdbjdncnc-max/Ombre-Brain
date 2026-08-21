@@ -56,6 +56,10 @@ OMBRE_SOLO_PULSE_SECONDS=60
 OMBRE_SOLO_DECISION_SECONDS=180
 OMBRE_SOLO_ACTIVITY_MIN_SECONDS=5400
 OMBRE_SOLO_DAILY_LLM_BUDGET=30
+OMBRE_SOLO_PROACTIVE_DAILY_LIMIT=20
+OMBRE_SOLO_PROACTIVE_MIN_GAP_MINUTES=60
+OMBRE_SOLO_PROACTIVE_WINDOW_HOURS=6
+OMBRE_SOLO_PROACTIVE_WINDOW_LIMIT=5
 OMBRE_SOLO_TIMEZONE=Asia/Taipei
 OMBRE_SOLO_MCP_ENABLED=0
 OMBRE_SOLO_MCP_DISCOVERY_TTL_HOURS=24
@@ -74,7 +78,7 @@ OMBRE_CALL_TTS_MODEL=eleven_v3
 OMBRE_CALL_STT_MODEL=scribe_v2
 OMBRE_CALL_MAX_TOKENS=600
 OMBRE_CALL_REASONING_EFFORT=minimal
-OMBRE_FIREBASE_SERVICE_ACCOUNT_B64=base64-encoded-service-account-json
+OMBRE_FIREBASE_SERVICE_ACCOUNT_BASE64=base64-encoded-service-account-json
 OMBRE_FIREBASE_PROJECT_ID=your-firebase-project-id
 OMBRE_CALL_PROACTIVE_ENABLED=1
 OMBRE_CALL_MIN_SILENCE_HOURS=5
@@ -93,7 +97,8 @@ Android 拨出电话不需要 Firebase，也不需要把 ElevenLabs 密钥填进
 
 锁屏即时来电还需要 Firebase。手机端把 Firebase Android 配置文件放在
 `mobile/android/app/google-services.json`；服务端把服务账号 JSON 转成 Base64 后填入
-`OMBRE_FIREBASE_SERVICE_ACCOUNT_B64`，并填写 `OMBRE_FIREBASE_PROJECT_ID`。两份文件都属于
+`OMBRE_FIREBASE_SERVICE_ACCOUNT_BASE64`，并填写 `OMBRE_FIREBASE_PROJECT_ID`。旧名称
+`OMBRE_FIREBASE_SERVICE_ACCOUNT_B64` 也继续兼容。两份文件都属于
 私密配置，不要提交 Git。独处主动拨号默认至少连续 5 小时没有用户消息、仅在本地
 12:00–23:00、每天最多 1 次；上面的四个 `OMBRE_CALL_*` 变量可以调整或关闭它。
 
@@ -105,9 +110,9 @@ Android 拨出电话不需要 Firebase，也不需要把 ElevenLabs 密钥填进
 两条可见轨迹默认至少间隔 `OMBRE_SOLO_ACTIVITY_MIN_SECONDS` 秒。当前轨迹阶段只执行
 可验证的本地自发活动（发呆、休息、整理感受、照顾自己、草稿、谈话点和真实生成的
 井字棋记录），以及由对话模型真实生成的主动消息，不会伪造外部经历。
-`OMBRE_SOLO_DAILY_LLM_BUDGET` 是主动消息使用的每日成本线；它读取所有独处相关模型调用的
-共用计数，达到后当天不再选择主动消息行动，但不会停掉对话与 Duetto 的情绪评价。它不是按
-情绪、时段或消息条数设置的行为闸门。
+`OMBRE_SOLO_DAILY_LLM_BUDGET` 是独处模型调用的每日成本线。主动消息另有分散发送策略：默认
+每天最多 20 条、至少相隔 60 分钟，且任意连续 6 小时最多 5 条；分别可用上面的四个
+`OMBRE_SOLO_PROACTIVE_*` 变量调整。额度只是上限，不要求每天发满，是否开口仍由当前独处状态决定。
 `POST /api/solo/wake` 可手动触发一次判断；`GET /api/solo/state`、`GET /api/solo/timeline` 和
 `GET /api/solo/activities` 可查看状态与轨迹，均沿用网关令牌鉴权。
 
@@ -117,11 +122,10 @@ Duetto 双向联动也沿用 `OMBRE_GATEWAY_TOKEN`。在 Duetto 中把 `ai.conte
 用户批注会复用 `OMBRE_SUMMARY_*`（未单独配置时复用上游对话模型）做一次语义情绪评估；
 播放事件只写入真实轨迹，不会仅凭歌名机械修改情绪。
 
-主动消息不需要新增模型变量：独处系统决定“想联系她”时，直接复用
-`OMBRE_UPSTREAM_*` 对话模型，并按“主 Prompt → Ombre 状态层 → 主动消息任务 → 数据”顺序
-生成 1～3 条消息。待领取消息保存在持久卷的 `gateway/solo/proactive_outbox.jsonl`；
-APK 使用同一个 `OMBRE_GATEWAY_TOKEN` 调用 `GET /api/solo/outbox`，显示原生通知后再调用
-`POST /api/solo/outbox/ack` 确认。网页端不会轮询或伪装这些消息。
+主动消息不需要新增模型变量：独处系统只判断何时想联系她，然后把当前状态和一句
+“想对她说什么？”交给 `OMBRE_UPSTREAM_*` 对话模型，直接把自然回复作为消息，不再使用单独的
+主动消息任务提示词或 JSON 格式。待领取消息保存在持久卷的 `gateway/solo/proactive_outbox.jsonl`；
+Firebase 可用时服务器立即推送，APK 的 15 分钟后台轮询只负责补漏和确认，不会重复提醒。
 
 MCP 客户端默认关闭。设置 `OMBRE_SOLO_MCP_ENABLED=1` 后，工具管理页才能测试并连接
 用户导入的 MCP 服务；普通对话与独处系统共用这套 MCP 客户端、授权和凭据，配置和能力缓存保存在持久卷的

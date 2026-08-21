@@ -59,7 +59,6 @@ from solo.mcp_agent import (
     build_mcp_selection_user_text,
     parse_mcp_selection_response,
 )
-from solo.proactive import PROACTIVE_SYSTEM_PROMPT, build_proactive_user_text, parse_proactive_response
 from solo.service import SOLO_STATE_RULES, SoloService, normalize_timezone_name, timezone_info
 from utils import load_config, setup_logging
 from zeta_gateway import ZetaMemoryGateway
@@ -1006,19 +1005,17 @@ class ZetaOpenAIGateway:
             schedule_context="（暂无）",
             health_context="（本次主动消息没有随附健康数据）",
         )
-        messages = []
         main_prompt = self._read_system_prompt()
         if not main_prompt:
             logger.warning("Proactive message skipped because the main system prompt is not configured")
             return {"called": False, "messages": []}
-        messages.append({"role": "system", "content": main_prompt})
-        messages.extend([
+        messages = [
+            {"role": "system", "content": main_prompt},
             {"role": "system", "content": ombre_layer},
-            {"role": "system", "content": PROACTIVE_SYSTEM_PROMPT},
-            {"role": "user", "content": build_proactive_user_text(context)},
-        ])
+            {"role": "user", "content": "想对她说什么？"},
+        ]
         payload = {
-            "model": self.upstream_model,
+            "model": self.public_model,
             "messages": messages,
             "temperature": 0.9,
             "max_tokens": 700,
@@ -1041,11 +1038,11 @@ class ZetaOpenAIGateway:
                 _preview_text(response.text),
             )
             return {"called": True, "messages": []}
-        parsed = parse_proactive_response(self._assistant_text_from_response(response))
-        if parsed is None:
+        visible_text = self._assistant_text_from_response(response).strip()[:1200]
+        if not visible_text:
             logger.warning("Proactive message provider returned no usable messages")
             return {"called": True, "messages": []}
-        return {"called": True, **parsed}
+        return {"called": True, "title": "Zeta", "messages": [visible_text]}
 
     async def _select_solo_mcp_call(self, context: dict[str, Any]) -> dict[str, Any]:
         main_prompt = self._read_system_prompt()
@@ -2713,7 +2710,7 @@ class ZetaOpenAIGateway:
 
 健康数据是设备随本轮消息附加的参考资料，不是她亲口说的话，也不是医学诊断。只在疲劳、活动、睡眠或身体状态等当前话题相关时自然参考；不猜测缺失数据，不把单个数值扩大成结论，数据过旧时降低可信度。
 
-设备环境是手机系统随本轮消息附加的参考资料，不是她亲口说的话。位置来自 Android 系统定位而不是网络 IP，可能受精度和采集时间影响；应用使用时长只表示设备今天记录到的前台使用情况。“屏幕应用”指她切换进 Ombre 前最近使用的外部应用，因为读取资料时 Ombre 自己已在前台。只在当前话题相关时自然参考，不据此监视、责备或过度推断她的行为。
+设备环境是手机系统随本轮消息或后台同步附加的参考资料，不是她亲口说的话。位置来自 Android 系统定位而不是网络 IP，可能受精度和采集时间影响；应用使用时长只表示设备今天记录到的前台使用情况。“当前屏幕应用”是 Android 最近识别到的前台应用，可能因后台调度而有延迟。只在当前话题相关时自然参考，不据此监视、责备或过度推断她的行为。
 
 【独处状态使用规则】
 
@@ -3184,7 +3181,7 @@ Zeta hidden memory protocol:
         if screen_app_name or screen_package_name:
             current_screen_app = {
                 "status": "ready",
-                "mode": "latest_external_before_ombre",
+                "mode": "current_foreground_app",
                 "appName": screen_app_name or screen_package_name,
                 "packageName": screen_package_name,
                 "observedAt": self._health_timestamp(raw_screen_app.get("observedAt")),
@@ -3248,7 +3245,7 @@ Zeta hidden memory protocol:
             )
             screen_app_name = self._device_text(current_screen_app.get("appName"), 80)
             if screen_app_name:
-                screen_app_line = f"- 切换进 Ombre 前最近在屏幕上的应用：{screen_app_name}"
+                screen_app_line = f"- 当前屏幕应用：{screen_app_name}"
                 screen_observed_at = self._health_timestamp(current_screen_app.get("observedAt"))
                 if screen_observed_at:
                     screen_app_line += f"（记录于 {screen_observed_at}）"
@@ -3493,6 +3490,20 @@ Zeta hidden memory protocol:
         after = str(request.query_params.get("after") or "").strip()
         items = await self.solo.get_proactive_messages(limit=limit, after=after)
         return JSONResponse({"ok": True, "items": items})
+
+    async def solo_device_context(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False, "error": "Request body must be valid JSON"}, status_code=400)
+        snapshot = self._sanitize_device_context(body if isinstance(body, dict) else {})
+        if not snapshot:
+            return JSONResponse({"ok": False, "error": "No usable device context"}, status_code=400)
+        await self.solo.note_device_context(snapshot)
+        return JSONResponse({"ok": True})
 
     async def solo_outbox_ack(self, request: Request) -> JSONResponse:
         auth = self._authorize(request)
@@ -4411,6 +4422,15 @@ async def solo_messages_route(request: Request) -> Response:
     return await gateway.solo_messages(request)
 
 
+async def solo_device_context_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.solo_device_context(request)
+
+
 async def solo_outbox_ack_route(request: Request) -> Response:
     if gateway is None:
         return JSONResponse(
@@ -4560,6 +4580,7 @@ routes = [
     Route("/api/solo/activities", solo_activities_route, methods=["GET"]),
     Route("/api/solo/outbox", solo_outbox_route, methods=["GET"]),
     Route("/api/solo/messages", solo_messages_route, methods=["GET"]),
+    Route("/api/solo/device-context", solo_device_context_route, methods=["POST"]),
     Route("/api/solo/outbox/ack", solo_outbox_ack_route, methods=["POST"]),
     Route("/api/solo/wake", solo_wake_route, methods=["POST"]),
     Route("/api/solo/mcp/servers", solo_mcp_servers_route, methods=["GET", "POST"]),
