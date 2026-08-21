@@ -7,9 +7,11 @@ import os
 import re
 import sys
 import time
+import uuid
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -25,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from bucket_manager import BucketManager
 from call_audio_pipeline import ElevenLabsAudioPipeline
+from call_delivery import CallDeliveryStore, FirebaseCallPush
 from call_markers import extract_call_markers
 from call_session import CallSession, latest_call_private_context, sanitize_call_context
 from dehydrator import Dehydrator
@@ -45,7 +48,6 @@ from solo.mcp_agent import (
     build_mcp_selection_user_text,
     parse_mcp_selection_response,
 )
-from solo.proactive import PROACTIVE_SYSTEM_PROMPT, build_proactive_user_text, parse_proactive_response
 from solo.service import SOLO_STATE_RULES, SoloService, normalize_timezone_name, timezone_info
 from utils import load_config, setup_logging
 from zeta_gateway import ZetaMemoryGateway
@@ -254,6 +256,9 @@ class ZetaOpenAIGateway:
 
         self.system_prompt_store = GatewaySystemPromptStore(config["buckets_dir"])
         self.solo = SoloService.from_gateway(self)
+        call_base_dir = Path(getattr(self.memory_gateway, "base_dir", "") or Path(config["buckets_dir"]) / "gateway")
+        self.call_delivery = CallDeliveryStore(call_base_dir)
+        self.call_push = FirebaseCallPush()
 
         self.http = httpx.AsyncClient(timeout=120.0)
         self.call_tts_model = _env("OMBRE_CALL_TTS_MODEL", default="eleven_v3")
@@ -267,6 +272,7 @@ class ZetaOpenAIGateway:
             stt_model=self.call_stt_model,
             language_code=_env("OMBRE_CALL_STT_LANGUAGE"),
         )
+        self.solo.set_call_invite_generator(self._create_solo_call_invite)
         if self.upstream_chat_url and self.upstream_api_key and self.upstream_model:
             self.solo.set_proactive_generator(self._generate_proactive_messages)
             self.solo.set_mcp_handlers(
@@ -347,6 +353,8 @@ class ZetaOpenAIGateway:
             "sample_rate": status.sample_rate,
             "transport": "websocket",
             "hangup_mode": "after_final_audio_immediate",
+            "incoming": self.call_delivery.status(),
+            "firebase": self.call_push.status(),
         }
 
     async def call_status(self, request: Request) -> JSONResponse:
@@ -354,6 +362,94 @@ class ZetaOpenAIGateway:
         if auth is not None:
             return auth
         return JSONResponse(self.call_status_snapshot())
+
+    async def call_register_device(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return JSONResponse({"error": "请求正文不是有效 JSON。"}, status_code=400)
+        try:
+            device = self.call_delivery.register_device(
+                body.get("token") if isinstance(body, dict) else "",
+                platform=body.get("platform", "android") if isinstance(body, dict) else "android",
+                app_version=body.get("appVersion", "") if isinstance(body, dict) else "",
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse({"ok": True, "device": device, "incoming": self.call_delivery.status()})
+
+    async def call_invite(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        if request.method == "GET":
+            invite = self.call_delivery.pending_invite(request.query_params.get("id", ""))
+            return JSONResponse({"invite": invite})
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            body = {}
+        invite = await self._create_and_dispatch_call_invite(
+            reason=body.get("reason", "") if isinstance(body, dict) else "",
+            source=body.get("source", "manual") if isinstance(body, dict) else "manual",
+            session_id=body.get("sessionId", "") if isinstance(body, dict) else "",
+        )
+        return JSONResponse({"ok": True, "invite": invite})
+
+    async def call_invite_answer(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        invite_id = str(request.path_params.get("invite_id") or "")
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            body = {}
+        try:
+            invite = self.call_delivery.respond(
+                invite_id,
+                body.get("action", "") if isinstance(body, dict) else "",
+                note=body.get("note", "") if isinstance(body, dict) else "",
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if invite is None:
+            return JSONResponse({"error": "来电邀请不存在。"}, status_code=404)
+        return JSONResponse({"ok": True, "invite": invite})
+
+    async def _create_and_dispatch_call_invite(
+        self,
+        *,
+        reason: Any,
+        source: Any,
+        session_id: Any = "",
+    ) -> dict[str, Any]:
+        invite = self.call_delivery.create_invite(reason, source=source, session_id=session_id)
+        tokens = self.call_delivery.device_tokens()
+        result = await asyncio.to_thread(self.call_push.send_invite, tokens, invite)
+        for token in result.get("invalid_tokens") or []:
+            self.call_delivery.remove_device_token(token)
+        self.call_delivery.mark_push(
+            invite["id"],
+            sent=int(result.get("sent") or 0),
+            failed=int(result.get("failed") or 0),
+            error=result.get("error", ""),
+        )
+        return self.call_delivery.pending_invite(invite["id"]) or invite
+
+    async def _create_solo_call_invite(self, context: dict[str, Any]) -> dict[str, Any]:
+        activity = context.get("activity") if isinstance(context.get("activity"), dict) else {}
+        reason = str(activity.get("felt") or activity.get("summary") or "突然有点想听听你的声音").strip()
+        invite = await self._create_and_dispatch_call_invite(
+            reason=reason,
+            source="solitude",
+            session_id=self.default_session_id,
+        )
+        push = invite.get("push") if isinstance(invite.get("push"), dict) else {}
+        return {"called": True, "invited": True, "pushSent": int(push.get("sent") or 0), "invite": invite}
 
     async def call_websocket(self, websocket: WebSocket) -> None:
         if self.gateway_token:
@@ -749,19 +845,17 @@ class ZetaOpenAIGateway:
             schedule_context="（暂无）",
             health_context="（本次主动消息没有随附健康数据）",
         )
-        messages = []
         main_prompt = self._read_system_prompt()
         if not main_prompt:
             logger.warning("Proactive message skipped because the main system prompt is not configured")
             return {"called": False, "messages": []}
-        messages.append({"role": "system", "content": main_prompt})
-        messages.extend([
+        messages = [
+            {"role": "system", "content": main_prompt},
             {"role": "system", "content": ombre_layer},
-            {"role": "system", "content": PROACTIVE_SYSTEM_PROMPT},
-            {"role": "user", "content": build_proactive_user_text(context)},
-        ])
+            {"role": "user", "content": "想对她说什么？"},
+        ]
         payload = {
-            "model": self.upstream_model,
+            "model": self.public_model,
             "messages": messages,
             "temperature": 0.9,
             "max_tokens": 700,
@@ -784,11 +878,31 @@ class ZetaOpenAIGateway:
                 _preview_text(response.text),
             )
             return {"called": True, "messages": []}
-        parsed = parse_proactive_response(self._assistant_text_from_response(response))
-        if parsed is None:
+        assistant_text = self._assistant_text_from_response(response).strip()
+        visible_text, _memory_entries = self._extract_zeta_memory_request(assistant_text)
+        if not visible_text:
             logger.warning("Proactive message provider returned no usable messages")
             return {"called": True, "messages": []}
-        return {"called": True, **parsed}
+        proactive_id = f"proactive_{uuid.uuid4().hex[:16]}"
+        push = await asyncio.to_thread(
+            self.call_push.send_proactive_message,
+            self.call_delivery.device_tokens(),
+            {
+                "id": proactive_id,
+                "title": "Zeta",
+                "text": visible_text,
+                "createdAt": str(context.get("triggered_at") or ""),
+            },
+        )
+        for token in push.get("invalid_tokens") or []:
+            self.call_delivery.remove_device_token(token)
+        return {
+            "called": True,
+            "title": "Zeta",
+            "messages": [visible_text],
+            "messageIds": [proactive_id],
+            "pushSent": int(push.get("sent") or 0),
+        }
 
     async def _select_solo_mcp_call(self, context: dict[str, Any]) -> dict[str, Any]:
         main_prompt = self._read_system_prompt()
@@ -2135,7 +2249,7 @@ class ZetaOpenAIGateway:
 
 健康数据是设备随本轮消息附加的参考资料，不是她亲口说的话，也不是医学诊断。只在疲劳、活动、睡眠或身体状态等当前话题相关时自然参考；不猜测缺失数据，不把单个数值扩大成结论，数据过旧时降低可信度。
 
-设备环境是手机系统随本轮消息附加的参考资料，不是她亲口说的话。位置来自 Android 系统定位而不是网络 IP，可能受精度和采集时间影响；应用使用时长只表示设备今天记录到的前台使用情况。“屏幕应用”指她切换进 Ombre 前最近使用的外部应用，因为读取资料时 Ombre 自己已在前台。只在当前话题相关时自然参考，不据此监视、责备或过度推断她的行为。
+设备环境是手机系统随本轮消息或后台同步附加的参考资料，不是她亲口说的话。位置来自 Android 系统定位而不是网络 IP，可能受精度和采集时间影响；应用使用时长只表示设备今天记录到的前台使用情况。“当前屏幕应用”是 Android 最近识别到的前台应用，可能因后台调度而有延迟。只在当前话题相关时自然参考，不据此监视、责备或过度推断她的行为。
 
 【独处状态使用规则】
 
@@ -2606,7 +2720,7 @@ Zeta hidden memory protocol:
         if screen_app_name or screen_package_name:
             current_screen_app = {
                 "status": "ready",
-                "mode": "latest_external_before_ombre",
+                "mode": "current_foreground_app",
                 "appName": screen_app_name or screen_package_name,
                 "packageName": screen_package_name,
                 "observedAt": self._health_timestamp(raw_screen_app.get("observedAt")),
@@ -2670,7 +2784,7 @@ Zeta hidden memory protocol:
             )
             screen_app_name = self._device_text(current_screen_app.get("appName"), 80)
             if screen_app_name:
-                screen_app_line = f"- 切换进 Ombre 前最近在屏幕上的应用：{screen_app_name}"
+                screen_app_line = f"- 当前屏幕应用：{screen_app_name}"
                 screen_observed_at = self._health_timestamp(current_screen_app.get("observedAt"))
                 if screen_observed_at:
                     screen_app_line += f"（记录于 {screen_observed_at}）"
@@ -2903,6 +3017,20 @@ Zeta hidden memory protocol:
             limit = 10
         items = await self.solo.get_proactive_outbox(limit=limit)
         return JSONResponse({"ok": True, "items": items})
+
+    async def solo_device_context(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False, "error": "Request body must be valid JSON"}, status_code=400)
+        snapshot = self._sanitize_device_context(body if isinstance(body, dict) else {})
+        if not snapshot:
+            return JSONResponse({"ok": False, "error": "No usable device context"}, status_code=400)
+        await self.solo.note_device_context(snapshot)
+        return JSONResponse({"ok": True})
 
     async def solo_outbox_ack(self, request: Request) -> JSONResponse:
         auth = self._authorize(request)
@@ -3623,6 +3751,24 @@ async def call_status_route(request: Request) -> Response:
     return await gateway.call_status(request)
 
 
+async def call_register_device_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse({"error": {"message": f"Gateway startup failed: {startup_error}"}}, status_code=503)
+    return await gateway.call_register_device(request)
+
+
+async def call_invite_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse({"error": {"message": f"Gateway startup failed: {startup_error}"}}, status_code=503)
+    return await gateway.call_invite(request)
+
+
+async def call_invite_answer_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse({"error": {"message": f"Gateway startup failed: {startup_error}"}}, status_code=503)
+    return await gateway.call_invite_answer(request)
+
+
 async def call_websocket_route(websocket: WebSocket) -> None:
     if gateway is None:
         await websocket.accept()
@@ -3726,6 +3872,15 @@ async def solo_outbox_route(request: Request) -> Response:
     return await gateway.solo_outbox(request)
 
 
+async def solo_device_context_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.solo_device_context(request)
+
+
 async def solo_outbox_ack_route(request: Request) -> Response:
     if gateway is None:
         return JSONResponse(
@@ -3817,6 +3972,9 @@ routes = [
     Route("/v1/models", models_route, methods=["GET"]),
     Route("/v1/chat/completions", chat_completions_route, methods=["POST"]),
     Route("/api/call/status", call_status_route, methods=["GET"]),
+    Route("/api/call/devices", call_register_device_route, methods=["POST"]),
+    Route("/api/call/invite", call_invite_route, methods=["GET", "POST"]),
+    Route("/api/call/invite/{invite_id:str}/answer", call_invite_answer_route, methods=["POST"]),
     WebSocketRoute("/api/call/ws", call_websocket_route),
     Route("/api/system-prompt", system_prompt_route, methods=["GET", "PUT"]),
     Route("/api/duetto/context", duetto_context_route, methods=["POST"]),
@@ -3828,6 +3986,7 @@ routes = [
     Route("/api/solo/timeline", solo_timeline_route, methods=["GET"]),
     Route("/api/solo/activities", solo_activities_route, methods=["GET"]),
     Route("/api/solo/outbox", solo_outbox_route, methods=["GET"]),
+    Route("/api/solo/device-context", solo_device_context_route, methods=["POST"]),
     Route("/api/solo/outbox/ack", solo_outbox_ack_route, methods=["POST"]),
     Route("/api/solo/wake", solo_wake_route, methods=["POST"]),
     Route("/api/solo/mcp/servers", solo_mcp_servers_route, methods=["GET", "POST"]),

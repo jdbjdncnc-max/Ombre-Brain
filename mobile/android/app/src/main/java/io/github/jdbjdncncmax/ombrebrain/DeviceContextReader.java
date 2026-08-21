@@ -46,6 +46,19 @@ final class DeviceContextReader {
 
     private DeviceContextReader() {}
 
+    static JSObject readUsageSnapshot(Context context) {
+        boolean usageAccessGranted = hasUsageAccess(context);
+        JSObject usage = usageAccessGranted
+            ? readTodayUsage(context.getApplicationContext())
+            : permissionRequired("usage_access");
+        return buildSnapshot(
+            unavailable("background_location_not_requested"),
+            usage,
+            false,
+            usageAccessGranted
+        );
+    }
+
     static boolean hasUsageAccess(Context context) {
         AppOpsManager manager = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
         if (manager == null) {
@@ -265,8 +278,8 @@ final class DeviceContextReader {
         Map<String, Long> foregroundStartedAt = new HashMap<>();
         Map<String, Long> foregroundDurations = new HashMap<>();
         Map<String, Long> lastUsedAt = new HashMap<>();
-        String latestExternalPackage = "";
-        long latestExternalAt = 0L;
+        String currentForegroundPackage = "";
+        long currentForegroundAt = 0L;
         UsageEvents events = manager.queryEvents(startMillis, endMillis);
         UsageEvents.Event event = new UsageEvents.Event();
         while (events != null && events.hasNextEvent()) {
@@ -279,11 +292,10 @@ final class DeviceContextReader {
             if (event.getEventType() == UsageEvents.Event.ACTIVITY_RESUMED) {
                 foregroundStartedAt.putIfAbsent(packageName, timestamp);
                 lastUsedAt.put(packageName, timestamp);
-                if (!packageName.equals(context.getPackageName())
-                    && !isInfrastructurePackage(packageName)
-                    && timestamp >= latestExternalAt) {
-                    latestExternalPackage = packageName;
-                    latestExternalAt = timestamp;
+                if (!isInfrastructurePackage(packageName)
+                    && timestamp >= currentForegroundAt) {
+                    currentForegroundPackage = packageName;
+                    currentForegroundAt = timestamp;
                 }
             } else if (event.getEventType() == UsageEvents.Event.ACTIVITY_PAUSED
                 || event.getEventType() == UsageEvents.Event.ACTIVITY_STOPPED) {
@@ -348,13 +360,13 @@ final class DeviceContextReader {
         result.put("startAt", Instant.ofEpochMilli(startMillis).toString());
         result.put("endAt", Instant.ofEpochMilli(endMillis).toString());
         result.put("totalForegroundMinutes", Math.max(0L, Math.round(totalMillis / 60_000.0)));
-        if (!latestExternalPackage.isEmpty()) {
+        if (!currentForegroundPackage.isEmpty()) {
             JSObject currentScreenApp = new JSObject();
             currentScreenApp.put("status", "ready");
-            currentScreenApp.put("mode", "latest_external_before_ombre");
-            currentScreenApp.put("appName", appLabel(context, latestExternalPackage));
-            currentScreenApp.put("packageName", latestExternalPackage);
-            currentScreenApp.put("observedAt", Instant.ofEpochMilli(latestExternalAt).toString());
+            currentScreenApp.put("mode", "current_foreground_app");
+            currentScreenApp.put("appName", appLabel(context, currentForegroundPackage));
+            currentScreenApp.put("packageName", currentForegroundPackage);
+            currentScreenApp.put("observedAt", Instant.ofEpochMilli(currentForegroundAt).toString());
             result.put("currentScreenApp", currentScreenApp);
         }
         result.put("entries", items);

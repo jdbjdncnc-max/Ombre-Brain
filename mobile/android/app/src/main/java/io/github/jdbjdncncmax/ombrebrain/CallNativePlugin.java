@@ -83,7 +83,8 @@ public class CallNativePlugin extends Plugin implements CallEventBus.Listener {
             .putExtra(CallForegroundService.EXTRA_GATEWAY_TOKEN, gatewayToken)
             .putExtra(CallForegroundService.EXTRA_SESSION_ID, sessionId)
             .putExtra(CallForegroundService.EXTRA_TIMEZONE, timezone)
-            .putExtra(CallForegroundService.EXTRA_CONTEXT_MESSAGES, contextMessages);
+            .putExtra(CallForegroundService.EXTRA_CONTEXT_MESSAGES, contextMessages)
+            .putExtra(CallForegroundService.EXTRA_INVITE_ID, "");
         CallForegroundService.start(getContext(), intent);
         call.resolve(toJsObject(CallForegroundService.stateSnapshot()));
     }

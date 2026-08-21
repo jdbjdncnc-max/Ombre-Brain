@@ -3,27 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Companion 1.0</title>
+  <title>Entangle</title>
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
-  <link rel="stylesheet" href="styles.css?v=20260810.2">
+  <link rel="stylesheet" href="styles.css?v=20260810.3">
 </head>
 <body>
   <div id="app" class="app-shell">
-    <section id="phoneShell" class="phone-shell" aria-label="Companion app">
+    <section id="phoneShell" class="phone-shell" aria-label="Entangle app">
       <header class="top-bar">
-        <span id="clock" class="clock">09:41</span>
         <span id="serverStatus" class="server-status">连接中</span>
       </header>
 
       <main class="screen">
         <section id="chatView" class="view view-active" aria-label="对话">
-          <div class="chat-header">
-            <div>
-              <p class="eyebrow">Companion</p>
-              <h1>对话</h1>
-            </div>
-          </div>
-
           <div id="messageList" class="message-list" aria-live="polite"></div>
 
           <button
@@ -274,7 +266,7 @@
                 <div class="sail-context-item">
                   <span>刚才的屏幕</span>
                   <strong id="sailCurrentApp">暂无记录</strong>
-                  <small id="sailCurrentAppMeta">显示切换进 Ombre 前的应用</small>
+                  <small id="sailCurrentAppMeta">显示系统最近识别到的当前屏幕应用</small>
                 </div>
               </div>
             </section>
@@ -682,6 +674,15 @@
               <input id="gatewayToken" type="password" autocomplete="current-password" placeholder="OMBRE_GATEWAY_TOKEN">
             </label>
 
+            <section class="field" aria-labelledby="incomingCallSettingsTitle">
+              <span id="incomingCallSettingsTitle">锁屏即时来电</span>
+              <div class="button-row">
+                <button id="incomingCallPermissionButton" class="secondary-button" type="button">检查并开启</button>
+                <output id="incomingCallStatus">等待 APP 配置</output>
+              </div>
+              <small>Android 14 及以上需要单独允许全屏来电；Firebase 文件尚未加入时会显示“等待配置”。</small>
+            </section>
+
             <label class="field">
               <span>温度</span>
               <div class="range-row">
@@ -939,6 +940,6 @@
   <script src="vendor/dompurify/purify.min.js"></script>
   <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/katex/auto-render.min.js"></script>
-    <script src="app.js?v=20260810.5" type="module"></script>
+    <script src="app.js?v=20260812.1" type="module"></script>
 </body>
 </html>

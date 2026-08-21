@@ -1,7 +1,7 @@
 import json
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -10,7 +10,7 @@ import httpx
 from starlette.requests import Request
 
 from solo.actions import ACTION_SPECS, action_scores
-from solo.proactive import PROACTIVE_SYSTEM_PROMPT, parse_proactive_response
+from solo.proactive import parse_proactive_response
 from solo.service import SoloService
 from zeta_openai_gateway import ZetaOpenAIGateway
 
@@ -134,6 +134,60 @@ class ProactiveServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(result["state"]["lastDecision"]["result"], "message_user")
         generator.assert_not_awaited()
 
+    async def test_proactive_messages_are_spread_across_the_day(self):
+        self.service.proactive_daily_limit = 6
+        self.service.proactive_min_gap_minutes = 120
+        self.service.proactive_window_hours = 6
+        self.service.proactive_window_limit = 2
+        self.service.solo_dir.mkdir(parents=True, exist_ok=True)
+        runtime = self.service._new_state(self.now)
+        runtime["lastActionAt"] = {"message_user": (self.now - timedelta(minutes=30)).isoformat()}
+        emotion = self.service._new_emotion_state(self.now, self.now)
+        self.assertFalse(self.service._proactive_message_allowed(runtime, emotion, self.now))
+
+        runtime["lastActionAt"] = {"message_user": (self.now - timedelta(hours=3)).isoformat()}
+        self.service._append_jsonl(self.service.proactive_path, {
+            "id": "proactive_a",
+            "ts": (self.now - timedelta(hours=5)).isoformat(),
+            "text": "a",
+        })
+        self.service._append_jsonl(self.service.proactive_path, {
+            "id": "proactive_b",
+            "ts": (self.now - timedelta(hours=3)).isoformat(),
+            "text": "b",
+        })
+        self.assertFalse(self.service._proactive_message_allowed(runtime, emotion, self.now))
+
+    async def test_model_context_includes_current_screen_app(self):
+        self.service.solo_dir.mkdir(parents=True, exist_ok=True)
+        self.service._write_json(self.service.emotion_path, self.service._new_emotion_state(self.now, self.now))
+        self.service._write_json(self.service.state_path, self.service._new_state(self.now))
+        await self.service.note_device_context({
+            "capturedAt": self.now.isoformat(),
+            "appUsage": {"currentScreenApp": {"appName": "微信", "observedAt": self.now.isoformat()}},
+        })
+        self.assertIn("当前屏幕应用：微信", self.service.model_context_text(now=self.now))
+
+    async def test_proactive_call_requires_silence_window_and_counts_once(self):
+        self.service.proactive_call_enabled = True
+        self.service.solo_dir.mkdir(parents=True, exist_ok=True)
+        last_message = self.now - timedelta(hours=6)
+        runtime = self.service._new_state(self.now)
+        runtime["lastUserMessageAt"] = last_message.isoformat().replace("+00:00", "Z")
+        emotion = self.service._new_emotion_state(self.now, last_message)
+        self.service._write_json(self.service.state_path, runtime)
+        self.service._write_json(self.service.emotion_path, emotion)
+        generator = AsyncMock(return_value={"called": True, "invited": True, "pushSent": 1})
+        self.service.set_call_invite_generator(generator)
+
+        with patch("solo.service.choose_action", return_value=ACTION_SPECS["call_user"]):
+            result = await self.service.pulse_once(now=self.now, force_decision=True)
+
+        self.assertTrue(result["callInvited"])
+        generator.assert_awaited_once()
+        saved = self.service._read_json(self.service.emotion_path)
+        self.assertEqual(saved["budget"]["calls"], 1)
+
 
 class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
     async def test_generation_keeps_main_prompt_first_and_uses_dialogue_model(self):
@@ -141,19 +195,20 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         gateway.upstream_chat_url = "https://dialogue.example/v1/chat/completions"
         gateway.upstream_api_key = "dialogue-key"
         gateway.upstream_model = "dialogue-model"
+        gateway.public_model = "dialogue-model"
         gateway.summary_timeout = 30
         gateway.openrouter_site_url = ""
         gateway.openrouter_app_name = ""
+        gateway.call_push = SimpleNamespace(send_proactive_message=lambda _tokens, _item: {"sent": 1})
+        gateway.call_delivery = SimpleNamespace(device_tokens=lambda: ["device-token"], remove_device_token=lambda _token: None)
+        gateway._extract_zeta_memory_request = lambda value: (value, [])
         gateway.solo = SimpleNamespace(timezone_name="Asia/Taipei")
         gateway._read_system_prompt = lambda: "MAIN PROMPT"
         gateway._compose_ombre_system_layer = lambda **_kwargs: "OMBRE STATE"
         gateway._current_local_time = lambda _timezone: "2026-08-08 12:00:00"
         gateway.http = SimpleNamespace(post=AsyncMock(return_value=httpx.Response(
             200,
-            json={"choices": [{"message": {"content": json.dumps({
-                "title": "Zeta",
-                "messages": ["突然有点想找你。"],
-            }, ensure_ascii=False)}}]},
+            json={"choices": [{"message": {"content": "突然有点想找你。"}}]},
             request=httpx.Request("POST", "https://dialogue.example/v1/chat/completions"),
         )))
 
@@ -169,12 +224,14 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["model"], "dialogue-model")
         self.assertEqual(payload["messages"][0]["content"], "MAIN PROMPT")
         self.assertEqual(payload["messages"][1]["content"], "OMBRE STATE")
-        self.assertEqual(payload["messages"][2]["content"], PROACTIVE_SYSTEM_PROMPT)
-        self.assertEqual(payload["messages"][3]["role"], "user")
+        self.assertEqual(payload["messages"][2], {"role": "user", "content": "想对她说什么？"})
+        self.assertTrue(result["messageIds"][0].startswith("proactive_"))
+        self.assertEqual(result["pushSent"], 1)
 
     async def test_generation_stops_when_main_prompt_is_missing(self):
         gateway = object.__new__(ZetaOpenAIGateway)
         gateway.upstream_model = "dialogue-model"
+        gateway.public_model = "dialogue-model"
         gateway.summary_timeout = 30
         gateway.solo = SimpleNamespace(timezone_name="Asia/Taipei")
         gateway._read_system_prompt = lambda: ""

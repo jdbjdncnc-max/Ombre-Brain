@@ -127,6 +127,7 @@ export function createCallController({
       state.active = Boolean(event.active ?? ACTIVE_STATES.has(phase));
       state.muted = Boolean(event.muted ?? state.muted);
       state.speaker = Boolean(event.speaker ?? state.speaker);
+      if (state.active) openView({ replace: true });
       setPhase(phase);
       return;
     }

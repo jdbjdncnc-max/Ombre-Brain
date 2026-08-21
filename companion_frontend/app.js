@@ -1,7 +1,9 @@
 import { platform } from "./platform.js";
+import { createChatHistoryStore } from "./chat_storage.js?v=20260822.1";
 import { createCallController } from "./call.js?v=20260810.1";
 import { createSoloPanel } from "./solo.js?v=20260807.2";
 import { formatTokenUsage, normalizeTokenUsage, readOpenAiStream } from "./openai_stream.js?v=20260810.1";
+import { createStreamUpdateCoordinator } from "./stream_updates.js?v=20260812.1";
 import {
   MAX_CHAT_IMPORT_BYTES,
   mergeChatMessages,
@@ -120,6 +122,8 @@ const defaultSettings = {
 };
 
 const DUETTO_LOAD_TIMEOUT_MS = 15000;
+const LONG_MARKDOWN_PLAIN_TEXT_THRESHOLD = 60000;
+const MATH_RENDER_TEXT_THRESHOLD = 20000;
 let duettoLoadTimeoutId = 0;
 let nativeProactiveSignature = "";
 
@@ -153,8 +157,14 @@ const COURSE_COLORS = [
 
 const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
 
+const chatHistoryStore = await createChatHistoryStore({
+  legacyStorage: platform.storage,
+  legacyKey: storageKeys.messages
+});
+const chatHistoryLoad = await chatHistoryStore.load();
+
 const state = {
-  messages: normalizeStoredMessages(loadJson(storageKeys.messages, [])),
+  messages: normalizeStoredMessages(chatHistoryLoad.messages),
   settings: normalizeSettings(loadJson(storageKeys.settings, {})),
   activeTab: "chat",
   memoryPanel: "memories",
@@ -195,7 +205,6 @@ platform.storage.setString(storageKeys.sessionId, state.sessionId);
 
 const els = {
   phoneShell: document.querySelector("#phoneShell"),
-  clock: document.querySelector("#clock"),
   serverStatus: document.querySelector("#serverStatus"),
   chatView: document.querySelector("#chatView"),
   homeView: document.querySelector("#homeView"),
@@ -323,6 +332,8 @@ const els = {
   backendUrl: document.querySelector("#backendUrl"),
   duettoUrl: document.querySelector("#duettoUrl"),
   gatewayToken: document.querySelector("#gatewayToken"),
+  incomingCallPermissionButton: document.querySelector("#incomingCallPermissionButton"),
+  incomingCallStatus: document.querySelector("#incomingCallStatus"),
   userDisplayName: document.querySelector("#userDisplayName"),
   assistantDisplayName: document.querySelector("#assistantDisplayName"),
   userAvatarButton: document.querySelector("#userAvatarButton"),
@@ -428,14 +439,13 @@ const systemPromptReady = loadSystemPrompt();
 bindEvents();
 hydrateSettingsForm();
 saveSettings();
-applySettings();
+applySettings({ refreshMessages: false });
 renderMessages();
 renderComposerState();
 restoreNavigationState();
 callController.restore().catch(() => {});
 initSchedule();
 renderSchedule();
-updateClock();
 refreshHealth();
 renderHealthSnapshot();
 refreshHealthSnapshot({ silent: true });
@@ -446,13 +456,14 @@ loadSchedule().catch(() => {
   setScheduleSyncStatus("本地日程", "offline");
 });
 setInterval(checkScheduleNudges, 30000);
-setInterval(updateClock, 30000);
 setInterval(() => refreshHealthSnapshot({ silent: true }), 60000);
 platform.lifecycle.onResume(() => {
   refreshHealth();
   refreshHealthSnapshot({ silent: true });
   refreshDeviceContextSnapshot({ silent: true });
 });
+platform.lifecycle.onPause?.(() => saveMessages());
+window.addEventListener("pagehide", saveMessages);
 
 function bindEvents() {
   els.composer.addEventListener("submit", (event) => {
@@ -708,6 +719,14 @@ function bindEvents() {
     input.addEventListener("change", loadSystemPrompt);
   }
 
+  els.incomingCallPermissionButton?.addEventListener("click", async () => {
+    await platform.notifications.requestPermission();
+    if (typeof platform.notifications.openIncomingCallSettings === "function") {
+      await platform.notifications.openIncomingCallSettings();
+    }
+    window.setTimeout(() => void refreshIncomingCallStatus(), 500);
+  });
+
   els.temperature.addEventListener("input", () => {
     els.temperatureValue.value = Number(els.temperature.value).toFixed(1);
   });
@@ -746,8 +765,9 @@ async function sendMessage() {
 
   readSettingsForm();
   saveSettings();
-  applySettings();
+  applySettings({ refreshMessages: false });
 
+  const replacedExistingHistory = Boolean(state.editingMessageId);
   if (state.editingMessageId) {
     if (!applyUserMessageEdit(state.editingMessageId, { content: text, userThinking, images })) {
       cancelMessageEdit();
@@ -774,6 +794,12 @@ async function sendMessage() {
 
   if (text) {
     captureTodoFromMessage(text);
+  }
+  saveMessages();
+  if (replacedExistingHistory) {
+    renderMessages(false);
+  } else {
+    appendMessageToView(state.messages.length - 1, true);
   }
   resetComposerInputs();
   await generateAssistantReply();
@@ -802,7 +828,15 @@ async function generateAssistantReply() {
 
   state.messages.push(assistantMessage);
   setBusy(true);
-  renderMessages();
+  saveMessages();
+  appendMessageToView(state.messages.length - 1, true);
+  const streamUpdates = createStreamUpdateCoordinator({
+    onRender: (message) => renderMessageInPlace(message, {
+      streaming: Boolean(message.pending),
+      followIfNearBottom: true
+    }),
+    onPersist: saveMessages
+  });
 
   try {
     const response = await platform.request(apiUrl("/v1/chat/completions"), {
@@ -869,7 +903,7 @@ async function generateAssistantReply() {
           || response.headers.get("x-ombre-stream-id")
           || "";
       }
-      renderMessages(false);
+      streamUpdates.schedule(assistantMessage);
     });
 
     assistantMessage.pending = false;
@@ -908,8 +942,7 @@ async function generateAssistantReply() {
       const reasoningFinishedAt = Math.max(lastReasoningAt, firstContentAt || Date.now());
       assistantMessage.reasoningDurationMs = Math.max(0, reasoningFinishedAt - requestStartedAt);
     }
-    saveMessages();
-    renderMessages();
+    streamUpdates.flush(assistantMessage);
     try {
       if (replySucceeded) {
         await maybeAppraiseConversationEmotion();
@@ -939,12 +972,13 @@ async function regenerateAssistantMessage(messageId) {
 
   readSettingsForm();
   saveSettings();
-  applySettings();
+  applySettings({ refreshMessages: false });
   if (state.editingMessageId) {
     cancelMessageEdit();
   }
   state.messages = previousMessages;
   saveMessages();
+  renderMessages(false);
   await generateAssistantReply();
 }
 
@@ -1641,13 +1675,25 @@ function normalizeStoredMessages(value) {
             images: normalizeUserImages(message.images)
           }
         : message;
-      const normalized = messageWithAttachments.role === "assistant" && messageWithAttachments.reasoningPresentationPending
+      let normalized = messageWithAttachments.role === "assistant" && messageWithAttachments.reasoningPresentationPending
         ? {
             ...messageWithAttachments,
             reasoning: messageWithAttachments.reasoning || messageWithAttachments.reasoningSource || "",
             reasoningPresentationPending: false
           }
         : messageWithAttachments;
+      if (normalized.role === "assistant" && normalized.pending) {
+        normalized = {
+          ...normalized,
+          content: String(normalized.content || "").trim()
+            ? String(normalized.content)
+            : "上次回复时页面意外关闭，本次内容没有完整保存。请点“重新生成”再试一次。",
+          reasoning: normalized.reasoning || normalized.reasoningSource || "",
+          pending: false,
+          streamInterrupted: true,
+          streamError: normalized.streamError || "页面在回复完成前意外关闭"
+        };
+      }
       if (
         (normalized.role === "user" || normalized.role === "assistant")
         && normalized.createdAt
@@ -1772,14 +1818,14 @@ async function maybePresentReasoning(message) {
     message.reasoningPresentationPending = false;
     setReasoningPresentationStatus("网关系统提示词或覆写提示词不可用，已保留原始思考", true);
     saveMessages();
-    renderMessages(false);
+    renderMessageInPlace(message);
     return;
   }
 
   const context = reasoningPresentationContext(message.id);
   message.reasoningPresentationPending = true;
   setReasoningPresentationStatus("正在使用当前对话模型整理思考…");
-  renderMessages(false);
+  renderMessageInPlace(message);
 
   try {
     const response = await platform.request(apiUrl("/api/reasoning-presentation"), {
@@ -1813,7 +1859,7 @@ async function maybePresentReasoning(message) {
   } finally {
     message.reasoningPresentationPending = false;
     saveMessages();
-    renderMessages(false);
+    renderMessageInPlace(message);
   }
 }
 
@@ -1952,7 +1998,7 @@ async function maybeSummarizeConversation() {
   };
   state.messages.push(summaryMarker);
   setSummaryStatus("正在整理这段对话…");
-  renderMessages();
+  appendMessageToView(state.messages.length - 1, true);
 
   try {
     const response = await platform.request(apiUrl("/api/conversation-summary"), {
@@ -1980,7 +2026,7 @@ async function maybeSummarizeConversation() {
     summaryMarker.pending = false;
     saveMessages();
     setSummaryStatus(`已完成累计总结 · ${userMessageCount} 次你的发言`);
-    renderMessages();
+    renderMessageInPlace(summaryMarker);
   } catch (error) {
     state.messages = state.messages.filter((message) => message.id !== summaryMarker.id);
     saveMessages();
@@ -1988,7 +2034,7 @@ async function maybeSummarizeConversation() {
       `${error instanceof Error ? error.message : String(error)}（完整消息已保留）`,
       true
     );
-    renderMessages();
+    removeMessageFromView(summaryMarker.id);
   }
 }
 
@@ -3528,6 +3574,11 @@ function renderMarkdown(element, source) {
     element.textContent = " ";
     return;
   }
+  if (markdown.length > LONG_MARKDOWN_PLAIN_TEXT_THRESHOLD) {
+    element.classList.add("long-plain-text");
+    element.textContent = markdown;
+    return;
+  }
   if (!window.marked?.parse || !window.DOMPurify?.sanitize) {
     element.textContent = markdown;
     return;
@@ -3542,7 +3593,12 @@ function renderMarkdown(element, source) {
       FORBID_TAGS: ["script", "style", "iframe", "object", "embed", "form"],
       FORBID_ATTR: ["style"]
     });
-    if (typeof window.renderMathInElement === "function") {
+    const mayContainMath = markdown.length <= MATH_RENDER_TEXT_THRESHOLD && (
+      markdown.includes("$")
+      || markdown.includes("\\(")
+      || markdown.includes("\\[")
+    );
+    if (mayContainMath && typeof window.renderMathInElement === "function") {
       window.renderMathInElement(element, {
         delimiters: [
           { left: "$$", right: "$$", display: true },
@@ -3981,105 +4037,184 @@ function renderMessages(shouldScroll = true) {
     return;
   }
 
+  const fragment = document.createDocumentFragment();
   let locatorNumber = 0;
   for (const [messageIndex, message] of state.messages.entries()) {
-    if (message.role === "summary") {
-      els.messageList.append(createConversationSummary(message));
-      continue;
+    if (message.role !== "summary") {
+      locatorNumber += 1;
     }
-    locatorNumber += 1;
-    const item = document.createElement("article");
-    item.className = `message ${message.role}${message.pending ? " pending" : ""}`;
-    item.dataset.messageIndex = String(messageIndex);
-    item.dataset.locatorNumber = String(locatorNumber);
-
-    const body = document.createElement("div");
-    body.className = `message-body message-${message.role}-body`;
-    body.append(createMessageIdentity(message));
-
-    const content = document.createElement("div");
-    content.className = "message-content";
-    if (message.role === "assistant") {
-      renderMarkdown(content, message.content);
-    } else {
-      content.textContent = message.content || " ";
-    }
-    if (message.role === "user" && normalizeUserImages(message.images).length) {
-      body.append(createUserImageGallery(message.images));
-    }
-    if (message.role === "user" && String(message.userThinking || "").trim()) {
-      body.append(createUserThinkingBlock(message.userThinking));
-    }
-    if (message.role === "assistant" && Array.isArray(message.toolActivity) && message.toolActivity.length) {
-      body.append(createMessageToolActivity(message.toolActivity));
-    }
-    const hasReasoning = message.role === "assistant" && (
-      message.reasoning
-      || message.reasoningSource
-      || message.reasoningPresentationPending
-    );
-    if (hasReasoning) {
-      const reasoning = document.createElement("details");
-      reasoning.className = "message-reasoning";
-      reasoning.open = Boolean(message.pending || message.reasoningPresentationPending);
-
-      const summary = document.createElement("summary");
-      const durationLabel = reasoningDurationLabel(message.reasoningDurationMs);
-      summary.textContent = message.pending
-        ? "思考中…"
-        : (message.reasoningPresentationPending ? `${durationLabel} · 整理中…` : durationLabel);
-
-      const reasoningContent = document.createElement("div");
-      reasoningContent.className = "message-reasoning-content";
-      if (message.pending) {
-        reasoningContent.classList.add("reasoning-presentation-status");
-        reasoningContent.textContent = "思考正在流动…";
-      } else if (message.reasoningPresentationPending) {
-        reasoningContent.classList.add("reasoning-presentation-status");
-        reasoningContent.textContent = "我在把刚才的想法整理成更自然的话…";
-      } else {
-        renderMarkdown(reasoningContent, message.reasoning || message.reasoningSource);
-      }
-
-      reasoning.append(summary, reasoningContent);
-      body.append(reasoning);
-    }
-    if (message.role === "assistant" || String(message.content || "").trim()) {
-      body.append(content);
-    }
-    if (message.role === "assistant" && message.streamInterrupted) {
-      const warning = document.createElement("p");
-      warning.className = "message-stream-warning";
-      const hasPartial = Boolean(String(message.content || "").trim())
-        && !String(message.content || "").startsWith("流式响应中断。")
-        && !String(message.content || "").startsWith("这次回复在传输途中断开了");
-      warning.textContent = hasPartial
-        ? "连接中断，这条回复可能没有写完。你可以点下方按钮重新生成。"
-        : "连接中断，本次没有收到完整回复。你可以点下方按钮重新生成。";
-      if (message.streamId) {
-        warning.textContent += ` 连接编号：${message.streamId}`;
-      }
-      if (message.streamError) {
-        warning.title = message.streamError;
-      }
-      body.append(warning);
-    }
-    if (!message.pending) {
-      body.append(createMessageFooter(message));
-    }
-    const avatar = createMessageAvatar(message.role);
-    if (message.role === "user") {
-      item.append(body, avatar);
-    } else {
-      item.append(avatar, body);
-    }
-    els.messageList.append(item);
+    fragment.append(createMessageNode(message, messageIndex, locatorNumber));
   }
+  els.messageList.append(fragment);
 
   if (shouldScroll) {
     els.messageList.scrollTop = els.messageList.scrollHeight;
   }
   updateChatLocatorRail();
+}
+
+function createMessageNode(message, messageIndex, locatorNumber, { streaming = false } = {}) {
+  if (message.role === "summary") {
+    const summary = createConversationSummary(message);
+    summary.dataset.messageId = String(message.id || "");
+    summary.dataset.messageIndex = String(messageIndex);
+    return summary;
+  }
+
+  const item = document.createElement("article");
+  item.className = `message ${message.role}${message.pending ? " pending" : ""}`;
+  item.dataset.messageId = String(message.id || "");
+  item.dataset.messageIndex = String(messageIndex);
+  item.dataset.locatorNumber = String(locatorNumber);
+
+  const body = document.createElement("div");
+  body.className = `message-body message-${message.role}-body`;
+  body.append(createMessageIdentity(message));
+
+  const content = document.createElement("div");
+  content.className = "message-content";
+  if (message.role === "assistant" && !streaming) {
+    renderMarkdown(content, message.content);
+  } else {
+    content.textContent = message.content || " ";
+  }
+  if (message.role === "user" && normalizeUserImages(message.images).length) {
+    body.append(createUserImageGallery(message.images));
+  }
+  if (message.role === "user" && String(message.userThinking || "").trim()) {
+    body.append(createUserThinkingBlock(message.userThinking));
+  }
+  if (message.role === "assistant" && Array.isArray(message.toolActivity) && message.toolActivity.length) {
+    body.append(createMessageToolActivity(message.toolActivity));
+  }
+  const hasReasoning = message.role === "assistant" && (
+    message.reasoning
+    || message.reasoningSource
+    || message.reasoningPresentationPending
+  );
+  if (hasReasoning) {
+    const reasoning = document.createElement("details");
+    reasoning.className = "message-reasoning";
+    reasoning.open = Boolean(message.pending || message.reasoningPresentationPending);
+
+    const summary = document.createElement("summary");
+    const durationLabel = reasoningDurationLabel(message.reasoningDurationMs);
+    summary.textContent = message.pending
+      ? "思考中…"
+      : (message.reasoningPresentationPending ? `${durationLabel} · 整理中…` : durationLabel);
+
+    const reasoningContent = document.createElement("div");
+    reasoningContent.className = "message-reasoning-content";
+    if (message.pending) {
+      reasoningContent.classList.add("reasoning-presentation-status");
+      reasoningContent.textContent = "思考正在流动…";
+    } else if (message.reasoningPresentationPending) {
+      reasoningContent.classList.add("reasoning-presentation-status");
+      reasoningContent.textContent = "我在把刚才的想法整理成更自然的话…";
+    } else {
+      renderMarkdown(reasoningContent, message.reasoning || message.reasoningSource);
+    }
+
+    reasoning.append(summary, reasoningContent);
+    body.append(reasoning);
+  }
+  if (message.role === "assistant" || String(message.content || "").trim()) {
+    body.append(content);
+  }
+  if (message.role === "assistant" && message.streamInterrupted) {
+    const warning = document.createElement("p");
+    warning.className = "message-stream-warning";
+    const hasPartial = Boolean(String(message.content || "").trim())
+      && !String(message.content || "").startsWith("流式响应中断。")
+      && !String(message.content || "").startsWith("这次回复在传输途中断开了");
+    warning.textContent = hasPartial
+      ? "连接中断，这条回复可能没有写完。你可以点下方按钮重新生成。"
+      : "连接中断，本次没有收到完整回复。你可以点下方按钮重新生成。";
+    if (message.streamId) {
+      warning.textContent += ` 连接编号：${message.streamId}`;
+    }
+    if (message.streamError) {
+      warning.title = message.streamError;
+    }
+    body.append(warning);
+  }
+  if (!message.pending) {
+    body.append(createMessageFooter(message));
+  }
+  const avatar = createMessageAvatar(message.role);
+  if (message.role === "user") {
+    item.append(body, avatar);
+  } else {
+    item.append(avatar, body);
+  }
+  return item;
+}
+
+function appendMessageToView(messageIndex, shouldScroll = true) {
+  const message = state.messages[messageIndex];
+  if (!message) return;
+  const existing = findRenderedMessageNode(message.id);
+  if (existing) {
+    renderMessageInPlace(message, { followIfNearBottom: shouldScroll });
+    return;
+  }
+  els.messageList.querySelector(".empty-state")?.remove();
+  els.messageList.append(createMessageNode(
+    message,
+    messageIndex,
+    messageLocatorNumber(messageIndex),
+    { streaming: Boolean(message.pending) }
+  ));
+  if (shouldScroll) {
+    els.messageList.scrollTop = els.messageList.scrollHeight;
+  }
+  updateChatLocatorRail();
+}
+
+function renderMessageInPlace(message, { streaming = false, followIfNearBottom = false } = {}) {
+  const messageIndex = state.messages.findIndex((candidate) => candidate.id === message.id);
+  if (messageIndex < 0) return;
+  const existing = findRenderedMessageNode(message.id);
+  if (!existing) {
+    appendMessageToView(messageIndex, followIfNearBottom);
+    return;
+  }
+  const shouldFollow = followIfNearBottom && isMessageListNearBottom();
+  existing.replaceWith(createMessageNode(
+    message,
+    messageIndex,
+    messageLocatorNumber(messageIndex),
+    { streaming }
+  ));
+  if (shouldFollow) {
+    els.messageList.scrollTop = els.messageList.scrollHeight;
+  }
+  if (!streaming) {
+    updateChatLocatorRail();
+  }
+}
+
+function removeMessageFromView(messageId) {
+  findRenderedMessageNode(messageId)?.remove();
+  updateChatLocatorRail();
+}
+
+function findRenderedMessageNode(messageId) {
+  const target = String(messageId || "");
+  return [...els.messageList.children]
+    .find((node) => node.dataset.messageId === target) || null;
+}
+
+function messageLocatorNumber(messageIndex) {
+  let locatorNumber = 0;
+  for (let index = 0; index <= messageIndex; index += 1) {
+    if (state.messages[index]?.role !== "summary") locatorNumber += 1;
+  }
+  return locatorNumber;
+}
+
+function isMessageListNearBottom() {
+  return els.messageList.scrollHeight - els.messageList.scrollTop - els.messageList.clientHeight < 180;
 }
 
 function createUserImageGallery(images) {
@@ -4310,8 +4445,8 @@ function renderDeviceContextSnapshot() {
   }
   if (els.sailCurrentAppMeta) {
     els.sailCurrentAppMeta.textContent = currentScreenApp
-      ? `切换进 Ombre 前 · ${observedTimeLabel(currentScreenApp.observedAt) || "今天"}`
-      : "这里不会把 Ombre 自己误认为正在使用的外部应用";
+      ? `当前屏幕应用 · ${observedTimeLabel(currentScreenApp.observedAt) || "今天"}`
+      : "等待 Android 系统识别当前屏幕应用";
   }
   if (els.sailUsageTotal) {
     els.sailUsageTotal.textContent = usageReady
@@ -5217,7 +5352,7 @@ function readSettingsForm() {
   };
 }
 
-function applySettings() {
+function applySettings({ refreshMessages = true } = {}) {
   const root = document.documentElement;
   root.style.setProperty("--accent", state.settings.accentColor);
   root.style.setProperty("--background-image-opacity", String(1 - state.settings.backgroundTransparency));
@@ -5230,7 +5365,9 @@ function applySettings() {
     root.style.setProperty("--bg-image", 'url("background.svg")');
   }
   renderIdentitySettings();
-  renderMessages(false);
+  if (refreshMessages) {
+    renderMessages(false);
+  }
   renderHomeState();
   syncDuettoFrameTheme();
 }
@@ -5420,14 +5557,6 @@ async function refreshHealth() {
   }
 }
 
-function updateClock() {
-  els.clock.textContent = new Intl.DateTimeFormat("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
-  }).format(new Date());
-}
-
 function currentTimeZone() {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -5479,8 +5608,14 @@ function autosizeTextarea(textarea) {
   textarea.style.height = `${Math.min(textarea.scrollHeight, 140)}px`;
 }
 
-function saveMessages() {
-  platform.storage.setJson(storageKeys.messages, state.messages);
+async function saveMessages() {
+  try {
+    await chatHistoryStore.save(state.messages);
+    return true;
+  } catch (error) {
+    console.error("Unable to persist chat history", error);
+    return false;
+  }
 }
 
 function saveSettings() {
@@ -5495,7 +5630,9 @@ async function syncNativeProactiveNotifications({ force = false } = {}) {
   const configuration = {
     backendUrl: cleanBaseUrl(state.settings.backendUrl),
     gatewayToken: String(state.settings.gatewayToken || "").trim(),
-    title: String(state.settings.assistantName || "Ombre").trim() || "Ombre"
+    title: String(state.settings.assistantName || "Entangle").trim() || "Entangle",
+    sessionId: state.sessionId,
+    timezone: currentTimeZone()
   };
   const signature = JSON.stringify(configuration);
   if (!force && signature === nativeProactiveSignature) {
@@ -5504,8 +5641,29 @@ async function syncNativeProactiveNotifications({ force = false } = {}) {
   try {
     await platform.notifications.configureProactive(configuration);
     nativeProactiveSignature = signature;
+    await refreshIncomingCallStatus();
   } catch (error) {
     console.warn("Unable to configure native proactive notifications", error);
+  }
+}
+
+async function refreshIncomingCallStatus() {
+  if (!els.incomingCallStatus || typeof platform.notifications.incomingCallStatus !== "function") return;
+  try {
+    const status = await platform.notifications.incomingCallStatus();
+    if (!status?.supported) {
+      els.incomingCallStatus.textContent = "仅 Android APP 支持";
+    } else if (status.notificationPermission !== "granted") {
+      els.incomingCallStatus.textContent = "需要通知权限";
+    } else if (!status.fullScreenAllowed) {
+      els.incomingCallStatus.textContent = "需要允许全屏来电";
+    } else if (!status.tokenRegistered) {
+      els.incomingCallStatus.textContent = status.firebaseStatus || "等待 Firebase 配置";
+    } else {
+      els.incomingCallStatus.textContent = status.firebaseStatus === "ready" ? "已就绪" : "令牌已生成，正在登记";
+    }
+  } catch {
+    els.incomingCallStatus.textContent = "暂时无法读取";
   }
 }
 

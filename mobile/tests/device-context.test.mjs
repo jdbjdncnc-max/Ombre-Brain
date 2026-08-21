@@ -39,7 +39,7 @@ const snapshot = {
     totalForegroundMinutes: 145,
     currentScreenApp: {
       status: "ready",
-      mode: "latest_external_before_ombre",
+      mode: "current_foreground_app",
       appName: "小红书",
       packageName: "com.xingin.xhs",
       observedAt: "2026-08-10T06:29:40Z"

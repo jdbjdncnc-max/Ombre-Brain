@@ -127,6 +127,12 @@ function createBrowserNotificationAdapter() {
     },
     async configureProactive() {
       return { configured: false, native: false };
+    },
+    async incomingCallStatus() {
+      return { supported: false };
+    },
+    async openIncomingCallSettings() {
+      return { supported: false };
     }
   };
 }

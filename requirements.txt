@@ -32,6 +32,9 @@ starlette>=0.37.0
 uvicorn>=0.29.0
 websockets>=12.0
 
+# 锁屏即时来电（服务端仅在配置 Firebase 凭据后启用推送）
+firebase-admin>=7.0.0
+
 # IANA 时区数据（Windows Python 通常不自带）
 tzdata>=2024.1
 

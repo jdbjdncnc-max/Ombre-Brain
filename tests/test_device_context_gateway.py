@@ -32,7 +32,7 @@ DEVICE = {
         "totalForegroundMinutes": 145,
         "currentScreenApp": {
             "status": "ready",
-            "mode": "latest_external_before_ombre",
+            "mode": "current_foreground_app",
             "appName": "微信",
             "packageName": "com.tencent.mm",
             "observedAt": "2026-08-10T06:28:00Z",
@@ -79,7 +79,7 @@ class DeviceContextGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("系统定位（不是 IP 推断）", text)
         self.assertIn("市府路", text)
         self.assertIn("25.03396, 121.56447", text)
-        self.assertIn("切换进 Ombre 前最近在屏幕上的应用：微信", text)
+        self.assertIn("当前屏幕应用：微信", text)
         self.assertIn("使用时长前三", text)
         self.assertIn("Chrome 83 分钟", text)
         self.assertIn("相机 18 分钟", text)
@@ -100,7 +100,7 @@ class DeviceContextGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sanitized["appUsage"]["entries"]), 3)
         self.assertEqual(
             sanitized["appUsage"]["currentScreenApp"]["mode"],
-            "latest_external_before_ombre",
+            "current_foreground_app",
         )
         self.assertNotIn("override", sanitized)
 
