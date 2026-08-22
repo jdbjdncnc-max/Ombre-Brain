@@ -30,8 +30,10 @@ test("Android uses a native background worker for proactive notifications", asyn
 
   assert.match(worker, /PeriodicWorkRequest/);
   assert.match(worker, /PERIODIC_MINUTES = 15L/);
-  assert.match(worker, /\/api\/solo\/outbox\?limit=10/);
+  assert.match(worker, /\/api\/solo\/outbox\?limit=50/);
   assert.match(worker, /\/api\/solo\/outbox\/ack/);
+  assert.match(worker, /JSONObject newestItem = null/);
+  assert.doesNotMatch(worker, /delivered\.removeAll\(ackIds\)/);
   assert.match(worker, /NotificationManagerCompat/);
   assert.match(plugin, /configureProactiveNotifications/);
   assert.match(plugin, /EntangleFirebaseMessagingService\.syncRegistration/);
@@ -60,4 +62,9 @@ test("Android uses a native background worker for proactive notifications", asyn
   assert.match(gradle, /com\.google\.firebase:firebase-messaging/);
   assert.match(frontend, /\/api\/solo\/messages/);
   assert.match(frontend, /proactiveId/);
+  assert.match(frontend, /if \(!await saveMessages\(\)\)/);
+  assert.ok(
+    frontend.indexOf("if (!await saveMessages())") < frontend.indexOf("state.proactiveMessageCursor = latestId"),
+    "the chat database must persist proactive replies before the cursor advances"
+  );
 });

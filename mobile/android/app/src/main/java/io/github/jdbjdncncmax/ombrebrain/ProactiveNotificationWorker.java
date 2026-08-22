@@ -83,7 +83,7 @@ public class ProactiveNotificationWorker extends Worker {
 
         pollIncomingCall(context, baseUrl, token);
 
-        HttpResult outbox = request("GET", baseUrl + "/api/solo/outbox?limit=10", token, null);
+        HttpResult outbox = request("GET", baseUrl + "/api/solo/outbox?limit=50", token, null);
         if (!outbox.isSuccess()) {
             return outbox.shouldRetry() ? Result.retry() : Result.success();
         }
@@ -96,6 +96,7 @@ public class ProactiveNotificationWorker extends Worker {
 
             Set<String> delivered = new HashSet<>(preferences.getStringSet(KEY_DELIVERED, new HashSet<>()));
             List<String> ackIds = new ArrayList<>();
+            JSONObject newestItem = null;
             for (int index = 0; index < items.length(); index += 1) {
                 JSONObject item = items.optJSONObject(index);
                 if (item == null) {
@@ -106,8 +107,15 @@ public class ProactiveNotificationWorker extends Worker {
                 if (id.isEmpty() || body.isEmpty()) {
                     continue;
                 }
-                if (!delivered.contains(id)) {
-                    String title = clean(item.optString("title"));
+                ackIds.add(id);
+                newestItem = item;
+            }
+
+            if (newestItem != null) {
+                String id = clean(newestItem.optString("id"));
+                String body = clean(newestItem.optString("text"));
+                if (!id.isEmpty() && !body.isEmpty() && !delivered.contains(id)) {
+                    String title = clean(newestItem.optString("title"));
                     showNotification(
                         context,
                         title.isEmpty() ? (defaultTitle.isEmpty() ? "Entangle" : defaultTitle) : title,
@@ -116,7 +124,6 @@ public class ProactiveNotificationWorker extends Worker {
                     );
                     delivered.add(id);
                 }
-                ackIds.add(id);
             }
 
             preferences.edit().putStringSet(KEY_DELIVERED, boundedIds(delivered)).apply();
@@ -133,7 +140,6 @@ public class ProactiveNotificationWorker extends Worker {
                 ackBody.toString()
             );
             if (ack.isSuccess()) {
-                delivered.removeAll(ackIds);
                 preferences.edit().putStringSet(KEY_DELIVERED, boundedIds(delivered)).apply();
                 return Result.success();
             }

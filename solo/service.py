@@ -478,6 +478,16 @@ class SoloService:
         ][:2]
         talking_points = [item for item in talking_points if item]
         device_line = self._device_context_line()
+        recent_proactive: list[str] = []
+        for item in reversed(self._read_jsonl(self.proactive_path, limit=60)):
+            sent_at = _parse_time(item.get("ts"))
+            if sent_at and sent_at < current - timedelta(hours=24):
+                continue
+            message = self._context_text(item.get("text"), 80)
+            if message:
+                recent_proactive.append(message)
+            if len(recent_proactive) >= 2:
+                break
 
         lines = [
             emotion_line,
@@ -486,6 +496,7 @@ class SoloService:
             f"最近轨迹：{'；'.join(activities)}" if activities else "",
             f"想说：{'；'.join(talking_points)}" if talking_points else "",
             device_line,
+            f"最近主动说过（不要重复原话）：{'；'.join(recent_proactive)}" if recent_proactive else "",
         ]
         header = f"[此刻状态｜{local_now.strftime('%Y-%m-%d %H:%M')} {timezone_name}]"
         limit = max(len(SOLO_STATE_RULES), min(1200, int(max_characters)))

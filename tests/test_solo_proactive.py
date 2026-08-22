@@ -178,7 +178,14 @@ class ProactiveServiceTests(unittest.IsolatedAsyncioTestCase):
             "capturedAt": self.now.isoformat(),
             "appUsage": {"currentScreenApp": {"appName": "微信", "observedAt": self.now.isoformat()}},
         })
-        self.assertIn("当前屏幕应用：微信", self.service.model_context_text(now=self.now))
+        self.service._append_jsonl(self.service.proactive_path, {
+            "id": "proactive_recent",
+            "ts": (self.now - timedelta(hours=1)).isoformat(),
+            "text": "刚才已经说过这一句",
+        })
+        context = self.service.model_context_text(now=self.now)
+        self.assertIn("当前屏幕应用：微信", context)
+        self.assertIn("最近主动说过（不要重复原话）：刚才已经说过这一句", context)
 
     async def test_proactive_call_requires_silence_window_and_counts_once(self):
         self.service.proactive_call_enabled = True

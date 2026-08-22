@@ -5903,6 +5903,7 @@ async function syncProactiveMessages({ silent = false } = {}) {
       const existing = new Set(
         state.messages.map((message) => String(message.proactiveId || "")).filter(Boolean)
       );
+      const messageCountBeforeSync = state.messages.length;
       const addedIndexes = [];
       let added = 0;
       for (const item of items) {
@@ -5916,7 +5917,7 @@ async function syncProactiveMessages({ silent = false } = {}) {
           proactiveId,
           role: "assistant",
           content,
-          model: "solitude",
+          model: String(item.model || state.settings.model || "zeta-gateway"),
           proactive: true,
           createdAt: String(item.ts || new Date().toISOString()),
           timezone: String(item.timezone || currentTimeZone())
@@ -5925,20 +5926,23 @@ async function syncProactiveMessages({ silent = false } = {}) {
         existing.add(proactiveId);
         added += 1;
       }
-      const latestId = String(items.at(-1)?.id || "").trim();
-      if (latestId) {
-        state.proactiveMessageCursor = latestId;
-        platform.storage.setString(storageKeys.proactiveMessageCursor, latestId);
-      }
       if (added) {
         const shouldFollow = state.activeTab === "chat" && isMessageListNearBottom();
-        saveMessages();
+        if (!await saveMessages()) {
+          state.messages.splice(messageCountBeforeSync);
+          return { added: 0 };
+        }
         for (const messageIndex of addedIndexes) {
           appendMessageToView(messageIndex, false);
         }
         if (shouldFollow) {
           els.messageList.scrollTop = els.messageList.scrollHeight;
         }
+      }
+      const latestId = String(items.at(-1)?.id || "").trim();
+      if (latestId) {
+        state.proactiveMessageCursor = latestId;
+        platform.storage.setString(storageKeys.proactiveMessageCursor, latestId);
       }
       const deliveredIds = items.map((item) => String(item?.id || "").trim()).filter(Boolean);
       if (deliveredIds.length) {
