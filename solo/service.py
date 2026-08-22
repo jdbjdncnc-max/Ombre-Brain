@@ -1615,7 +1615,7 @@ class SoloService:
         called = bool(result.get("called", True))
         title = self._context_text(result.get("title"), 60)
         messages = [
-            self._context_text(value, 1200)
+            self._message_text(value, 1200)
             for value in (result.get("messages") if isinstance(result.get("messages"), list) else [])[:3]
         ]
         messages = [value for value in messages if value]
@@ -1785,6 +1785,13 @@ class SoloService:
     def _context_text(value: Any, limit: int) -> str:
         text = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value or ""))
         return re.sub(r"\s+", " ", text).strip()[:max(0, int(limit))]
+
+    @staticmethod
+    def _message_text(value: Any, limit: int) -> str:
+        text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"[\x00-\x09\x0b\x0c\x0e-\x1f\x7f]+", " ", text)
+        text = "\n".join(line.rstrip() for line in text.split("\n")).strip()
+        return text[:max(0, int(limit))]
 
     @staticmethod
     def _third_person_reason(value: str) -> str:

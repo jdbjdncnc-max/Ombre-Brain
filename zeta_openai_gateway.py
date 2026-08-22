@@ -9,10 +9,11 @@ import os
 import re
 import sys
 import time
+import uuid
 import zlib
 from contextlib import AsyncExitStack, asynccontextmanager
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -282,6 +283,7 @@ class ZetaOpenAIGateway:
         self.solo = SoloService.from_gateway(self)
         self.solo.set_proactive_dispatcher(self.firebase_push.send_proactive)
         call_base_dir = Path(getattr(self.memory_gateway, "base_dir", "") or Path(config["buckets_dir"]) / "gateway")
+        self.proactive_conversation_context_path = call_base_dir / "proactive_conversation_context.json"
         self.jd_shopping = JdShoppingBroker(
             call_base_dir,
             enabled=_truthy(_env("OMBRE_JD_SHOPPING_ENABLED")),
@@ -996,36 +998,86 @@ class ZetaOpenAIGateway:
             getattr(self.solo, "timezone_name", "UTC"),
         )
         solo_context = str(context.get("state") or "").strip()
-        ombre_layer = self._compose_ombre_system_layer(
-            solo_context=solo_context,
-            current_local_time=self._current_local_time(timezone_name),
-            timezone_name=timezone_name,
-            message_timeline="（这不是对新消息的回复）",
-            summary_context="（本次主动消息不附带前端本地摘要）",
-            schedule_context="（暂无）",
-            health_context="（本次主动消息没有随附健康数据）",
-        )
         main_prompt = self._read_system_prompt()
         if not main_prompt:
             logger.warning("Proactive message skipped because the main system prompt is not configured")
             return {"called": False, "messages": []}
-        messages = [
-            {"role": "system", "content": main_prompt},
-            {"role": "system", "content": ombre_layer},
-            {"role": "user", "content": "想对她说什么？"},
-        ]
+
+        snapshot = self._load_proactive_conversation_context()
+        raw_snapshot_messages = snapshot.get("messages")
+        conversation_messages = deepcopy(raw_snapshot_messages) if isinstance(raw_snapshot_messages, list) else []
+        if not conversation_messages:
+            fallback = self._recent_raw_dialogue_context()
+            conversation_messages = deepcopy(fallback.get("messages") or [])
+        else:
+            fallback = {}
+        session_id = str(
+            snapshot.get("session_id")
+            or fallback.get("session_id")
+            or self.default_session_id
+        ).strip()
+        summary_context = str(snapshot.get("summary_context") or "").strip()
+        schedule_context = str(snapshot.get("schedule_context") or "").strip()
+        source_messages: list[dict[str, Any]] = []
+        if summary_context:
+            source_messages.append({
+                "role": "system",
+                "ombre_context_kind": OMBRE_SUMMARY_KIND,
+                "content": summary_context,
+            })
+        if schedule_context:
+            source_messages.append({
+                "role": "system",
+                "ombre_context_kind": OMBRE_SCHEDULE_KIND,
+                "content": schedule_context,
+            })
+        source_messages.extend(conversation_messages)
+        source_messages.append({
+            "role": "user",
+            "content": "想对她说什么？",
+            "context": {
+                "sentAt": str(context.get("triggered_at") or datetime.now(timezone.utc).isoformat()),
+                "timezone": timezone_name,
+            },
+        })
+
+        recall_context = self._recall_context_text(source_messages)
+        recalled = await self.memory_gateway.recall({
+            "current_text": "想对她说什么？",
+            "recent_context": recall_context,
+            "max_results": self.recall_max_results,
+            "keyword_limit": self.keyword_limit,
+            "semantic_limit": self.semantic_limit,
+            "track_usage": True,
+        })
+        ombre_layer = self._compose_ombre_system_layer(
+            hidden_instruction=self._hidden_memory_instruction(),
+            memory_context=self._build_injection_text(recalled),
+            solo_context=solo_context,
+        )
+        try:
+            proactive_temperature = float(snapshot.get("temperature") or 0.7)
+        except (TypeError, ValueError):
+            proactive_temperature = 0.7
         payload = {
             "model": self.public_model,
-            "messages": messages,
-            "temperature": 0.9,
-            "max_tokens": 700,
+            "messages": source_messages,
+            "temperature": max(0.0, min(2.0, proactive_temperature)),
             "stream": False,
         }
+        forward_payload = self._prepare_forward_payload(
+            payload,
+            ombre_layer,
+            main_prompt,
+            timezone_name,
+            session_id=session_id,
+            remember_proactive_context=False,
+        )
         try:
             response = await self.http.post(
                 self.upstream_chat_url,
                 headers=self._upstream_headers(self.upstream_api_key),
-                json=payload,
+                json=forward_payload,
                 timeout=min(120.0, max(15.0, self.summary_timeout)),
             )
         except httpx.RequestError as exc:
@@ -1038,10 +1090,19 @@ class ZetaOpenAIGateway:
                 _preview_text(response.text),
             )
             return {"called": True, "messages": []}
-        visible_text = self._assistant_text_from_response(response).strip()[:1200]
+        assistant_text = self._assistant_text_from_response(response)
+        visible_text, _ = self._extract_zeta_memory_request(assistant_text)
+        visible_text = visible_text.strip()[:1200]
         if not visible_text:
             logger.warning("Proactive message provider returned no usable messages")
             return {"called": True, "messages": []}
+        await self._save_turn(
+            session_id,
+            "zeta",
+            visible_text,
+            metadata={"timezone": timezone_name, "channel": "proactive"},
+        )
+        self._append_proactive_context_assistant(session_id, visible_text)
         return {"called": True, "title": "Zeta", "messages": [visible_text]}
 
     async def _select_solo_mcp_call(self, context: dict[str, Any]) -> dict[str, Any]:
@@ -1916,6 +1977,7 @@ class ZetaOpenAIGateway:
             assistant_text = self._assistant_text_from_response(upstream_response)
             visible_text, zeta_entries = self._extract_zeta_memory_request(assistant_text)
             assistant_raw_refs = await self._save_turn(session_id, "zeta", visible_text)
+            self._append_proactive_context_assistant(session_id, visible_text)
             zeta_written = await self._write_zeta_memory_requests(
                 session_id=session_id,
                 entries=zeta_entries,
@@ -2010,6 +2072,7 @@ class ZetaOpenAIGateway:
                 emitted.append(content_chunk(tail))
             visible_text = "".join(assistant_parts).strip()
             assistant_raw_refs = await self._save_turn(session_id, "zeta", visible_text)
+            self._append_proactive_context_assistant(session_id, visible_text)
             zeta_written = await self._write_zeta_memory_requests(
                 session_id=session_id,
                 entries=stream_filter.entries[:3],
@@ -2413,6 +2476,7 @@ class ZetaOpenAIGateway:
         client_timezone: str = "UTC",
         *,
         session_id: str = "",
+        remember_proactive_context: bool = True,
     ) -> dict[str, Any]:
         forward = deepcopy(payload)
         forward.pop("session_id", None)
@@ -2426,6 +2490,14 @@ class ZetaOpenAIGateway:
         source_messages = self._restore_prompt_cache_turns(source_messages, session_id)
         health_context = self._latest_health_context_text(source_messages)
         device_context = self._latest_device_context_text(source_messages)
+        if remember_proactive_context:
+            self._remember_proactive_conversation_context(
+                session_id=session_id,
+                messages=source_messages,
+                summary_context=summary_context,
+                schedule_context=schedule_context,
+                temperature=forward.get("temperature"),
+            )
         message_timeline = self._build_message_timeline(source_messages, client_timezone)
         contextual_messages = self._inject_message_time_context(
             source_messages,
@@ -2459,6 +2531,115 @@ class ZetaOpenAIGateway:
         self._remove_visible_private_diary_tools(forward)
         self._canonicalize_prompt_tools(forward)
         return forward
+
+    def _remember_proactive_conversation_context(
+        self,
+        *,
+        session_id: str,
+        messages: list[Any],
+        summary_context: str,
+        schedule_context: str,
+        temperature: Any,
+    ) -> None:
+        path = getattr(self, "proactive_conversation_context_path", None)
+        if not isinstance(path, Path) or not str(session_id or "").strip():
+            return
+        kept: list[dict[str, Any]] = []
+        for raw_message in messages:
+            if not isinstance(raw_message, dict):
+                continue
+            role = str(raw_message.get("role") or "").strip().lower()
+            if role not in {"user", "assistant"}:
+                continue
+            content = self._message_content_to_text(raw_message.get("content")).strip()
+            if not content:
+                continue
+            message: dict[str, Any] = {"role": role, "content": content[:12000]}
+            raw_context = raw_message.get("context") if isinstance(raw_message.get("context"), dict) else {}
+            stored_context = {
+                key: deepcopy(raw_context[key])
+                for key in ("sentAt", "timezone", "health", "device")
+                if key in raw_context
+            }
+            if stored_context:
+                message["context"] = stored_context
+            kept.append(message)
+        kept = kept[-16:]
+        try:
+            chosen_temperature = float(temperature)
+        except (TypeError, ValueError):
+            chosen_temperature = 0.7
+        snapshot = {
+            "version": 1,
+            "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "session_id": str(session_id).strip()[:160],
+            "temperature": max(0.0, min(2.0, chosen_temperature)),
+            "summary_context": str(summary_context or "").strip()[:60000],
+            "schedule_context": str(schedule_context or "").strip()[:30000],
+            "messages": kept,
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(f".tmp-{uuid.uuid4().hex}")
+            temporary.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+            temporary.replace(path)
+        except OSError as exc:
+            logger.warning("Unable to remember proactive conversation context: %s", exc)
+
+    def _load_proactive_conversation_context(self) -> dict[str, Any]:
+        path = getattr(self, "proactive_conversation_context_path", None)
+        if not isinstance(path, Path) or not path.exists():
+            return {}
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Unable to load proactive conversation context: %s", exc)
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def _append_proactive_context_assistant(self, session_id: str, content: str) -> None:
+        snapshot = self._load_proactive_conversation_context()
+        if str(snapshot.get("session_id") or "").strip() != str(session_id or "").strip():
+            return
+        messages = snapshot.get("messages") if isinstance(snapshot.get("messages"), list) else []
+        self._remember_proactive_conversation_context(
+            session_id=session_id,
+            messages=[*messages, {"role": "assistant", "content": str(content or "")}],
+            summary_context=str(snapshot.get("summary_context") or ""),
+            schedule_context=str(snapshot.get("schedule_context") or ""),
+            temperature=snapshot.get("temperature"),
+        )
+
+    def _recent_raw_dialogue_context(self) -> dict[str, Any]:
+        reader = getattr(self.memory_gateway, "_raw_turns_in_window", None)
+        if not callable(reader):
+            return {}
+        now = datetime.now(timezone.utc)
+        try:
+            raw_dir = getattr(self.memory_gateway, "raw_dir", None)
+            paths = list(raw_dir.glob("*.jsonl")) if isinstance(raw_dir, Path) and raw_dir.exists() else []
+            latest_path = max(paths, key=lambda item: item.stat().st_mtime) if paths else None
+            session_id = latest_path.stem if latest_path is not None else self.default_session_id
+            turns = reader(session_id, now - timedelta(days=30), now + timedelta(hours=1), 16)
+        except OSError as exc:
+            logger.warning("Unable to load recent dialogue for proactive message: %s", exc)
+            return {}
+        messages: list[dict[str, Any]] = []
+        for turn in turns:
+            speaker = str(turn.get("speaker") or "").strip().lower()
+            role = "user" if speaker == "user" else "assistant" if speaker in {"zeta", "assistant"} else ""
+            content = str(turn.get("content") or "").strip()
+            if not role or not content:
+                continue
+            messages.append({
+                "role": role,
+                "content": content,
+                "context": {
+                    "sentAt": str(turn.get("timestamp") or ""),
+                    "timezone": getattr(self.solo, "timezone_name", "UTC"),
+                },
+            })
+        return {"session_id": session_id, "messages": messages}
 
     def _openrouter_session_id(self, session_id: str) -> str:
         upstream_url = str(

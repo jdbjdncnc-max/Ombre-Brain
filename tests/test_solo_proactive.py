@@ -218,13 +218,46 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         gateway.summary_timeout = 30
         gateway.openrouter_site_url = ""
         gateway.openrouter_app_name = ""
+        gateway.default_session_id = "zeta-main"
+        gateway.recall_max_results = 5
+        gateway.keyword_limit = 4
+        gateway.semantic_limit = 1
         gateway.solo = SimpleNamespace(timezone_name="Asia/Taipei")
         gateway._read_system_prompt = lambda: "MAIN PROMPT"
-        gateway._compose_ombre_system_layer = lambda **_kwargs: "OMBRE STATE"
-        gateway._current_local_time = lambda _timezone: "2026-08-08 12:00:00"
+        gateway._load_proactive_conversation_context = lambda: {
+            "session_id": "phone-session",
+            "temperature": 0.7,
+            "summary_context": "之前聊到她明天要考试",
+            "messages": [
+                {"role": "user", "content": "我有点担心明天的考试"},
+                {"role": "assistant", "content": "先陪你把最担心的部分理清。"},
+            ],
+        }
+        gateway._recent_raw_dialogue_context = lambda: {}
+        gateway._recall_context_text = lambda _messages: "RECENT CHAT"
+        gateway.memory_gateway = SimpleNamespace(recall=AsyncMock(return_value={
+            "injection_text": "RELATED MEMORY",
+            "memories": [],
+        }))
+        gateway._hidden_memory_instruction = lambda: "MEMORY RULE"
+        gateway._build_injection_text = lambda recalled: recalled["injection_text"]
+        gateway._compose_ombre_system_layer = lambda **kwargs: (
+            f"OMBRE STATE\n{kwargs['solo_context']}\n{kwargs['memory_context']}"
+        )
+        gateway._prepare_forward_payload = lambda payload, injected, system, _timezone, **_kwargs: {
+            **payload,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "system", "content": injected},
+                *payload["messages"],
+            ],
+        }
+        gateway._extract_zeta_memory_request = lambda text: (text, [])
+        gateway._save_turn = AsyncMock(return_value=[])
+        gateway._append_proactive_context_assistant = lambda _session_id, _content: None
         gateway.http = SimpleNamespace(post=AsyncMock(return_value=httpx.Response(
             200,
-            json={"choices": [{"message": {"content": "突然有点想找你。"}}]},
+            json={"choices": [{"message": {"content": "先别一个人吓自己。\n\n要不要把最担心的题型发给我？"}}]},
             request=httpx.Request("POST", "https://dialogue.example/v1/chat/completions"),
         )))
 
@@ -235,12 +268,48 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
             "activity": {"title": "决定主动给她发消息"},
         })
 
-        self.assertEqual(result["messages"], ["突然有点想找你。"])
+        self.assertEqual(result["messages"], ["先别一个人吓自己。\n\n要不要把最担心的题型发给我？"])
         payload = gateway.http.post.await_args.kwargs["json"]
         self.assertEqual(payload["model"], "dialogue-model")
         self.assertEqual(payload["messages"][0]["content"], "MAIN PROMPT")
-        self.assertEqual(payload["messages"][1]["content"], "OMBRE STATE")
-        self.assertEqual(payload["messages"][2], {"role": "user", "content": "想对她说什么？"})
+        self.assertIn("当前很想念她", payload["messages"][1]["content"])
+        self.assertEqual(payload["messages"][2]["ombre_context_kind"], "conversation_summary")
+        self.assertEqual(payload["messages"][3]["content"], "我有点担心明天的考试")
+        self.assertEqual(payload["messages"][4]["content"], "先陪你把最担心的部分理清。")
+        self.assertEqual(payload["messages"][5]["content"], "想对她说什么？")
+        self.assertEqual(payload["temperature"], 0.7)
+        self.assertNotIn("max_tokens", payload)
+        gateway.memory_gateway.recall.assert_awaited_once()
+        gateway._save_turn.assert_awaited_once()
+
+    def test_proactive_message_text_preserves_paragraph_breaks(self):
+        self.assertEqual(
+            SoloService._message_text("第一段。\r\n\r\n第二段。", 1200),
+            "第一段。\n\n第二段。",
+        )
+
+    def test_dialogue_context_snapshot_keeps_summary_recent_turns_and_latest_reply(self):
+        with tempfile.TemporaryDirectory() as directory:
+            gateway = object.__new__(ZetaOpenAIGateway)
+            gateway.proactive_conversation_context_path = Path(directory) / "proactive-context.json"
+            gateway._remember_proactive_conversation_context(
+                session_id="phone-session",
+                messages=[
+                    {"role": "user", "content": "我明天考试", "context": {"sentAt": "2026-08-22T12:00:00Z"}},
+                    {"role": "assistant", "content": "我记得。"},
+                ],
+                summary_context="正在聊明天的考试",
+                schedule_context="明天 09:00 考试",
+                temperature=0.6,
+            )
+            gateway._append_proactive_context_assistant("phone-session", "先早点休息。")
+
+            snapshot = gateway._load_proactive_conversation_context()
+            self.assertEqual(snapshot["session_id"], "phone-session")
+            self.assertEqual(snapshot["summary_context"], "正在聊明天的考试")
+            self.assertEqual(snapshot["schedule_context"], "明天 09:00 考试")
+            self.assertEqual(snapshot["temperature"], 0.6)
+            self.assertEqual(snapshot["messages"][-1], {"role": "assistant", "content": "先早点休息。"})
 
     async def test_generation_stops_when_main_prompt_is_missing(self):
         gateway = object.__new__(ZetaOpenAIGateway)
