@@ -61,14 +61,15 @@ final class IncomingCallNotifier {
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(person.getName() + " 正在呼叫你")
             .setContentText(cleanReason)
-            .setStyle(NotificationCompat.CallStyle.forIncomingCall(person, declineIntent, answerIntent))
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(true)
             .setAutoCancel(false)
             .setContentIntent(fullScreenIntent)
-            .setFullScreenIntent(fullScreenIntent, true);
+            .setFullScreenIntent(fullScreenIntent, true)
+            .addAction(R.mipmap.ic_launcher, "拒绝", declineIntent)
+            .addAction(R.mipmap.ic_launcher, "接听", answerIntent);
         NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, builder.build());
         return true;
     }

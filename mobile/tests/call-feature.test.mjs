@@ -77,7 +77,9 @@ test("Android supports Firebase lock-screen incoming calls and Entangle branding
   assert.match(messaging, /call_invite/);
   assert.match(messaging, /\/api\/call\/devices/);
   assert.match(notifier, /setFullScreenIntent/);
-  assert.match(notifier, /CallStyle\.forIncomingCall/);
+  assert.match(notifier, /addAction\([^\n]+"拒绝"/);
+  assert.match(notifier, /addAction\([^\n]+"接听"/);
+  assert.doesNotMatch(notifier, /CallStyle\.forIncomingCall/);
   assert.match(activity, /EXTRA_INVITE_ID/);
   assert.match(activity, /CallForegroundService\.ACTION_START/);
   assert.match(strings, />Entangle</);
