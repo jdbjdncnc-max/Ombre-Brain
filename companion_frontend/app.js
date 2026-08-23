@@ -1,9 +1,8 @@
 import { platform } from "./platform.js";
 import { createChatHistoryStore } from "./chat_storage.js?v=20260822.1";
 import { createCallController } from "./call.js?v=20260810.1";
-import { createSoloPanel } from "./solo.js?v=20260807.2";
-import { formatTokenUsage, normalizeTokenUsage, readOpenAiStream } from "./openai_stream.js?v=20260810.1";
-import { createStreamUpdateCoordinator } from "./stream_updates.js?v=20260812.1";
+import { createSoloPanel } from "./solo.js?v=20260823.1";
+import { formatTokenUsage, normalizeTokenUsage } from "./openai_stream.js?v=20260810.1";
 import {
   MAX_CHAT_IMPORT_BYTES,
   mergeChatMessages,
@@ -876,11 +875,7 @@ async function sendMessage() {
 
 async function generateAssistantReply() {
   const requestStartedAt = Date.now();
-  let lastReasoningAt = 0;
-  let firstContentAt = 0;
   let replySucceeded = false;
-  let streamStarted = false;
-  let streamResponse = null;
   const assistantMessage = {
     id: crypto.randomUUID(),
     role: "assistant",
@@ -903,13 +898,6 @@ async function generateAssistantReply() {
     return;
   }
   appendMessageToView(state.messages.length - 1, true);
-  const streamUpdates = createStreamUpdateCoordinator({
-    onRender: (message) => renderMessageInPlace(message, {
-      streaming: Boolean(message.pending),
-      followIfNearBottom: true
-    }),
-    onPersist: saveMessages
-  });
 
   try {
     const response = await platform.request(apiUrl("/v1/chat/completions"), {
@@ -920,70 +908,25 @@ async function generateAssistantReply() {
         messages: buildRequestMessages(),
         temperature: state.settings.temperature,
         include_reasoning: true,
-        stream_options: { include_usage: true },
-        stream: true
+        stream: false
       })
     });
-    streamResponse = response;
-
+    const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.error?.message || error.message || `请求失败：${response.status}`);
+      throw new Error(data.error?.message || data.message || `请求失败：${response.status}`);
     }
 
     updateSystemPromptInjectionStatus(response);
     assistantMessage.recall = await captureCurrentRecallSnapshot(response);
-
-    if (!response.body) {
-      throw new Error("后端没有返回流式内容。");
-    }
-
-    streamStarted = true;
-    await readOpenAiStream(response.body, ({
-      content,
-      reasoning,
-      model,
-      usage,
-      streamWarning,
-      streamControl,
-      toolStatus
-    }) => {
-      const deltaAt = Date.now();
-      if (streamControl?.resetContent) {
-        assistantMessage.content = "";
-      }
-      if (streamControl?.resetReasoning) {
-        assistantMessage.reasoning = "";
-        assistantMessage.reasoningSource = "";
-      }
-      if (reasoning) {
-        lastReasoningAt = deltaAt;
-      }
-      if (content && !firstContentAt) {
-        firstContentAt = deltaAt;
-      }
-      assistantMessage.content += content;
-      assistantMessage.reasoningSource += reasoning;
-      assistantMessage.model = model || assistantMessage.model;
-      assistantMessage.usage = usage || assistantMessage.usage;
-      if (toolStatus) {
-        applyAssistantToolStatus(assistantMessage, toolStatus);
-      }
-      if (streamWarning) {
-        assistantMessage.streamInterrupted = true;
-        assistantMessage.streamError = streamWarning.message;
-        assistantMessage.streamId = streamWarning.streamId
-          || response.headers.get("x-ombre-stream-id")
-          || "";
-      }
-      streamUpdates.schedule(assistantMessage);
-    });
-
+    const choice = Array.isArray(data.choices) ? data.choices[0] : null;
+    const reply = choice?.message && typeof choice.message === "object" ? choice.message : {};
+    assistantMessage.content = openAiMessageText(reply.content);
+    assistantMessage.reasoningSource = String(reply.reasoning_content || reply.reasoning || "");
+    assistantMessage.model = String(data.model || assistantMessage.model);
+    assistantMessage.usage = data.usage || null;
     assistantMessage.pending = false;
     if (!assistantMessage.content.trim()) {
-      assistantMessage.content = assistantMessage.streamInterrupted
-        ? "这次回复在传输途中断开了，请点“重新生成”再试一次。"
-        : "我这边没有收到有效回复。";
+      assistantMessage.content = "我这边没有收到有效回复。";
     } else {
       replySucceeded = true;
       assistantMessage.reasoningPresentationPending = Boolean(
@@ -992,30 +935,14 @@ async function generateAssistantReply() {
     }
   } catch (error) {
     assistantMessage.pending = false;
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    if (streamStarted) {
-      const partialReceived = Boolean(assistantMessage.content.trim());
-      assistantMessage.streamInterrupted = true;
-      assistantMessage.streamError = errorMessage;
-      assistantMessage.streamId = streamResponse?.headers?.get("x-ombre-stream-id") || "";
-      if (partialReceived) {
-        replySucceeded = true;
-        assistantMessage.reasoningPresentationPending = Boolean(
-          assistantMessage.reasoningSource.trim()
-        );
-      } else {
-        assistantMessage.content = errorMessage;
-      }
-    } else {
-      assistantMessage.content = errorMessage;
-    }
+    assistantMessage.content = error instanceof Error ? error.message : String(error);
     assistantMessage.reasoning = assistantMessage.reasoningSource;
   } finally {
     if (assistantMessage.reasoningSource.trim()) {
-      const reasoningFinishedAt = Math.max(lastReasoningAt, firstContentAt || Date.now());
-      assistantMessage.reasoningDurationMs = Math.max(0, reasoningFinishedAt - requestStartedAt);
+      assistantMessage.reasoningDurationMs = Math.max(0, Date.now() - requestStartedAt);
     }
-    streamUpdates.flush(assistantMessage);
+    await saveMessages();
+    renderMessageInPlace(assistantMessage, { followIfNearBottom: true });
     try {
       if (replySucceeded) {
         await maybeAppraiseConversationEmotion();
@@ -1026,6 +953,20 @@ async function generateAssistantReply() {
       setBusy(false);
     }
   }
+}
+
+function openAiMessageText(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return content == null ? "" : String(content);
+  }
+  return content.map((part) => {
+    if (typeof part === "string") return part;
+    if (!part || typeof part !== "object") return "";
+    return typeof part.text === "string" ? part.text : "";
+  }).join("\n");
 }
 
 async function regenerateAssistantMessage(messageId) {
@@ -1634,7 +1575,7 @@ function buildGatewayHeaders() {
   return {
     ...buildAuthHeaders(),
     "Content-Type": "application/json",
-    "Accept": "text/event-stream",
+    "Accept": "application/json",
     "X-Ombre-Session-Id": state.sessionId,
     "X-Ombre-Client-Timezone": currentTimeZone()
   };

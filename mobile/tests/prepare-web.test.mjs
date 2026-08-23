@@ -15,6 +15,7 @@ test("prepared frontend contains the web app and platform adapters", async () =>
   const chatTransfer = await readFile(path.join(outputDir, "chat_transfer.js"), "utf8");
   const chatStorage = await readFile(path.join(outputDir, "chat_storage.js"), "utf8");
   const solo = await readFile(path.join(outputDir, "solo.js"), "utf8");
+  const styles = await readFile(path.join(outputDir, "styles.css"), "utf8");
   assert.match(index, /<head(?:\s|>)/i);
   assert.match(index, /id="soloEmotionChart"/);
   assert.match(index, /id="soloActivityTrack"/);
@@ -26,6 +27,7 @@ test("prepared frontend contains the web app and platform adapters", async () =>
   assert.doesNotMatch(index, /(?:href|src)="\/frontend\//);
   assert.match(solo, /requestTimeline/);
   assert.match(solo, /conversation: "因为我和她"/);
+  assert.match(solo, /strongestEmotionLabel\(data\.buckets\)/);
   assert.match(app, /ombre_context_kind: "conversation_summary"/);
   assert.match(app, /网关已保存 · 本轮已注入/);
   assert.match(app, /event\.key === "Enter" && event\.ctrlKey/);
@@ -36,6 +38,9 @@ test("prepared frontend contains the web app and platform adapters", async () =>
   assert.match(app, /createChatHistoryStore/);
   assert.match(app, /promptCacheContext: normalizePromptCacheContext/);
   assert.match(app, /promptCache \? \{ promptCache \} : \{\}/);
+  assert.match(app, /stream:\s*false/);
+  assert.match(app, /"Accept": "application\/json"/);
+  assert.doesNotMatch(app, /stream_options:\s*\{\s*include_usage:\s*true\s*\}/);
   assert.match(chatStorage, /entangle-chat-history/);
   assert.match(app, /url\("background\.svg"\)/);
   assert.doesNotMatch(app, /url\("\/frontend\//);
@@ -46,6 +51,9 @@ test("prepared frontend contains the web app and platform adapters", async () =>
   assert.match(app, /\/api\/solo\/messages/);
   assert.match(app, /\/api\/solo\/outbox\/ack/);
   assert.doesNotMatch(app, /\[Ombre 消息信息\]/);
+  assert.match(styles, /--water-glass-surface/);
+  assert.match(styles, /\.bottom-tabs\s*\{[\s\S]*?width:\s*100%/);
+  assert.match(styles, /\.message\.user \.message-content\s*\{[\s\S]*?-webkit-backdrop-filter/);
   assert.equal((await stat(path.join(outputDir, "app.js"))).isFile(), true);
   assert.equal((await stat(path.join(outputDir, "solo.js"))).isFile(), true);
   assert.equal((await stat(path.join(outputDir, "platform.js"))).isFile(), true);

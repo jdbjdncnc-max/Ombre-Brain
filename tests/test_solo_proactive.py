@@ -126,6 +126,29 @@ class ProactiveServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(emotion["budget"]["llmCalls"], 1)
         self.assertEqual(emotion["budget"]["proactive"], 2)
 
+    async def test_ack_retention_follows_recent_message_order(self):
+        self.service.solo_dir.mkdir(parents=True, exist_ok=True)
+        ids = [f"proactive_b{index:04d}" for index in range(1000)]
+        ids[-1] = "proactive_aaaa"
+        for index, item_id in enumerate(ids):
+            self.service._append_jsonl(self.service.proactive_path, {
+                "id": item_id,
+                "ts": (self.now + timedelta(seconds=index)).isoformat(),
+                "text": item_id,
+            })
+        for start in range(0, len(ids), 100):
+            await self.service.ack_proactive_outbox(ids[start:start + 100])
+
+        newest_id = "proactive_zzzz"
+        self.service._append_jsonl(self.service.proactive_path, {
+            "id": newest_id,
+            "ts": (self.now + timedelta(seconds=1001)).isoformat(),
+            "text": newest_id,
+        })
+        await self.service.ack_proactive_outbox([newest_id])
+
+        self.assertEqual(await self.service.get_proactive_outbox(limit=50), [])
+
     async def test_daily_cost_budget_removes_model_action_without_limiting_other_actions(self):
         self.service.daily_llm_budget = 1
         self.service.solo_dir.mkdir(parents=True, exist_ok=True)

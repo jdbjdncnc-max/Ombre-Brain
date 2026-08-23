@@ -91,11 +91,12 @@ export function createSoloPanel({ requestState, requestTimeline, onClose }) {
     const mode = data.mode?.label || "安静待着";
     const drive = data.drive?.label || "好奇";
     const mood = data.moodLine || "安静待着";
+    const strongestMood = strongestEmotionLabel(data.buckets) || mood;
     els.mode.textContent = mode;
     els.drive.textContent = drive;
     els.mood.textContent = mood;
     els.updated.textContent = formatUpdatedAt(data.updatedAt);
-    els.homeMood.textContent = `现在的心情：${mood}`;
+    els.homeMood.textContent = `现在的心情：${strongestMood}`;
     els.homeMode.textContent = `当前模式：${mode}`;
     renderBuckets(data.buckets);
     renderTimeline(timeline);
@@ -451,6 +452,15 @@ function normalizeState(payload) {
     moodLine: String(source.moodLine || "安静待着"),
     buckets: Array.isArray(source.buckets) ? source.buckets : []
   };
+}
+
+function strongestEmotionLabel(buckets) {
+  const strongest = (Array.isArray(buckets) ? buckets : [])
+    .filter((bucket) => bucket && typeof bucket === "object")
+    .reduce((current, bucket) => (
+      !current || clampNumber(bucket.value) > clampNumber(current.value) ? bucket : current
+    ), null);
+  return strongest ? String(strongest.label || strongest.key || "").trim() : "";
 }
 
 function normalizeTimeline(payload) {

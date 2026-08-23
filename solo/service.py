@@ -394,14 +394,17 @@ class SoloService:
             if self._context_text(value, 100)
         }
         async with self._state_lock:
-            known = {
+            known_ids = [
                 str(item.get("id") or "")
                 for item in self._read_jsonl(self.proactive_path, limit=1000)
-            }
+                if str(item.get("id") or "")
+            ]
+            known = set(known_ids)
             accepted = sorted(clean_ids & known)
             acked = self._proactive_ack_ids()
             acked.update(accepted)
-            self._write_json(self.proactive_acks_path, {"ids": sorted(acked)[-1000:]})
+            retained = [item_id for item_id in known_ids if item_id in acked]
+            self._write_json(self.proactive_acks_path, {"ids": retained[-1000:]})
             return {"ok": True, "acked": accepted}
 
     def model_context_text(

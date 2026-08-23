@@ -30,6 +30,8 @@ test("Android uses a native background worker for proactive notifications", asyn
 
   assert.match(worker, /PeriodicWorkRequest/);
   assert.match(worker, /PERIODIC_MINUTES = 15L/);
+  assert.doesNotMatch(worker, /setRequiredNetworkType/);
+  assert.doesNotMatch(worker, /NetworkType\.CONNECTED/);
   assert.match(worker, /\/api\/solo\/outbox\?limit=50/);
   assert.match(worker, /\/api\/solo\/outbox\/ack/);
   assert.match(worker, /JSONObject newestItem = null/);

@@ -14,10 +14,8 @@ import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
-import androidx.work.Constraints;
 import androidx.work.ExistingPeriodicWorkPolicy;
 import androidx.work.ExistingWorkPolicy;
-import androidx.work.NetworkType;
 import androidx.work.OneTimeWorkRequest;
 import androidx.work.PeriodicWorkRequest;
 import androidx.work.WorkManager;
@@ -150,14 +148,11 @@ public class ProactiveNotificationWorker extends Worker {
     }
 
     public static void schedule(Context context, boolean runNow) {
-        Constraints constraints = new Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .build();
         PeriodicWorkRequest periodic = new PeriodicWorkRequest.Builder(
             ProactiveNotificationWorker.class,
             PERIODIC_MINUTES,
             TimeUnit.MINUTES
-        ).setConstraints(constraints).build();
+        ).build();
         WorkManager manager = WorkManager.getInstance(context.getApplicationContext());
         manager.enqueueUniquePeriodicWork(
             PERIODIC_WORK_NAME,
@@ -166,7 +161,6 @@ public class ProactiveNotificationWorker extends Worker {
         );
         if (runNow) {
             OneTimeWorkRequest immediate = new OneTimeWorkRequest.Builder(ProactiveNotificationWorker.class)
-                .setConstraints(constraints)
                 .build();
             manager.enqueueUniqueWork(IMMEDIATE_WORK_NAME, ExistingWorkPolicy.REPLACE, immediate);
         }
