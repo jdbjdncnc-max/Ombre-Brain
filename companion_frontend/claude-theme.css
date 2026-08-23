@@ -1,0 +1,951 @@
+@import url("https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap");
+
+/* ==========================================================================
+   claude-theme.css — Ombre 前端视觉覆盖层（挂在最新版 styles.css 之后）
+   只做视觉：不改结构、不改 id/class/data-*、不改事件。
+   配套脚本 assets/claude-ui/claude-ui.js 只做 DOM 组织（分类 / 折叠 / 图标）。
+   水玻璃做法参考 kevinbism/liquid-glass-effect（MIT）：低模糊 + 高饱和 +
+   亮边 + 内高光 + ::after 高光棱边，而不是大面积磨白。
+   ========================================================================== */
+
+:root {
+  /* 字体：英文手写体（近 Segoe Script） + 中文衬线体 */
+  --ct-font: "Segoe Script", "Bradley Hand", "Kalam", "Noto Serif CJK SC",
+    "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", "SimSun",
+    cursive, serif;
+  --ct-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Consolas, monospace;
+
+  /* ---- 水玻璃 ---- */
+  --ct-blur: blur(7px) saturate(180%);
+  --ct-blur-sm: blur(4px) saturate(160%);
+  --ct-glass: rgba(255, 255, 255, 0.16);
+  --ct-glass-2: rgba(255, 255, 255, 0.24);
+  --ct-hair: rgba(255, 255, 255, 0.78);
+  --ct-inner: inset 0 4px 20px rgba(255, 255, 255, 0.32);
+  --ct-lift: 0 8px 32px rgba(20, 42, 48, 0.16);
+  --ct-lift-lg: 0 18px 48px rgba(20, 42, 48, 0.26);
+  --ct-r: 22px;
+  --ct-r-sm: 15px;
+
+  /* 键盘高度（claude-ui.js 写入），用于把底部 tag 栏钉在物理底部 */
+  --ct-kb: 0px;
+}
+
+/* ---------- 1. 字体 ---------------------------------------------------- */
+
+body,
+body * {
+  font-family: var(--ct-font);
+}
+
+body code,
+body pre,
+body pre code,
+body kbd,
+body samp,
+#mcpImportText,
+.mcp-import-card textarea,
+.prompt-file-row code,
+.message-content code,
+.message-content pre,
+.message-reasoning-content code {
+  font-family: var(--ct-mono);
+}
+
+body .katex,
+body .katex * {
+  font-family: KaTeX_Main, KaTeX_Math, "Times New Roman", serif;
+}
+
+body {
+  letter-spacing: 0.012em;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4,
+.home-card-copy strong,
+.identity-summary strong,
+.tab-button,
+.segment-button,
+.primary-button,
+.secondary-button,
+.small-button {
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+
+h1 {
+  font-size: 26px;
+}
+
+.message-content,
+.message-user-body .message-content {
+  font-size: 16px;
+  line-height: 1.72;
+  text-wrap: pretty;
+}
+
+.tab-button {
+  font-size: 13px;
+}
+
+.clock,
+.top-bar {
+  letter-spacing: 0.04em;
+}
+
+/* ---------- 2. 背景：滑块越大越白 ------------------------------------- */
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: #fbfdfc;
+  opacity: calc(1 - var(--background-image-opacity, 0.65));
+}
+
+.app-shell {
+  z-index: 1;
+}
+
+/* ---------- 3. 水玻璃：容器 ------------------------------------------- */
+
+.phone-shell {
+  border-color: rgba(255, 255, 255, 0.66);
+  box-shadow: 0 30px 90px rgba(6, 26, 28, 0.26);
+}
+
+.field,
+.home-card,
+.identity-card,
+.schedule-section,
+.toolbox-strip,
+.solo-mood-card,
+.solo-next-card,
+.solo-timeline-card,
+.mcp-import-card,
+.mcp-server-card,
+.recall-dialog,
+.composer,
+.composer-menu,
+.bottom-tabs,
+.segment-control,
+.memory-search,
+.metric,
+.prompt-file-row,
+.ct-cat-item,
+.ct-mcp-switch,
+.ct-loader {
+  position: relative;
+  isolation: isolate;
+  border: 1px solid var(--ct-hair);
+  border-radius: var(--ct-r);
+  background-color: var(--ct-glass);
+  background-image: none;
+  box-shadow: var(--ct-lift), var(--ct-inner);
+  -webkit-backdrop-filter: var(--ct-blur);
+  backdrop-filter: var(--ct-blur);
+}
+
+/* 高光棱边：玻璃厚度带来的那一圈折射白线 */
+.field::after,
+.home-card::after,
+.identity-card::after,
+.schedule-section::after,
+.toolbox-strip::after,
+.solo-mood-card::after,
+.solo-timeline-card::after,
+.mcp-import-card::after,
+.mcp-server-card::after,
+.recall-dialog::after,
+.composer::after,
+.composer-menu::after,
+.bottom-tabs::after,
+.segment-control::after,
+.memory-search::after,
+.metric::after,
+.prompt-file-row::after,
+.ct-cat-item::after,
+.ct-mcp-switch::after,
+.ct-loader::after,
+.message.user .message-content::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset -10px -8px 0 -11px rgba(255, 255, 255, 0.9),
+    inset 0 -9px 0 -8px rgba(255, 255, 255, 0.9);
+  filter: blur(1px) drop-shadow(6px 3px 5px rgba(11, 32, 36, 0.35))
+    brightness(112%);
+  opacity: 0.62;
+  pointer-events: none;
+}
+
+.field,
+.schedule-section,
+.solo-mood-card,
+.solo-timeline-card,
+.mcp-import-card,
+.mcp-server-card {
+  padding: 16px;
+}
+
+.home-card,
+.identity-card,
+.metric,
+.prompt-file-row,
+.memory-search,
+.segment-control {
+  border-radius: var(--ct-r-sm);
+  box-shadow: 0 6px 22px rgba(20, 42, 48, 0.14), var(--ct-inner);
+}
+
+.recall-dialog {
+  border-radius: 26px;
+  background-color: rgba(255, 255, 255, 0.3);
+  box-shadow: var(--ct-lift-lg), var(--ct-inner);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  backdrop-filter: blur(16px) saturate(180%);
+}
+
+/* 长文本容器稍微加一点底色，保证读得清 */
+.solo-timeline-card,
+.schedule-section,
+.mcp-import-card,
+.recall-dialog {
+  background-color: rgba(255, 255, 255, 0.22);
+}
+
+/* ---------- 4. 水玻璃：控件 ------------------------------------------- */
+
+.field input:not([type="range"]):not([type="color"]),
+.field textarea,
+.field select,
+.memory-search input,
+.mcp-import-card textarea,
+.mcp-import-card input,
+.compact-field input,
+.course-import,
+#userProfileText,
+#aiProfileText {
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: var(--ct-r-sm);
+  background-color: rgba(255, 255, 255, 0.26);
+  background-image: none;
+  box-shadow: inset 0 2px 10px rgba(255, 255, 255, 0.34),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.3);
+  -webkit-backdrop-filter: var(--ct-blur-sm);
+  backdrop-filter: var(--ct-blur-sm);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.field input:focus,
+.field textarea:focus,
+.field select:focus,
+.memory-search input:focus,
+.mcp-import-card textarea:focus,
+.course-import:focus,
+#userProfileText:focus,
+#aiProfileText:focus {
+  outline: 0;
+  border-color: color-mix(in srgb, var(--accent) 58%, white);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent),
+    inset 0 2px 10px rgba(255, 255, 255, 0.34);
+}
+
+.field input[type="color"] {
+  width: 46px;
+  height: 40px;
+  border: 1px solid var(--ct-hair);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.28);
+  box-shadow: var(--ct-inner);
+}
+
+.primary-button,
+.secondary-button,
+.small-button,
+.text-button,
+.small-icon-button,
+.icon-button {
+  border-radius: 999px;
+  transition: transform 140ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.primary-button {
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, white);
+  background-color: color-mix(in srgb, var(--accent) 82%, white);
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.34),
+    rgba(255, 255, 255, 0)
+  );
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 30%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.secondary-button,
+.small-button {
+  border: 1px solid var(--ct-hair);
+  background-color: rgba(255, 255, 255, 0.18);
+  background-image: none;
+  box-shadow: 0 5px 16px rgba(20, 42, 48, 0.12),
+    inset 0 3px 12px rgba(255, 255, 255, 0.3);
+  -webkit-backdrop-filter: var(--ct-blur-sm);
+  backdrop-filter: var(--ct-blur-sm);
+}
+
+.primary-button:active,
+.secondary-button:active,
+.small-button:active,
+.home-card:active {
+  transform: scale(0.975);
+}
+
+.icon-button,
+.small-icon-button {
+  border: 1px solid rgba(255, 255, 255, 0.66);
+  background-color: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 3px 12px rgba(255, 255, 255, 0.28);
+  -webkit-backdrop-filter: var(--ct-blur-sm);
+  backdrop-filter: var(--ct-blur-sm);
+}
+
+.segment-control {
+  padding: 4px;
+  border-radius: 999px;
+}
+
+.segment-button {
+  border-radius: 999px;
+}
+
+.segment-active {
+  background-color: rgba(255, 255, 255, 0.62);
+  box-shadow: 0 4px 12px rgba(20, 42, 48, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+/* ---------- 5. 输入框（composer） ------------------------------------- */
+
+.composer {
+  border-radius: 26px;
+  background-color: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 12px 34px rgba(20, 42, 48, 0.2), var(--ct-inner);
+}
+
+.composer textarea {
+  font-size: 16px;
+}
+
+.send-button {
+  border-radius: 999px;
+}
+
+.composer-add-button {
+  border: 1px solid rgba(255, 255, 255, 0.66);
+  background-color: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 3px 12px rgba(255, 255, 255, 0.28);
+}
+
+.composer-menu {
+  border-radius: 20px;
+  background-color: rgba(255, 255, 255, 0.4);
+  box-shadow: var(--ct-lift-lg), var(--ct-inner);
+  -webkit-backdrop-filter: blur(14px) saturate(180%);
+  backdrop-filter: blur(14px) saturate(180%);
+}
+
+.composer-menu button {
+  border-radius: 14px;
+}
+
+/* ---------- 6. 用户气泡：磨砂玻璃 + 主题色 ---------------------------- */
+
+.message.user .message-content {
+  position: relative;
+  isolation: isolate;
+  color: color-mix(in srgb, var(--accent) 30%, #0c1a19);
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, rgba(255, 255, 255, 0.8));
+  border-radius: 22px 22px 8px 22px;
+  background-color: color-mix(in srgb, var(--accent) 16%, rgba(255, 255, 255, 0.2));
+  background-image: none;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 20%, transparent),
+    inset 0 3px 16px rgba(255, 255, 255, 0.34);
+  -webkit-backdrop-filter: blur(10px) saturate(190%);
+  backdrop-filter: blur(10px) saturate(190%);
+  padding: 11px 15px;
+}
+
+.message-avatar {
+  border-radius: 50%;
+  box-shadow: 0 6px 16px rgba(15, 74, 76, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.message-reasoning,
+.message-tools {
+  border-radius: var(--ct-r-sm);
+  border-color: rgba(255, 255, 255, 0.68);
+  background-color: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 3px 14px rgba(255, 255, 255, 0.28);
+  -webkit-backdrop-filter: var(--ct-blur-sm);
+  backdrop-filter: var(--ct-blur-sm);
+}
+
+/* 消息操作按钮（复制 / 编辑 / 重新生成 / 召回）始终可见 */
+.message-actions {
+  opacity: 1;
+}
+
+.message-actions button:disabled {
+  opacity: 0.55;
+}
+
+/* ---------- 7. 底部 tag 栏固定，不随键盘上浮 -------------------------- */
+
+.bottom-tabs {
+  margin: 0 10px calc(max(10px, env(safe-area-inset-bottom)) - var(--ct-kb));
+  transform: translateY(var(--ct-kb));
+  border-radius: 26px;
+  background-color: rgba(255, 255, 255, 0.22);
+  box-shadow: 0 12px 30px rgba(12, 46, 43, 0.2), var(--ct-inner);
+  transition: transform 180ms ease, margin-bottom 180ms ease;
+  will-change: transform;
+}
+
+.tab-button {
+  border-radius: 18px;
+}
+
+.tab-active {
+  background-color: rgba(255, 255, 255, 0.5);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.home-tab-icon {
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.36),
+    rgba(255, 255, 255, 0)
+  );
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 36%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+/* ---------- 8. 去掉各页顶部的 记忆 / 日程 / 设置 / Companion ---------- */
+
+.chat-header .eyebrow,
+.memory-header .eyebrow,
+.schedule-header .eyebrow,
+.settings-header .eyebrow,
+.memory-header h1,
+.schedule-header h1,
+.settings-header h1 {
+  display: none;
+}
+
+.chat-header {
+  min-height: 0;
+  padding: 0;
+}
+
+.memory-header,
+.schedule-header {
+  min-height: 0;
+  justify-content: flex-end;
+  padding: 2px 0 6px;
+}
+
+.settings-header {
+  display: none;
+}
+
+.settings-list {
+  padding-top: 14px;
+}
+
+/* ---------- 9. 工具页：只留 MCP ---------------------------------------- */
+
+#toolsView {
+  overflow-y: auto;
+}
+
+.toolbox-actions [data-tool-page="packages"],
+.toolbox-actions [data-tool-page="workflows"],
+.tool-management-grid,
+#toolsIntro {
+  display: none;
+}
+
+.tools-header {
+  padding-bottom: 4px;
+}
+
+.tools-header .eyebrow {
+  display: none;
+}
+
+.mcp-manager {
+  display: grid;
+  gap: 12px;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.mcp-manager-heading .eyebrow {
+  display: none;
+}
+
+/* claude-ui.js 注入的分段控制：导入 / 已有服务 */
+.ct-mcp-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+}
+
+.ct-mcp-switch button {
+  min-height: 40px;
+  border: 0;
+  border-radius: 999px;
+  color: rgba(23, 33, 31, 0.6);
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.ct-mcp-switch button[aria-selected="true"] {
+  color: var(--accent-ink);
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: 0 4px 12px rgba(20, 42, 48, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.mcp-manager.ct-mcp-import #mcpServerList,
+.mcp-manager.ct-mcp-list #mcpImportForm {
+  display: none;
+}
+
+.mcp-import-card {
+  gap: 12px;
+}
+
+.mcp-import-card > label {
+  font-size: 14px;
+}
+
+.mcp-import-footer {
+  display: grid;
+  gap: 10px;
+}
+
+.mcp-import-footer .primary-button {
+  justify-self: stretch;
+}
+
+.mcp-import-footer small {
+  order: 2;
+  color: rgba(23, 33, 31, 0.5);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.mcp-server-card {
+  border-radius: var(--ct-r);
+}
+
+.mcp-manager-heading {
+  align-items: center;
+}
+
+.mcp-manager-actions {
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.mcp-manager-actions .small-button {
+  padding: 8px 15px;
+  white-space: nowrap;
+}
+
+.mcp-global-status {
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+/* ---------- 10. 设置页：先分类，再进入 -------------------------------- */
+
+.ct-cat-list {
+  display: grid;
+  gap: 10px;
+}
+
+.ct-cat-item {
+  display: grid;
+  grid-template-columns: 42px 1fr 18px;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 140ms ease;
+}
+
+.ct-cat-item:active {
+  transform: scale(0.985);
+}
+
+.ct-cat-icon {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  color: white;
+  background-color: color-mix(in srgb, var(--accent) 78%, white);
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.34),
+    rgba(255, 255, 255, 0)
+  );
+  box-shadow: 0 6px 14px color-mix(in srgb, var(--accent) 30%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.ct-cat-icon svg {
+  width: 21px;
+  height: 21px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ct-cat-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.ct-cat-copy strong {
+  color: rgba(17, 28, 27, 0.9);
+  font-size: 17px;
+  font-weight: 400;
+}
+
+.ct-cat-copy small {
+  color: rgba(23, 33, 31, 0.52);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.ct-cat-chevron {
+  color: rgba(23, 33, 31, 0.3);
+}
+
+.ct-cat-chevron svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ct-group {
+  display: grid;
+  gap: 12px;
+}
+
+.ct-group[hidden],
+.ct-cat-list[hidden] {
+  display: none;
+}
+
+.ct-group-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 -2px;
+  padding: 6px 2px 8px;
+  background: linear-gradient(
+    180deg,
+    rgba(251, 253, 252, 0.8) 0%,
+    rgba(251, 253, 252, 0.5) 70%,
+    rgba(251, 253, 252, 0) 100%
+  );
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+.ct-back {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.66);
+  border-radius: 999px;
+  color: rgba(17, 28, 27, 0.7);
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 3px 12px rgba(255, 255, 255, 0.28);
+  cursor: pointer;
+  -webkit-backdrop-filter: var(--ct-blur-sm);
+  backdrop-filter: var(--ct-blur-sm);
+}
+
+.ct-back svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ct-group-bar strong {
+  flex: 1;
+  color: rgba(17, 28, 27, 0.88);
+  font-size: 20px;
+  font-weight: 400;
+}
+
+.ct-save-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0 8px;
+}
+
+.ct-save-row .ct-save {
+  flex: 1;
+}
+
+.ct-save-hint {
+  color: rgba(23, 33, 31, 0.5);
+  font-size: 11px;
+  text-align: right;
+}
+
+.ct-save-hint.is-ok {
+  color: color-mix(in srgb, var(--accent) 74%, #2c4a46);
+}
+
+/* 主题色：色号输入 + 预设 */
+.ct-accent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ct-accent-hex {
+  width: 120px;
+  flex: 0 0 auto;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: var(--ct-r-sm);
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.26);
+  font-family: var(--ct-mono);
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ct-accent-hex:focus {
+  outline: 0;
+  border-color: color-mix(in srgb, var(--accent) 58%, white);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.ct-swatches {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ct-swatch {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 4px 10px rgba(20, 42, 48, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.ct-swatch[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9),
+    0 0 0 4px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* ---------- 11. 缓存信息收进按钮 -------------------------------------- */
+
+.message-usage {
+  display: none;
+}
+
+.ct-usage-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ct-usage-btn[aria-expanded="true"] {
+  color: var(--accent);
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.ct-usage-pop {
+  margin: 4px 0 0;
+  padding: 7px 11px;
+  border: 1px solid var(--ct-hair);
+  border-radius: 12px;
+  color: rgba(17, 28, 27, 0.66);
+  background-color: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 6px 18px rgba(20, 42, 48, 0.12),
+    inset 0 3px 12px rgba(255, 255, 255, 0.3);
+  -webkit-backdrop-filter: var(--ct-blur-sm);
+  backdrop-filter: var(--ct-blur-sm);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ct-usage-pop[hidden] {
+  display: none;
+}
+
+.ct-usage-pop .message-usage {
+  display: block;
+  color: inherit;
+  font-size: inherit;
+}
+
+/* ---------- 12. 加载动画：被不断描绘的无限符号 ---------------------- */
+
+.message.assistant.pending .message-content::after {
+  display: none;
+}
+
+.ct-loader {
+  position: absolute;
+  left: 8px;
+  bottom: calc(100% + 8px);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px 7px 11px;
+  border-radius: 999px;
+  color: rgba(23, 33, 31, 0.62);
+  font-size: 12px;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+  transition: opacity 200ms ease, transform 200ms ease;
+}
+
+.ct-loader.is-active {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.ct-infinity {
+  width: 46px;
+  height: 26px;
+  display: block;
+  overflow: visible;
+}
+
+.ct-infinity path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ct-infinity .ct-inf-ghost {
+  stroke: color-mix(in srgb, var(--accent) 16%, transparent);
+  stroke-width: 2.2;
+}
+
+.ct-infinity .ct-inf-draw {
+  stroke-dasharray: 62 138;
+  animation: ct-draw 2.6s linear infinite;
+}
+
+@keyframes ct-draw {
+  from {
+    stroke-dashoffset: 200;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ct-infinity .ct-inf-draw {
+    animation-duration: 5s;
+  }
+}
+
+/* ---------- 13. 其它零碎打磨 ------------------------------------------ */
+
+.server-status {
+  border-radius: 999px;
+  border-color: rgba(255, 255, 255, 0.66);
+  background-color: rgba(255, 255, 255, 0.16);
+  -webkit-backdrop-filter: var(--ct-blur-sm);
+  backdrop-filter: var(--ct-blur-sm);
+}
+
+.item-list > * {
+  border-radius: var(--ct-r-sm);
+}
+
+.empty-state,
+.empty-inline {
+  font-size: 17px;
+  letter-spacing: 0.03em;
+}
+
+.recall-modal {
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, white);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
