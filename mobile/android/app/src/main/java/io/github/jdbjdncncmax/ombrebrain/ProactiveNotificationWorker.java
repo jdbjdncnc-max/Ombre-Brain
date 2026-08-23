@@ -148,6 +148,7 @@ public class ProactiveNotificationWorker extends Worker {
     }
 
     public static void schedule(Context context, boolean runNow) {
+        createNotificationChannel(context);
         PeriodicWorkRequest periodic = new PeriodicWorkRequest.Builder(
             ProactiveNotificationWorker.class,
             PERIODIC_MINUTES,
@@ -208,7 +209,7 @@ public class ProactiveNotificationWorker extends Worker {
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT);
         if (notificationGranted(context)) {
-            NotificationManagerCompat.from(context).notify(Math.abs(id.hashCode()), builder.build());
+            NotificationManagerCompat.from(context).notify(id, 0, builder.build());
         }
     }
 

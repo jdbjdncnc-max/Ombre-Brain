@@ -358,11 +358,19 @@ class FirebaseCallPush:
                 try:
                     message = self._messaging.Message(
                         data=data,
+                        notification=self._messaging.Notification(
+                            title=data["title"],
+                            body=data["text"],
+                        ),
                         token=token,
                         android=self._messaging.AndroidConfig(
                             priority="high",
                             ttl=timedelta(days=1),
                             collapse_key=f"ombre_proactive_{data['id']}",
+                            notification=self._messaging.AndroidNotification(
+                                channel_id="ombre_proactive_messages",
+                                tag=data["id"],
+                            ),
                         ),
                     )
                     self._messaging.send(message, app=self._app)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from call_delivery import CallDeliveryStore, FirebaseCallPush
 
@@ -51,3 +52,46 @@ def test_firebase_wrapper_fails_closed_without_credentials(monkeypatch):
     assert proactive["sent"] == 0
     assert proactive["failed"] == 1
     assert proactive["error"] == "Firebase service account is not configured"
+
+
+def test_proactive_push_includes_system_notification_for_restricted_android_apps(monkeypatch):
+    sent_messages = []
+
+    class FakeMessaging:
+        @staticmethod
+        def Notification(**kwargs):
+            return SimpleNamespace(**kwargs)
+
+        @staticmethod
+        def AndroidNotification(**kwargs):
+            return SimpleNamespace(**kwargs)
+
+        @staticmethod
+        def AndroidConfig(**kwargs):
+            return SimpleNamespace(**kwargs)
+
+        @staticmethod
+        def Message(**kwargs):
+            return SimpleNamespace(**kwargs)
+
+        @staticmethod
+        def send(message, *, app):
+            sent_messages.append((message, app))
+
+    push = FirebaseCallPush()
+    push._app = object()
+    push._messaging = FakeMessaging
+
+    result = push.send_proactive(
+        ["fcm_" + "z" * 80],
+        [{"id": "proactive_1", "title": "Zeta", "text": "后台消息"}],
+    )
+
+    assert result["sent"] == 1
+    message, app = sent_messages[0]
+    assert app is push._app
+    assert message.notification.title == "Zeta"
+    assert message.notification.body == "后台消息"
+    assert message.android.notification.channel_id == "ombre_proactive_messages"
+    assert message.android.notification.tag == "proactive_1"
+    assert message.data["kind"] == "ombre_proactive"

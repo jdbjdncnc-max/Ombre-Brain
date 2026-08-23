@@ -37,6 +37,8 @@ test("Android uses a native background worker for proactive notifications", asyn
   assert.match(worker, /JSONObject newestItem = null/);
   assert.doesNotMatch(worker, /delivered\.removeAll\(ackIds\)/);
   assert.match(worker, /NotificationManagerCompat/);
+  assert.match(worker, /notify\(id, 0, builder\.build\(\)\)/);
+  assert.match(worker, /schedule\(Context context, boolean runNow\) \{\s*createNotificationChannel\(context\)/);
   assert.match(plugin, /configureProactiveNotifications/);
   assert.match(plugin, /EntangleFirebaseMessagingService\.syncRegistration/);
   assert.match(plugin, /saveChatExport/);
