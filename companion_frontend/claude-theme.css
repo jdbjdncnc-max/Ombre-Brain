@@ -409,16 +409,21 @@ body::after {
   opacity: 0.55;
 }
 
-/* ---------- 7. 底部 tag 栏固定，不随键盘上浮 -------------------------- */
+/* ---------- 7. 底部 tag 栏贴边；键盘打开时留在键盘后面 ----------------- */
 
 .bottom-tabs {
-  margin: 0 10px calc(max(10px, env(safe-area-inset-bottom)) - var(--ct-kb));
-  transform: translateY(var(--ct-kb));
-  border-radius: 26px;
+  width: 100%;
+  margin: 0;
+  transform: none;
+  border-radius: 24px 24px 0 0;
   background-color: rgba(255, 255, 255, 0.22);
   box-shadow: 0 12px 30px rgba(12, 46, 43, 0.2), var(--ct-inner);
-  transition: transform 180ms ease, margin-bottom 180ms ease;
-  will-change: transform;
+  transition: none;
+  will-change: auto;
+}
+
+.ct-keyboard-open .bottom-tabs {
+  display: none;
 }
 
 .tab-button {
@@ -948,4 +953,3 @@ body::after {
 ::selection {
   background: color-mix(in srgb, var(--accent) 26%, transparent);
 }
-

@@ -25,28 +25,24 @@
     return node;
   }
 
-  /* ---------- 1. 键盘高度 → --ct-kb（底部 tag 栏保持固定） ---------- */
+  /* ---------- 1. 只记录键盘开关状态，不逐帧移动玻璃层 ---------- */
 
-  function keyboardWatch() {
+  function keyboardStateWatch() {
     var root = document.documentElement;
-    var base = window.innerHeight;
+    var baseHeight = window.innerHeight;
+    var lastOpen = false;
     var raf = 0;
 
-    function isTextField() {
-      var a = document.activeElement;
-      if (!a) return false;
-      if (a.isContentEditable) return true;
-      var t = (a.tagName || "").toLowerCase();
-      if (t === "textarea") return true;
-      if (t !== "input") return false;
-      return !/^(button|submit|checkbox|radio|file|range|color|reset|image)$/i.test(a.type || "text");
+    function isComposerFocused() {
+      return document.activeElement === document.querySelector("#messageInput");
     }
 
     function apply() {
       raf = 0;
-      var kb = isTextField() ? Math.max(0, base - window.innerHeight) : 0;
-      if (kb < 90) kb = 0; // 忽略地址栏收缩等小抖动
-      root.style.setProperty("--ct-kb", kb + "px");
+      var open = isComposerFocused() && baseHeight - window.innerHeight > 120;
+      if (open === lastOpen) return;
+      lastOpen = open;
+      root.classList.toggle("ct-keyboard-open", open);
     }
 
     function schedule() {
@@ -54,22 +50,13 @@
       raf = window.requestAnimationFrame(apply);
     }
 
-    window.addEventListener("resize", schedule);
+    window.addEventListener("resize", schedule, { passive: true });
     window.addEventListener("orientationchange", function () {
-      base = window.innerHeight;
+      baseHeight = window.innerHeight;
       schedule();
-    });
+    }, { passive: true });
     document.addEventListener("focusin", schedule, true);
-    document.addEventListener("focusout", function () {
-      window.setTimeout(function () {
-        if (!isTextField()) base = Math.max(base, window.innerHeight);
-        schedule();
-      }, 60);
-    }, true);
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener("resize", schedule);
-    }
-    apply();
+    document.addEventListener("focusout", schedule, true);
   }
 
   /* ---------- 2. 加载动画：被不断描绘的无限符号 ---------- */
@@ -437,7 +424,7 @@
   /* ---------- 启动 ---------- */
 
   function init() {
-    try { keyboardWatch(); } catch (e) {}
+    try { keyboardStateWatch(); } catch (e) {}
     try { watchMessages(); } catch (e) {}
     try { splitMcp(); } catch (e) {}
     try { categorizeSettings(); } catch (e) {}
@@ -450,4 +437,3 @@
     init();
   }
 })();
-

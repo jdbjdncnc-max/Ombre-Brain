@@ -43,3 +43,11 @@ def test_firebase_wrapper_fails_closed_without_credentials(monkeypatch):
     assert result["sent"] == 0
     assert result["failed"] == 1
     assert result["error"] == "Firebase service account is not configured"
+
+    proactive = push.send_proactive(
+        ["fcm_" + "y" * 80],
+        [{"id": "proactive_1", "title": "Zeta", "text": "后台消息"}],
+    )
+    assert proactive["sent"] == 0
+    assert proactive["failed"] == 1
+    assert proactive["error"] == "Firebase service account is not configured"

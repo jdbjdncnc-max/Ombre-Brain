@@ -48,7 +48,7 @@ public class EntangleFirebaseMessagingService extends FirebaseMessagingService {
         String text = clean(data.get("text"));
         String title = clean(data.get("title"));
         if (id.isEmpty() || text.isEmpty()) return;
-        ProactiveNotificationWorker.markDelivered(this, id);
+        if (!ProactiveNotificationWorker.markDeliveredIfNew(this, id)) return;
         ProactiveNotificationWorker.showNotification(
             this,
             title.isEmpty() ? "Entangle" : title,
@@ -120,6 +120,7 @@ public class EntangleFirebaseMessagingService extends FirebaseMessagingService {
                 } catch (Exception ignored) {}
                 body.put("appVersion", clean(appVersion));
                 GatewayHttp.post(baseUrl + "/api/call/devices", gatewayToken, body);
+                FirebaseRegistration.sync(context);
                 saveStatus(context, "ready");
                 Log.i(TAG, "FCM token registered with call gateway");
             } catch (Exception error) {

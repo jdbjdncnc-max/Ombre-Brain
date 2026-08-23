@@ -172,15 +172,19 @@ public class ProactiveNotificationWorker extends Worker {
         manager.cancelUniqueWork(IMMEDIATE_WORK_NAME);
     }
 
-    public static void markDelivered(Context context, String id) {
+    public static synchronized boolean markDeliveredIfNew(Context context, String id) {
         String cleanId = clean(id);
         if (cleanId.isEmpty()) {
-            return;
+            return false;
         }
         SharedPreferences preferences = context.getSharedPreferences(PREFS_NAME, 0);
         Set<String> delivered = new HashSet<>(preferences.getStringSet(KEY_DELIVERED, new HashSet<>()));
+        if (delivered.contains(cleanId)) {
+            return false;
+        }
         delivered.add(cleanId);
         preferences.edit().putStringSet(KEY_DELIVERED, boundedIds(delivered)).apply();
+        return true;
     }
 
     public static void showNotification(Context context, String title, String body, String id) {

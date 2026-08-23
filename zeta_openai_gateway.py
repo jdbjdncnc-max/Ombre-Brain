@@ -281,7 +281,6 @@ class ZetaOpenAIGateway:
         )
         self.firebase_push = FirebasePushService(config["buckets_dir"])
         self.solo = SoloService.from_gateway(self)
-        self.solo.set_proactive_dispatcher(self.firebase_push.send_proactive)
         call_base_dir = Path(getattr(self.memory_gateway, "base_dir", "") or Path(config["buckets_dir"]) / "gateway")
         self.proactive_conversation_context_path = call_base_dir / "proactive_conversation_context.json"
         self.jd_shopping = JdShoppingBroker(
@@ -294,6 +293,7 @@ class ZetaOpenAIGateway:
         )
         self.call_delivery = CallDeliveryStore(call_base_dir)
         self.call_push = FirebaseCallPush()
+        self.solo.set_proactive_dispatcher(self._dispatch_proactive_push)
 
         self.http = httpx.AsyncClient(timeout=120.0)
         self.call_tts_model = _env("OMBRE_CALL_TTS_MODEL", default="eleven_v3")
@@ -484,6 +484,13 @@ class ZetaOpenAIGateway:
             error=result.get("error", ""),
         )
         return self.call_delivery.pending_invite(invite["id"]) or invite
+
+    async def _dispatch_proactive_push(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        tokens = self.call_delivery.device_tokens()
+        result = await asyncio.to_thread(self.call_push.send_proactive, tokens, items)
+        for token in result.get("invalid_tokens") or []:
+            self.call_delivery.remove_device_token(token)
+        return result
 
     async def _create_solo_call_invite(self, context: dict[str, Any]) -> dict[str, Any]:
         activity = context.get("activity") if isinstance(context.get("activity"), dict) else {}
@@ -1091,6 +1098,12 @@ class ZetaOpenAIGateway:
             )
             return {"called": True, "messages": []}
         assistant_text = self._assistant_text_from_response(response)
+        try:
+            response_payload = response.json()
+        except (ValueError, json.JSONDecodeError):
+            response_payload = {}
+        raw_usage = response_payload.get("usage") if isinstance(response_payload, dict) else None
+        usage = deepcopy(raw_usage) if isinstance(raw_usage, dict) else None
         visible_text, _ = self._extract_zeta_memory_request(assistant_text)
         visible_text = visible_text.strip()[:1200]
         if not visible_text:
@@ -1103,7 +1116,12 @@ class ZetaOpenAIGateway:
             metadata={"timezone": timezone_name, "channel": "proactive"},
         )
         self._append_proactive_context_assistant(session_id, visible_text)
-        return {"called": True, "title": "Zeta", "messages": [visible_text]}
+        return {
+            "called": True,
+            "title": "Zeta",
+            "messages": [visible_text],
+            **({"usage": usage} if usage else {}),
+        }
 
     async def _select_solo_mcp_call(self, context: dict[str, Any]) -> dict[str, Any]:
         main_prompt = self._read_system_prompt()

@@ -5869,6 +5869,7 @@ async function syncProactiveMessages({ silent = false } = {}) {
           role: "assistant",
           content,
           model: String(item.model || state.settings.model || "zeta-gateway"),
+          usage: normalizeTokenUsage(item.usage),
           proactive: true,
           createdAt: String(item.ts || new Date().toISOString()),
           timezone: String(item.timezone || currentTimeZone())

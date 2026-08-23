@@ -325,6 +325,64 @@ class FirebaseCallPush:
         self._error = error
         return {"sent": sent, "failed": failed, "invalid_tokens": invalid_tokens, "error": error}
 
+    def send_proactive(self, tokens: list[str], items: list[dict[str, Any]]) -> dict[str, Any]:
+        unique_tokens = list(dict.fromkeys(str(value or "").strip() for value in tokens if str(value or "").strip()))
+        clean_items = [dict(item) for item in items if isinstance(item, dict)]
+        if not unique_tokens:
+            return {"sent": 0, "failed": 0, "invalid_tokens": [], "error": "no_registered_device"}
+        if not clean_items:
+            return {"sent": 0, "failed": 0, "invalid_tokens": [], "error": ""}
+        if not self._initialize():
+            return {
+                "sent": 0,
+                "failed": len(unique_tokens) * len(clean_items),
+                "invalid_tokens": [],
+                "error": self._error or "firebase_not_configured",
+            }
+
+        sent = 0
+        failures: list[str] = []
+        invalid_tokens: list[str] = []
+        for item in clean_items:
+            data = {
+                "kind": "ombre_proactive",
+                "id": _text(item.get("id"), 100),
+                "title": _text(item.get("title"), 60) or "Entangle",
+                "text": _text(item.get("text"), 1200),
+                "ts": _text(item.get("ts"), 80),
+                "timezone": _text(item.get("timezone"), 80),
+            }
+            if not data["id"] or not data["text"]:
+                continue
+            for token in unique_tokens:
+                try:
+                    message = self._messaging.Message(
+                        data=data,
+                        token=token,
+                        android=self._messaging.AndroidConfig(
+                            priority="high",
+                            ttl=timedelta(days=1),
+                            collapse_key=f"ombre_proactive_{data['id']}",
+                        ),
+                    )
+                    self._messaging.send(message, app=self._app)
+                    sent += 1
+                except Exception as exc:
+                    name = exc.__class__.__name__
+                    failures.append(name)
+                    if name in {"UnregisteredError", "SenderIdMismatchError", "InvalidArgumentError"}:
+                        invalid_tokens.append(token)
+        failed = len(unique_tokens) * len(clean_items) - sent
+        error = ",".join(sorted(set(failures)))[:240]
+        self._error = error
+        return {
+            "configured": self.configured,
+            "sent": sent,
+            "failed": failed,
+            "invalid_tokens": list(dict.fromkeys(invalid_tokens)),
+            "error": error,
+        }
+
     def _initialize(self) -> bool:
         if self._app is not None:
             return True

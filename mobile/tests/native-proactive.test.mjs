@@ -50,6 +50,8 @@ test("Android uses a native background worker for proactive notifications", asyn
   assert.match(firebaseService, /ombre_proactive/);
   assert.match(firebaseService, /TOKEN_REQUEST_IN_FLIGHT/);
   assert.match(firebaseService, /GATEWAY_REGISTRATION_IN_FLIGHT/);
+  assert.match(firebaseService, /markDeliveredIfNew/);
+  assert.match(firebaseService, /FirebaseRegistration\.sync/);
   assert.match(firebaseService, /SERVICE_NOT_AVAILABLE/);
   assert.match(activity, /registerPlugin\(CompanionNativePlugin\.class\)/);
   assert.ok(
@@ -64,6 +66,7 @@ test("Android uses a native background worker for proactive notifications", asyn
   assert.match(gradle, /com\.google\.firebase:firebase-messaging/);
   assert.match(frontend, /\/api\/solo\/messages/);
   assert.match(frontend, /proactiveId/);
+  assert.match(frontend, /usage: normalizeTokenUsage\(item\.usage\)/);
   assert.match(frontend, /if \(!await saveMessages\(\)\)/);
   assert.ok(
     frontend.indexOf("if (!await saveMessages())") < frontend.indexOf("state.proactiveMessageCursor = latestId"),

@@ -1617,6 +1617,7 @@ class SoloService:
         result = generated if isinstance(generated, dict) else {}
         called = bool(result.get("called", True))
         title = self._context_text(result.get("title"), 60)
+        usage = deepcopy(result.get("usage")) if isinstance(result.get("usage"), dict) else None
         messages = [
             self._message_text(value, 1200)
             for value in (result.get("messages") if isinstance(result.get("messages"), list) else [])[:3]
@@ -1650,6 +1651,7 @@ class SoloService:
                     "activityId": str(activity.get("id") or "")[:80],
                     "source": "solitude_model",
                     "timezone": self.timezone_name,
+                    **({"usage": deepcopy(usage)} if usage else {}),
                 }
                 self._append_jsonl(self.proactive_path, queued_item)
                 queued_items.append(queued_item)

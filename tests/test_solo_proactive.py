@@ -94,7 +94,17 @@ class ProactiveServiceTests(unittest.IsolatedAsyncioTestCase):
 
         async def generate(context):
             contexts.append(context)
-            return {"called": True, "title": "Zeta", "messages": ["第一条", "第二条"]}
+            return {
+                "called": True,
+                "title": "Zeta",
+                "messages": ["第一条", "第二条"],
+                "usage": {
+                    "prompt_tokens": 120,
+                    "completion_tokens": 18,
+                    "prompt_tokens_details": {"cached_tokens": 80},
+                    "cost": 0.0012,
+                },
+            }
 
         self.service.set_proactive_generator(generate)
         self.service.set_proactive_dispatcher(dispatcher)
@@ -108,6 +118,8 @@ class ProactiveServiceTests(unittest.IsolatedAsyncioTestCase):
         items = await self.service.get_proactive_outbox(limit=10)
         self.assertEqual([item["text"] for item in items], ["第一条", "第二条"])
         self.assertTrue(all(item["timezone"] == "Asia/Taipei" for item in items))
+        self.assertTrue(all(item["usage"]["prompt_tokens"] == 120 for item in items))
+        self.assertTrue(all(item["usage"]["prompt_tokens_details"]["cached_tokens"] == 80 for item in items))
         dispatcher.assert_awaited_once()
         self.assertEqual(
             [item["id"] for item in dispatcher.await_args.args[0]],
@@ -232,6 +244,28 @@ class ProactiveServiceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_proactive_push_reuses_registered_native_fcm_tokens(self):
+        gateway = object.__new__(ZetaOpenAIGateway)
+        removed = []
+        gateway.call_delivery = SimpleNamespace(
+            device_tokens=lambda: ["native-token"],
+            remove_device_token=removed.append,
+        )
+        gateway.call_push = SimpleNamespace(send_proactive=lambda tokens, items: {
+            "configured": True,
+            "sent": 1,
+            "failed": 0,
+            "invalid_tokens": ["expired-token"],
+            "tokens": tokens,
+            "items": items,
+        })
+
+        result = await gateway._dispatch_proactive_push([{"id": "p1", "text": "找你"}])
+
+        self.assertEqual(result["tokens"], ["native-token"])
+        self.assertEqual(result["items"][0]["id"], "p1")
+        self.assertEqual(removed, ["expired-token"])
+
     async def test_generation_keeps_main_prompt_first_and_uses_dialogue_model(self):
         gateway = object.__new__(ZetaOpenAIGateway)
         gateway.upstream_chat_url = "https://dialogue.example/v1/chat/completions"
@@ -280,7 +314,15 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         gateway._append_proactive_context_assistant = lambda _session_id, _content: None
         gateway.http = SimpleNamespace(post=AsyncMock(return_value=httpx.Response(
             200,
-            json={"choices": [{"message": {"content": "先别一个人吓自己。\n\n要不要把最担心的题型发给我？"}}]},
+            json={
+                "choices": [{"message": {"content": "先别一个人吓自己。\n\n要不要把最担心的题型发给我？"}}],
+                "usage": {
+                    "prompt_tokens": 321,
+                    "completion_tokens": 24,
+                    "prompt_tokens_details": {"cached_tokens": 256},
+                    "cost": 0.0042,
+                },
+            },
             request=httpx.Request("POST", "https://dialogue.example/v1/chat/completions"),
         )))
 
@@ -292,6 +334,9 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         })
 
         self.assertEqual(result["messages"], ["先别一个人吓自己。\n\n要不要把最担心的题型发给我？"])
+        self.assertEqual(result["usage"]["prompt_tokens"], 321)
+        self.assertEqual(result["usage"]["prompt_tokens_details"]["cached_tokens"], 256)
+        self.assertEqual(result["usage"]["cost"], 0.0042)
         payload = gateway.http.post.await_args.kwargs["json"]
         self.assertEqual(payload["model"], "dialogue-model")
         self.assertEqual(payload["messages"][0]["content"], "MAIN PROMPT")
