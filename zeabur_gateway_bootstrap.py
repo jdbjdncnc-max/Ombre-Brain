@@ -109,6 +109,19 @@ def _dashboard_auth_error(request: Request) -> JSONResponse | None:
     return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
 
+def _companion_auth_error(request: Request) -> JSONResponse | None:
+    """Allow a dashboard session/password or the app's gateway token."""
+    if _dashboard_authenticated(request):
+        return None
+    token = os.environ.get("OMBRE_GATEWAY_TOKEN", "").strip()
+    auth = request.headers.get("authorization", "")
+    header_token = request.headers.get("x-api-key", "")
+    provided = auth[7:].strip() if auth.lower().startswith("bearer ") else header_token.strip()
+    if token and provided == token:
+        return None
+    return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+
 def _strip_wikilinks(text: str) -> str:
     return re.sub(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]", lambda m: m.group(2) or m.group(1), str(text or ""))
 
@@ -604,7 +617,7 @@ try:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
     async def gateway_diaries(request: Request) -> JSONResponse:
-        err = _dashboard_auth_error(request)
+        err = _companion_auth_error(request)
         if err is not None:
             return err
         gateway = require_dashboard_gateway()
@@ -725,7 +738,7 @@ try:
         })
 
     async def api_buckets(request: Request) -> JSONResponse:
-        err = _dashboard_auth_error(request)
+        err = _companion_auth_error(request)
         if err is not None:
             return err
         gateway = require_dashboard_gateway()
@@ -758,7 +771,7 @@ try:
         return JSONResponse(result)
 
     async def api_bucket_detail(request: Request) -> JSONResponse:
-        err = _dashboard_auth_error(request)
+        err = _companion_auth_error(request)
         if err is not None:
             return err
         gateway = require_dashboard_gateway()
@@ -921,7 +934,7 @@ try:
         return str(value or "").strip()[:6000]
 
     async def api_profile_get(request: Request) -> JSONResponse:
-        err = _dashboard_auth_error(request)
+        err = _companion_auth_error(request)
         if err is not None:
             return err
         gateway = require_dashboard_gateway()
@@ -930,7 +943,7 @@ try:
         return JSONResponse(_read_profile(gateway))
 
     async def api_profile_post(request: Request) -> JSONResponse:
-        err = _dashboard_auth_error(request)
+        err = _companion_auth_error(request)
         if err is not None:
             return err
         gateway = require_dashboard_gateway()
@@ -1076,7 +1089,7 @@ try:
         return schedule
 
     async def api_schedule_get(request: Request) -> JSONResponse:
-        err = _dashboard_auth_error(request)
+        err = _companion_auth_error(request)
         if err is not None:
             return err
         gateway = require_dashboard_gateway()
@@ -1085,7 +1098,7 @@ try:
         return JSONResponse(_read_schedule(gateway))
 
     async def api_schedule_post(request: Request) -> JSONResponse:
-        err = _dashboard_auth_error(request)
+        err = _companion_auth_error(request)
         if err is not None:
             return err
         gateway = require_dashboard_gateway()

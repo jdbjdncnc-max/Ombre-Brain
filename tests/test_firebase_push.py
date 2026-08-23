@@ -65,6 +65,10 @@ class FirebasePushServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["sent"], 0)
         self.assertEqual(response["failed"], 1)
 
+    def test_legacy_b64_environment_name_is_recognized(self):
+        with patch.dict("os.environ", {"OMBRE_FIREBASE_SERVICE_ACCOUNT_B64": "encoded"}, clear=True):
+            self.assertTrue(self.service._credentials_configured())
+
 
 if __name__ == "__main__":
     unittest.main()

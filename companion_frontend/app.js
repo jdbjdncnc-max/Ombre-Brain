@@ -2284,14 +2284,24 @@ async function loadActiveMemoryPanel() {
   if (state.loadedMemoryPanels.has(state.memoryPanel)) {
     return;
   }
-  if (state.memoryPanel === "memories") {
-    await loadMemories(els.memorySearchInput.value.trim()).catch(renderMemoryError);
-  } else if (state.memoryPanel === "diary") {
-    await loadDiaries().catch(renderDiaryError);
-  } else {
-    await loadProfile().catch(renderProfileError);
+  try {
+    if (state.memoryPanel === "memories") {
+      await loadMemories(els.memorySearchInput.value.trim());
+    } else if (state.memoryPanel === "diary") {
+      await loadDiaries();
+    } else {
+      await loadProfile();
+    }
+    state.loadedMemoryPanels.add(state.memoryPanel);
+  } catch (error) {
+    if (state.memoryPanel === "memories") {
+      renderMemoryError(error);
+    } else if (state.memoryPanel === "diary") {
+      renderDiaryError(error);
+    } else {
+      renderProfileError(error);
+    }
   }
-  state.loadedMemoryPanels.add(state.memoryPanel);
 }
 
 async function loadMemories(query = "", force = false) {

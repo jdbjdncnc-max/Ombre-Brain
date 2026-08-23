@@ -141,7 +141,10 @@ class FirebasePushService:
             pass
 
         raw_json = os.environ.get("OMBRE_FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
-        raw_base64 = os.environ.get("OMBRE_FIREBASE_SERVICE_ACCOUNT_BASE64", "").strip()
+        raw_base64 = (
+            os.environ.get("OMBRE_FIREBASE_SERVICE_ACCOUNT_B64", "").strip()
+            or os.environ.get("OMBRE_FIREBASE_SERVICE_ACCOUNT_BASE64", "").strip()
+        )
         if raw_base64 and not raw_json:
             raw_json = base64.b64decode(raw_base64).decode("utf-8")
         if raw_json:
@@ -157,6 +160,7 @@ class FirebasePushService:
     def _credentials_configured() -> bool:
         return bool(
             os.environ.get("OMBRE_FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
+            or os.environ.get("OMBRE_FIREBASE_SERVICE_ACCOUNT_B64", "").strip()
             or os.environ.get("OMBRE_FIREBASE_SERVICE_ACCOUNT_BASE64", "").strip()
             or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
         )
