@@ -1,5 +1,3 @@
-@import url("https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap");
-
 /* ==========================================================================
    claude-theme.css — Ombre 前端视觉覆盖层（挂在最新版 styles.css 之后）
    只做视觉：不改结构、不改 id/class/data-*、不改事件。
@@ -9,10 +7,9 @@
    ========================================================================== */
 
 :root {
-  /* 字体：英文手写体（近 Segoe Script） + 中文衬线体 */
-  --ct-font: "Segoe Script", "Bradley Hand", "Kalam", "Noto Serif CJK SC",
-    "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", "SimSun",
-    cursive, serif;
+  /* 全局宋体：优先系统自带中文宋体，Android 最后回退到衬线体。 */
+  --ct-font: "Songti SC", "STSong", "SimSun", "Noto Serif CJK SC",
+    "Noto Serif SC", "Source Han Serif SC", serif;
   --ct-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Consolas, monospace;
 
   /* ---- 水玻璃 ---- */
@@ -139,8 +136,7 @@ body::after {
 .metric,
 .prompt-file-row,
 .ct-cat-item,
-.ct-mcp-switch,
-.ct-loader {
+.ct-mcp-switch {
   position: relative;
   isolation: isolate;
   border: 1px solid var(--ct-hair);
@@ -172,7 +168,6 @@ body::after {
 .prompt-file-row::after,
 .ct-cat-item::after,
 .ct-mcp-switch::after,
-.ct-loader::after,
 .message.user .message-content::after {
   content: "";
   position: absolute;
@@ -861,14 +856,16 @@ body::after {
   left: 8px;
   bottom: calc(100% + 8px);
   z-index: 20;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 14px 7px 11px;
-  border-radius: 999px;
-  color: rgba(23, 33, 31, 0.62);
-  font-size: 12px;
-  white-space: nowrap;
+  width: 46px;
+  height: 26px;
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   opacity: 0;
   transform: translateY(6px);
   pointer-events: none;

@@ -421,6 +421,7 @@ class ZetaOpenAIGateway:
                 body.get("token") if isinstance(body, dict) else "",
                 platform=body.get("platform", "android") if isinstance(body, dict) else "android",
                 app_version=body.get("appVersion", "") if isinstance(body, dict) else "",
+                device_key=body.get("deviceId", "") if isinstance(body, dict) else "",
             )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)

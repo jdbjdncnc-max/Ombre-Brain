@@ -64,12 +64,16 @@ class CallDeliveryStore:
         *,
         platform: Any = "android",
         app_version: Any = "",
+        device_key: Any = "",
     ) -> dict[str, Any]:
         clean_token = _text(token, 4096)
         if len(clean_token) < 20:
             raise ValueError("FCM registration token is missing or too short")
         now = datetime.now(timezone.utc)
-        device_id = hashlib.sha256(clean_token.encode("utf-8")).hexdigest()[:20]
+        clean_platform = _text(platform, 24) or "android"
+        clean_device_key = _text(device_key, 256)
+        identity = f"{clean_platform}:{clean_device_key}" if clean_device_key else clean_token
+        device_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
         with self._lock:
             data = self._load()
             devices = [
@@ -79,14 +83,14 @@ class CallDeliveryStore:
             devices.append({
                 "id": device_id,
                 "token": clean_token,
-                "platform": _text(platform, 24) or "android",
+                "platform": clean_platform,
                 "appVersion": _text(app_version, 48),
                 "registeredAt": _iso(now),
                 "lastSeenAt": _iso(now),
             })
             data["devices"] = devices[-8:]
             self._write(data)
-        return {"id": device_id, "platform": _text(platform, 24) or "android", "registered": True}
+        return {"id": device_id, "platform": clean_platform, "registered": True}
 
     def remove_device_token(self, token: Any) -> bool:
         clean_token = _text(token, 4096)

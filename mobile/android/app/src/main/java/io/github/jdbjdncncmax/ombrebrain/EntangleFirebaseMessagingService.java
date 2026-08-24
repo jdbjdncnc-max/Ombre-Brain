@@ -2,6 +2,7 @@ package io.github.jdbjdncncmax.ombrebrain;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.provider.Settings;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -97,12 +98,6 @@ public class EntangleFirebaseMessagingService extends FirebaseMessagingService {
         if (cleanToken.isEmpty()) return;
         SharedPreferences prefs = context.getSharedPreferences(ProactiveNotificationWorker.PREFS_NAME, 0);
         prefs.edit().putString(ProactiveNotificationWorker.KEY_FCM_TOKEN, cleanToken).apply();
-        String baseUrl = clean(prefs.getString(ProactiveNotificationWorker.KEY_BASE_URL, "")).replaceAll("/+$", "");
-        String gatewayToken = clean(prefs.getString(ProactiveNotificationWorker.KEY_TOKEN, ""));
-        if (baseUrl.isEmpty()) {
-            saveStatus(context, "请先填写后端地址");
-            return;
-        }
         if (!GATEWAY_REGISTRATION_IN_FLIGHT.compareAndSet(false, true)) {
             return;
         }
@@ -110,27 +105,52 @@ public class EntangleFirebaseMessagingService extends FirebaseMessagingService {
         ExecutorService executor = Executors.newSingleThreadExecutor();
         executor.execute(() -> {
             try {
-                JSONObject body = new JSONObject();
-                body.put("token", cleanToken);
-                body.put("platform", "android");
-                String appVersion = "";
-                try {
-                    appVersion = context.getPackageManager()
-                        .getPackageInfo(context.getPackageName(), 0).versionName;
-                } catch (Exception ignored) {}
-                body.put("appVersion", clean(appVersion));
-                GatewayHttp.post(baseUrl + "/api/call/devices", gatewayToken, body);
-                FirebaseRegistration.sync(context);
-                saveStatus(context, "ready");
-                Log.i(TAG, "FCM token registered with call gateway");
-            } catch (Exception error) {
-                saveStatus(context, "网关登记失败");
-                Log.w(TAG, "FCM gateway registration failed: " + safeErrorDetail(error), error);
+                registerTokenBlocking(context, cleanToken);
             } finally {
                 GATEWAY_REGISTRATION_IN_FLIGHT.set(false);
                 executor.shutdown();
             }
         });
+    }
+
+    static boolean registerStoredTokenBlocking(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(ProactiveNotificationWorker.PREFS_NAME, 0);
+        String token = clean(prefs.getString(ProactiveNotificationWorker.KEY_FCM_TOKEN, ""));
+        return !token.isEmpty() && registerTokenBlocking(context, token);
+    }
+
+    private static synchronized boolean registerTokenBlocking(Context context, String token) {
+        SharedPreferences prefs = context.getSharedPreferences(ProactiveNotificationWorker.PREFS_NAME, 0);
+        String baseUrl = clean(prefs.getString(ProactiveNotificationWorker.KEY_BASE_URL, "")).replaceAll("/+$", "");
+        String gatewayToken = clean(prefs.getString(ProactiveNotificationWorker.KEY_TOKEN, ""));
+        if (baseUrl.isEmpty()) {
+            saveStatus(context, "请先填写后端地址");
+            return false;
+        }
+        try {
+            JSONObject body = new JSONObject();
+            body.put("token", clean(token));
+            body.put("platform", "android");
+            body.put("deviceId", clean(Settings.Secure.getString(
+                context.getContentResolver(),
+                Settings.Secure.ANDROID_ID
+            )));
+            String appVersion = "";
+            try {
+                appVersion = context.getPackageManager()
+                    .getPackageInfo(context.getPackageName(), 0).versionName;
+            } catch (Exception ignored) {}
+            body.put("appVersion", clean(appVersion));
+            GatewayHttp.post(baseUrl + "/api/call/devices", gatewayToken, body);
+            FirebaseRegistration.sync(context);
+            saveStatus(context, "ready");
+            Log.i(TAG, "FCM token registered with call gateway");
+            return true;
+        } catch (Exception error) {
+            saveStatus(context, "网关登记失败");
+            Log.w(TAG, "FCM gateway registration failed: " + safeErrorDetail(error), error);
+            return false;
+        }
     }
 
     private static void saveStatus(Context context, String value) {

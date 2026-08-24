@@ -54,6 +54,17 @@ def test_firebase_wrapper_fails_closed_without_credentials(monkeypatch):
     assert proactive["error"] == "Firebase service account is not configured"
 
 
+def test_device_registration_replaces_rotated_token_for_same_phone(tmp_path):
+    store = CallDeliveryStore(tmp_path)
+    first = "fcm_first_" + "a" * 70
+    second = "fcm_second_" + "b" * 70
+
+    store.register_device(first, device_key="android-phone-1")
+    store.register_device(second, device_key="android-phone-1")
+
+    assert store.device_tokens() == [second]
+
+
 def test_proactive_push_includes_system_notification_for_restricted_android_apps(monkeypatch):
     sent_messages = []
 

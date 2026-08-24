@@ -63,7 +63,10 @@ public class ProactiveNotificationWorker extends Worker {
     @NonNull
     @Override
     public Result doWork() {
-        Context context = getApplicationContext();
+        return runOnce(getApplicationContext());
+    }
+
+    static Result runOnce(Context context) {
         SharedPreferences preferences = context.getSharedPreferences(PREFS_NAME, 0);
         String baseUrl = clean(preferences.getString(KEY_BASE_URL, "")).replaceAll("/+$", "");
         String token = clean(preferences.getString(KEY_TOKEN, ""));
@@ -72,7 +75,9 @@ public class ProactiveNotificationWorker extends Worker {
         if (baseUrl.isEmpty()) {
             return Result.success();
         }
-        EntangleFirebaseMessagingService.syncRegistration(context);
+        if (!EntangleFirebaseMessagingService.registerStoredTokenBlocking(context)) {
+            EntangleFirebaseMessagingService.syncRegistration(context);
+        }
         FirebaseRegistration.sync(context);
         uploadDeviceContext(context, baseUrl, token);
         if (!notificationGranted(context)) {

@@ -22,6 +22,8 @@ test("Android uses a native background worker for proactive notifications", asyn
   const plugin = await readFile(path.join(javaRoot, "CompanionNativePlugin.java"), "utf8");
   const registration = await readFile(path.join(javaRoot, "FirebaseRegistration.java"), "utf8");
   const firebaseService = await readFile(path.join(javaRoot, "EntangleFirebaseMessagingService.java"), "utf8");
+  const backgroundService = await readFile(path.join(javaRoot, "ProactiveBackgroundService.java"), "utf8");
+  const bootReceiver = await readFile(path.join(javaRoot, "ProactiveBootReceiver.java"), "utf8");
   const activity = await readFile(path.join(javaRoot, "MainActivity.java"), "utf8");
   const manifest = await readFile(path.join(appRoot, "src", "main", "AndroidManifest.xml"), "utf8");
   const strings = await readFile(path.join(appRoot, "src", "main", "res", "values", "strings.xml"), "utf8");
@@ -52,9 +54,22 @@ test("Android uses a native background worker for proactive notifications", asyn
   assert.match(firebaseService, /ombre_proactive/);
   assert.match(firebaseService, /TOKEN_REQUEST_IN_FLIGHT/);
   assert.match(firebaseService, /GATEWAY_REGISTRATION_IN_FLIGHT/);
+  assert.match(firebaseService, /registerStoredTokenBlocking/);
+  assert.match(firebaseService, /Settings\.Secure\.ANDROID_ID/);
   assert.match(firebaseService, /markDeliveredIfNew/);
   assert.match(firebaseService, /FirebaseRegistration\.sync/);
   assert.match(firebaseService, /SERVICE_NOT_AVAILABLE/);
+  assert.match(backgroundService, /startForeground/);
+  assert.match(backgroundService, /POLL_INTERVAL_MS = 60_000L/);
+  assert.match(backgroundService, /ProactiveNotificationWorker\.runOnce/);
+  assert.match(backgroundService, /START_STICKY/);
+  assert.match(bootReceiver, /ACTION_BOOT_COMPLETED/);
+  assert.match(bootReceiver, /ACTION_MY_PACKAGE_REPLACED/);
+  assert.match(bootReceiver, /ProactiveBackgroundService\.start/);
+  assert.match(plugin, /ProactiveBackgroundService\.start/);
+  assert.match(plugin, /ProactiveBackgroundService\.stop/);
+  assert.match(plugin, /ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS/);
+  assert.match(plugin, /isIgnoringBatteryOptimizations/);
   assert.match(activity, /registerPlugin\(CompanionNativePlugin\.class\)/);
   assert.ok(
     activity.indexOf("registerPlugin(CompanionNativePlugin.class)") < activity.indexOf("super.onCreate(savedInstanceState)"),
@@ -62,6 +77,12 @@ test("Android uses a native background worker for proactive notifications", asyn
   );
   assert.match(manifest, /android\.permission\.POST_NOTIFICATIONS/);
   assert.match(manifest, /EntangleFirebaseMessagingService/);
+  assert.match(manifest, /ProactiveBackgroundService/);
+  assert.match(manifest, /FOREGROUND_SERVICE_SPECIAL_USE/);
+  assert.match(manifest, /PROPERTY_SPECIAL_USE_FGS_SUBTYPE/);
+  assert.match(manifest, /RECEIVE_BOOT_COMPLETED/);
+  assert.match(manifest, /ProactiveBootReceiver/);
+  assert.match(manifest, /REQUEST_IGNORE_BATTERY_OPTIMIZATIONS/);
   assert.doesNotMatch(manifest, /firebase_messaging_installation_id_enabled/);
   assert.match(strings, /<string name="app_name">Entangle<\/string>/);
   assert.match(gradle, /androidx\.work:work-runtime:2\.11\.2/);

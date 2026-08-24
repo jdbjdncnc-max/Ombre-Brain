@@ -9,6 +9,7 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
+import android.os.PowerManager;
 import android.provider.Settings;
 import android.provider.MediaStore;
 
@@ -56,6 +57,7 @@ import java.nio.charset.StandardCharsets;
 )
 public class CompanionNativePlugin extends Plugin {
     private static final int MAX_CHAT_EXPORT_BYTES = 64 * 1024 * 1024;
+    private static final String KEY_BATTERY_PROMPTED = "battery_optimization_prompted";
     private static final String[] HEALTH_PERMISSION_ALIASES = {
         "healthSteps",
         "healthHeartRate",
@@ -112,15 +114,18 @@ public class CompanionNativePlugin extends Plugin {
 
         if (baseUrl.isEmpty()) {
             ProactiveNotificationWorker.cancel(getContext());
+            ProactiveBackgroundService.stop(getContext());
         } else {
             ProactiveNotificationWorker.schedule(getContext(), true);
             EntangleFirebaseMessagingService.syncRegistration(getContext());
+            ProactiveBackgroundService.start(getContext());
+            requestBatteryOptimizationExemption(preferences);
         }
 
         JSObject result = new JSObject();
         result.put("configured", !baseUrl.isEmpty());
         result.put("intervalMinutes", ProactiveNotificationWorker.PERIODIC_MINUTES);
-        result.put("delivery", "fcm_with_worker_fallback");
+        result.put("delivery", "fcm_with_foreground_polling_fallback");
         call.resolve(result);
     }
 
@@ -395,6 +400,28 @@ public class CompanionNativePlugin extends Plugin {
             getContext(),
             Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void requestBatteryOptimizationExemption(SharedPreferences preferences) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M
+            || preferences.getBoolean(KEY_BATTERY_PROMPTED, false)) {
+            return;
+        }
+        PowerManager manager = getContext().getSystemService(PowerManager.class);
+        if (manager == null || manager.isIgnoringBatteryOptimizations(getContext().getPackageName())) {
+            return;
+        }
+        preferences.edit().putBoolean(KEY_BATTERY_PROMPTED, true).apply();
+        try {
+            Intent intent = new Intent(
+                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                Uri.parse("package:" + getContext().getPackageName())
+            );
+            getActivity().startActivity(intent);
+        } catch (RuntimeException ignored) {
+            // The foreground service and WorkManager remain available on devices
+            // whose vendor settings do not expose the standard exemption screen.
+        }
     }
 
     private JSObject deviceContextStatusResult() {

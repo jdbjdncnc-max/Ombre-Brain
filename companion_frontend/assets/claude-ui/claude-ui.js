@@ -74,7 +74,6 @@
     mark.childNodes[1].setAttribute("class", "ct-inf-draw");
     mark.childNodes[1].setAttribute("pathLength", "200");
     loader.appendChild(mark);
-    loader.appendChild(el("span", null, "正在想"));
     shell.appendChild(loader);
     return loader;
   }
