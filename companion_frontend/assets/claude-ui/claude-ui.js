@@ -196,14 +196,20 @@
     {
       id: "link",
       title: "连接",
-      hint: "后端地址、Duetto、网关令牌",
-      picks: ["#backendUrl", "#duettoUrl", "#gatewayToken"]
+      hint: "后端地址、Duetto、网关令牌、即时来电",
+      picks: ["#backendUrl", "#duettoUrl", "#gatewayToken", "#incomingCallSettingsTitle"]
     },
     {
       id: "model",
       title: "模型与提示词",
       hint: "温度、系统提示词、总结与思考覆写",
-      picks: ["#temperature", ".prompt-file-field", "#summaryModel", "#reasoningPresentationPrompt"]
+      picks: [
+        "#temperature",
+        "#systemPromptFileName",
+        "#emotionPromptFileName",
+        "#summaryModel",
+        "#reasoningPresentationPrompt"
+      ]
     },
     {
       id: "look",
@@ -213,6 +219,8 @@
         "#accentColor",
         "#backgroundUrl",
         "#chooseBackgroundButton",
+        "#assistantMessageFontSize",
+        "#userMessageFontSize",
         "#backgroundTransparency",
         "#backgroundFit"
       ]

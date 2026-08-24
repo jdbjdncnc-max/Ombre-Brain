@@ -11,6 +11,8 @@
   --ct-font: "Songti SC", "STSong", "SimSun", "Noto Serif CJK SC",
     "Noto Serif SC", "Source Han Serif SC", serif;
   --ct-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Consolas, monospace;
+  --assistant-message-font-size: 16px;
+  --user-message-font-size: 16px;
 
   /* ---- 水玻璃 ---- */
   --ct-blur: blur(7px) saturate(180%);
@@ -78,9 +80,14 @@ h1 {
   font-size: 26px;
 }
 
-.message-content,
-.message-user-body .message-content {
-  font-size: 16px;
+.message.assistant .message-content {
+  font-size: var(--assistant-message-font-size);
+  line-height: 1.72;
+  text-wrap: pretty;
+}
+
+.message.user .message-content {
+  font-size: var(--user-message-font-size);
   line-height: 1.72;
   text-wrap: pretty;
 }

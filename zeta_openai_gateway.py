@@ -66,6 +66,7 @@ from zeta_gateway import ZetaMemoryGateway
 
 
 logger = logging.getLogger("ombre_brain.zeta_openai_gateway")
+PROACTIVE_DIALOGUE_PROMPT = "现在有什么想说的吗？"
 MEMORY_REQUEST_OPEN = "<zeta_memory_request>"
 MEMORY_REQUEST_CLOSE = "</zeta_memory_request>"
 OMBRE_SYSTEM_LAYER_OPEN = "[Ombre 系统层｜内部资料]"
@@ -1042,7 +1043,7 @@ class ZetaOpenAIGateway:
         source_messages.extend(conversation_messages)
         source_messages.append({
             "role": "user",
-            "content": "想对她说什么？",
+            "content": PROACTIVE_DIALOGUE_PROMPT,
             "context": {
                 "sentAt": str(context.get("triggered_at") or datetime.now(timezone.utc).isoformat()),
                 "timezone": timezone_name,
@@ -1051,7 +1052,7 @@ class ZetaOpenAIGateway:
 
         recall_context = self._recall_context_text(source_messages)
         recalled = await self.memory_gateway.recall({
-            "current_text": "想对她说什么？",
+            "current_text": PROACTIVE_DIALOGUE_PROMPT,
             "recent_context": recall_context,
             "max_results": self.recall_max_results,
             "keyword_limit": self.keyword_limit,
@@ -1085,7 +1086,7 @@ class ZetaOpenAIGateway:
             response = await self.http.post(
                 self.upstream_chat_url,
                 headers=self._upstream_headers(self.upstream_api_key),
-                json=forward_payload,
+                json=self._payload_for_upstream(forward_payload),
                 timeout=min(120.0, max(15.0, self.summary_timeout)),
             )
         except httpx.RequestError as exc:
@@ -1116,7 +1117,13 @@ class ZetaOpenAIGateway:
             visible_text,
             metadata={"timezone": timezone_name, "channel": "proactive"},
         )
-        self._append_proactive_context_assistant(session_id, visible_text)
+        self._remember_proactive_conversation_context(
+            session_id=session_id,
+            messages=[*source_messages, {"role": "assistant", "content": visible_text}],
+            summary_context=summary_context,
+            schedule_context=schedule_context,
+            temperature=proactive_temperature,
+        )
         return {
             "called": True,
             "title": "Zeta",
@@ -2583,7 +2590,7 @@ class ZetaOpenAIGateway:
             if stored_context:
                 message["context"] = stored_context
             kept.append(message)
-        kept = kept[-16:]
+        kept = kept[-80:]
         try:
             chosen_temperature = float(temperature)
         except (TypeError, ValueError):

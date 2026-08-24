@@ -114,6 +114,8 @@ const defaultSettings = {
   summaryInterval: 16,
   summaryPrompt: DEFAULT_SUMMARY_PROMPT,
   reasoningPresentationPrompt: DEFAULT_REASONING_PRESENTATION_PROMPT,
+  assistantMessageFontSize: 16,
+  userMessageFontSize: 16,
   backgroundUrl: "",
   backgroundTransparency: 0.35,
   backgroundFit: "cover",
@@ -371,6 +373,10 @@ const els = {
   summaryStatus: document.querySelector("#summaryStatus"),
   reasoningPresentationPrompt: document.querySelector("#reasoningPresentationPrompt"),
   reasoningPresentationStatus: document.querySelector("#reasoningPresentationStatus"),
+  assistantMessageFontSize: document.querySelector("#assistantMessageFontSize"),
+  assistantMessageFontSizeValue: document.querySelector("#assistantMessageFontSizeValue"),
+  userMessageFontSize: document.querySelector("#userMessageFontSize"),
+  userMessageFontSizeValue: document.querySelector("#userMessageFontSizeValue"),
   systemPromptFileName: document.querySelector("#systemPromptFileName"),
   systemPromptStatus: document.querySelector("#systemPromptStatus"),
   systemPromptFile: document.querySelector("#systemPromptFile"),
@@ -753,6 +759,8 @@ function bindEvents() {
     els.summaryInterval,
     els.summaryPrompt,
     els.reasoningPresentationPrompt,
+    els.assistantMessageFontSize,
+    els.userMessageFontSize,
     els.backgroundUrl,
     els.backgroundTransparency,
     els.backgroundFit,
@@ -791,6 +799,17 @@ function bindEvents() {
   els.temperature.addEventListener("input", () => {
     els.temperatureValue.value = Number(els.temperature.value).toFixed(1);
   });
+
+  for (const [input, output, cssVariable] of [
+    [els.assistantMessageFontSize, els.assistantMessageFontSizeValue, "--assistant-message-font-size"],
+    [els.userMessageFontSize, els.userMessageFontSizeValue, "--user-message-font-size"]
+  ]) {
+    input.addEventListener("input", () => {
+      const size = normalizeMessageFontSize(input.value);
+      output.value = `${size}px`;
+      document.documentElement.style.setProperty(cssVariable, `${size}px`);
+    });
+  }
 
   els.backgroundTransparency.addEventListener("input", () => {
     const transparency = Number(els.backgroundTransparency.value);
@@ -5431,6 +5450,10 @@ function hydrateSettingsForm() {
   els.summaryInterval.value = state.settings.summaryInterval;
   els.summaryPrompt.value = state.settings.summaryPrompt;
   els.reasoningPresentationPrompt.value = state.settings.reasoningPresentationPrompt;
+  els.assistantMessageFontSize.value = state.settings.assistantMessageFontSize;
+  els.assistantMessageFontSizeValue.value = `${state.settings.assistantMessageFontSize}px`;
+  els.userMessageFontSize.value = state.settings.userMessageFontSize;
+  els.userMessageFontSizeValue.value = `${state.settings.userMessageFontSize}px`;
   els.backgroundUrl.value = state.settings.backgroundUrl;
   els.backgroundTransparency.value = state.settings.backgroundTransparency;
   els.backgroundTransparencyValue.value = `${Math.round(Number(state.settings.backgroundTransparency) * 100)}%`;
@@ -5467,6 +5490,8 @@ function readSettingsForm() {
     summaryPrompt: els.summaryPrompt.value.trim() || defaultSettings.summaryPrompt,
     reasoningPresentationPrompt: els.reasoningPresentationPrompt.value.trim()
       || defaultSettings.reasoningPresentationPrompt,
+    assistantMessageFontSize: normalizeMessageFontSize(els.assistantMessageFontSize.value),
+    userMessageFontSize: normalizeMessageFontSize(els.userMessageFontSize.value),
     backgroundUrl: els.backgroundUrl.value.trim(),
     backgroundTransparency: Number(els.backgroundTransparency.value),
     backgroundFit: els.backgroundFit.value === "contain" ? "contain" : "cover",
@@ -5480,6 +5505,8 @@ function applySettings({ refreshMessages = true } = {}) {
   root.style.setProperty("--background-image-opacity", String(1 - state.settings.backgroundTransparency));
   root.style.setProperty("--bg-size", state.settings.backgroundFit);
   root.style.setProperty("--accent-ink", readableInkFor(state.settings.accentColor));
+  root.style.setProperty("--assistant-message-font-size", `${state.settings.assistantMessageFontSize}px`);
+  root.style.setProperty("--user-message-font-size", `${state.settings.userMessageFontSize}px`);
 
   if (state.settings.backgroundUrl) {
     root.style.setProperty("--bg-image", `url("${cssUrlEscape(state.settings.backgroundUrl)}")`);
@@ -5517,9 +5544,16 @@ function normalizeSettings(value) {
     backgroundFit: settings.backgroundFit === "contain" ? "contain" : "cover",
     summaryInterval: normalizeSummaryInterval(settings.summaryInterval),
     summaryPrompt: normalizeSummaryPrompt(settings.summaryPrompt),
+    assistantMessageFontSize: normalizeMessageFontSize(settings.assistantMessageFontSize),
+    userMessageFontSize: normalizeMessageFontSize(settings.userMessageFontSize),
     reasoningPresentationPrompt: String(settings.reasoningPresentationPrompt || "").trim()
       || defaultSettings.reasoningPresentationPrompt
   };
+}
+
+function normalizeMessageFontSize(value) {
+  const size = Number(value);
+  return Number.isFinite(size) ? Math.min(24, Math.max(12, Math.round(size))) : 16;
 }
 
 function normalizeSummaryPrompt(value) {

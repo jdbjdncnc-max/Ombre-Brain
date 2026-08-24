@@ -780,6 +780,22 @@
               <input id="backgroundUrl" type="url" inputmode="url" placeholder="https://...">
             </label>
 
+            <label class="field">
+              <span>AI 消息字体大小</span>
+              <div class="range-row">
+                <input id="assistantMessageFontSize" type="range" min="12" max="24" step="1">
+                <output id="assistantMessageFontSizeValue">16px</output>
+              </div>
+            </label>
+
+            <label class="field">
+              <span>我的消息字体大小</span>
+              <div class="range-row">
+                <input id="userMessageFontSize" type="range" min="12" max="24" step="1">
+                <output id="userMessageFontSizeValue">16px</output>
+              </div>
+            </label>
+
             <div class="button-row">
               <button id="chooseBackgroundButton" class="secondary-button" type="button">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -961,7 +977,7 @@
   <script src="vendor/dompurify/purify.min.js"></script>
   <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/katex/auto-render.min.js"></script>
-    <script src="app.js?v=20260823.2" type="module"></script>
-    <script src="assets/claude-ui/claude-ui.js?v=20260824.1" defer></script>
+    <script src="app.js?v=20260824.2" type="module"></script>
+    <script src="assets/claude-ui/claude-ui.js?v=20260824.2" defer></script>
 </body>
 </html>

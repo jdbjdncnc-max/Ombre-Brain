@@ -4,7 +4,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 from starlette.requests import Request
@@ -271,7 +271,7 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         gateway.upstream_chat_url = "https://dialogue.example/v1/chat/completions"
         gateway.upstream_api_key = "dialogue-key"
         gateway.upstream_model = "dialogue-model"
-        gateway.public_model = "dialogue-model"
+        gateway.public_model = "zeta-gateway"
         gateway.summary_timeout = 30
         gateway.openrouter_site_url = ""
         gateway.openrouter_app_name = ""
@@ -309,9 +309,10 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
                 *payload["messages"],
             ],
         }
+        gateway._payload_for_upstream = lambda payload: {**payload, "model": gateway.upstream_model}
         gateway._extract_zeta_memory_request = lambda text: (text, [])
         gateway._save_turn = AsyncMock(return_value=[])
-        gateway._append_proactive_context_assistant = lambda _session_id, _content: None
+        gateway._remember_proactive_conversation_context = Mock()
         gateway.http = SimpleNamespace(post=AsyncMock(return_value=httpx.Response(
             200,
             json={
@@ -344,11 +345,14 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["messages"][2]["ombre_context_kind"], "conversation_summary")
         self.assertEqual(payload["messages"][3]["content"], "我有点担心明天的考试")
         self.assertEqual(payload["messages"][4]["content"], "先陪你把最担心的部分理清。")
-        self.assertEqual(payload["messages"][5]["content"], "想对她说什么？")
+        self.assertEqual(payload["messages"][5]["content"], "现在有什么想说的吗？")
         self.assertEqual(payload["temperature"], 0.7)
         self.assertNotIn("max_tokens", payload)
         gateway.memory_gateway.recall.assert_awaited_once()
         gateway._save_turn.assert_awaited_once()
+        saved_context = gateway._remember_proactive_conversation_context.call_args.kwargs
+        self.assertEqual(saved_context["messages"][-2]["content"], "现在有什么想说的吗？")
+        self.assertEqual(saved_context["messages"][-1]["content"], "先别一个人吓自己。\n\n要不要把最担心的题型发给我？")
 
     def test_proactive_message_text_preserves_paragraph_breaks(self):
         self.assertEqual(
