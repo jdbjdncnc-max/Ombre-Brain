@@ -268,9 +268,13 @@ const els = {
   scheduleSyncStatus: document.querySelector("#scheduleSyncStatus"),
   todoCaptureStatus: document.querySelector("#todoCaptureStatus"),
   todoForm: document.querySelector("#todoForm"),
+  todoValidity: document.querySelector("#todoValidity"),
+  todoDateField: document.querySelector("#todoDateField"),
+  todoTimeField: document.querySelector("#todoTimeField"),
   todoDate: document.querySelector("#todoDate"),
   todoTime: document.querySelector("#todoTime"),
   todoTitle: document.querySelector("#todoTitle"),
+  todoDetails: document.querySelector("#todoDetails"),
   termForm: document.querySelector("#termForm"),
   termStartDate: document.querySelector("#termStartDate"),
   termWeekCount: document.querySelector("#termWeekCount"),
@@ -655,6 +659,7 @@ function bindEvents() {
     event.preventDefault();
     addTodoFromForm();
   });
+  els.todoValidity.addEventListener("change", updateTodoValidityFields);
 
   els.termForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -2586,8 +2591,10 @@ function renderProfileError(error) {
 }
 
 function initSchedule() {
+  els.todoValidity.value = "date";
   els.todoDate.value = todayDateKey();
   els.todoTime.value = nextQuarterHour();
+  updateTodoValidityFields();
   hydrateTermForm();
   focusCurrentScheduleWeek(false);
   updateNotificationButton();
@@ -2611,10 +2618,12 @@ async function loadSchedule() {
 }
 
 function addTodoFromForm() {
-  const date = normalizeDateValue(els.todoDate.value) || todayDateKey();
-  const start = normalizeTimeValue(els.todoTime.value);
+  const validity = els.todoValidity.value === "permanent" ? "permanent" : "date";
+  const date = validity === "date" ? (normalizeDateValue(els.todoDate.value) || todayDateKey()) : "";
+  const start = validity === "date" ? normalizeTimeValue(els.todoTime.value) : "";
   const title = els.todoTitle.value.trim();
-  if (!date || !start || !title) {
+  const details = els.todoDetails.value.trim();
+  if (!title || (validity === "date" && (!date || !start))) {
     els.todoCaptureStatus.textContent = "缺少时间或任务";
     return;
   }
@@ -2622,19 +2631,31 @@ function addTodoFromForm() {
   addScheduleItems([{
     id: crypto.randomUUID(),
     type: "todo",
+    validity,
     date,
     start,
     end: "",
     title,
+    subtitle: title,
     location: "",
-    note: "",
+    note: details,
+    details,
     done: false,
     source: "manual",
     createdAt: new Date().toISOString()
   }]);
   els.todoTitle.value = "";
+  els.todoDetails.value = "";
   els.todoCaptureStatus.textContent = "已加入";
   clearInlineStatusLater(els.todoCaptureStatus);
+}
+
+function updateTodoValidityFields() {
+  const permanent = els.todoValidity.value === "permanent";
+  els.todoDateField.hidden = permanent;
+  els.todoTimeField.hidden = permanent;
+  els.todoDate.required = !permanent;
+  els.todoTime.required = !permanent;
 }
 
 function importCourses() {
@@ -2807,6 +2828,14 @@ function expandedScheduleItemsForRange(startDate, endDate) {
   const end = new Date(endDate);
   const result = [];
   for (const item of state.scheduleItems) {
+    if (item.type === "todo" && item.validity === "permanent") {
+      result.push({
+        ...item,
+        date: dateKey(start),
+        occurrenceId: `${item.id}:permanent`
+      });
+      continue;
+    }
     if (item.recurrence === "weekly") {
       for (let date = new Date(start); date < end; date = addDays(date, 1)) {
         if (weekdayFromDate(date) !== item.weekday || !courseOccursOnDate(item, date)) {
@@ -2860,21 +2889,23 @@ function renderScheduleItem(item, today) {
   timeText.textContent = timeRangeLabel(item);
   const kind = document.createElement("span");
   kind.className = "schedule-kind";
-  kind.textContent = item.type === "course" ? "课程" : "待办";
+  kind.textContent = item.type === "course" ? "课程" : item.validity === "permanent" ? "永久待办" : "待办";
   time.append(timeText, kind);
 
   const main = document.createElement("div");
   main.className = "schedule-main";
   const title = document.createElement("div");
   title.className = "schedule-title";
-  title.textContent = item.title;
+  title.textContent = item.subtitle || item.title;
+  const details = document.createElement("div");
+  details.className = "schedule-details";
+  details.textContent = item.details || item.note || "";
   const meta = document.createElement("div");
   meta.className = "item-meta";
   meta.textContent = compactParts([
-    item.date === today ? "" : formatScheduleDate(item.date),
+    item.validity === "permanent" ? "永久有效" : item.date === today ? "" : formatScheduleDate(item.date),
     item.location,
-    item.done ? "已完成" : isScheduleItemNow(item) ? "进行中" : "",
-    item.note
+    item.done ? "已完成" : isScheduleItemNow(item) ? "进行中" : ""
   ]).join(" · ");
 
   const actions = document.createElement("div");
@@ -2895,6 +2926,9 @@ function renderScheduleItem(item, today) {
   actions.append(deleteButton);
 
   main.append(title);
+  if (details.textContent) {
+    main.append(details);
+  }
   if (meta.textContent) {
     main.append(meta);
   }
@@ -3030,12 +3064,15 @@ function extractTodoFromMessage(text) {
   return {
     id: crypto.randomUUID(),
     type: "todo",
+    validity: "date",
     date,
     start,
     end: "",
     title,
+    subtitle: title,
     location: "",
     note: "来自对话",
+    details: "来自对话",
     done: false,
     source: "chat",
     createdAt: new Date().toISOString()
@@ -3046,12 +3083,15 @@ function buildScheduleInjection() {
   const now = new Date();
   const today = todayDateKey(now);
   const futureWindow = expandedScheduleItemsForRange(startOfDay(now), addDays(startOfDay(now), 7));
+  const permanent = state.scheduleItems
+    .filter((item) => item.type === "todo" && item.validity === "permanent" && !item.done)
+    .slice(0, 8);
   const current = futureWindow.filter((item) => !item.done && isScheduleItemNow(item, now));
   const todayRemaining = sortScheduleItems(futureWindow)
     .filter((item) => item.date === today && !item.done && (itemDateTime(item)?.getTime() || 0) >= now.getTime() - 10 * 60000)
     .slice(0, 8);
   const soon = nextScheduleItems(now, 5).filter((item) => item.date !== today).slice(0, 4);
-  const items = [...current, ...todayRemaining, ...soon];
+  const items = [...permanent, ...current, ...todayRemaining, ...soon];
   const uniqueItems = [];
   const seen = new Set();
   for (const item of items) {
@@ -3491,14 +3531,16 @@ function splitTitleLocation(value) {
 function normalizeScheduleItems(items) {
   const list = Array.isArray(items) ? items : Array.isArray(items?.items) ? items.items : [];
   return sortScheduleItems(list.map((item) => {
-    const start = normalizeTimeValue(item?.start);
-    const title = String(item?.title || "").trim();
-    if (!start || !title) {
+    const type = item?.type === "course" ? "course" : "todo";
+    const validity = type === "todo" && item?.validity === "permanent" ? "permanent" : "date";
+    const start = validity === "permanent" ? "" : normalizeTimeValue(item?.start);
+    const title = String(item?.subtitle || item?.title || "").trim();
+    if (!title || (validity !== "permanent" && !start)) {
       return null;
     }
     const recurrence = item?.recurrence === "weekly" ? "weekly" : "";
-    const date = recurrence ? "" : normalizeDateValue(item?.date);
-    if (!recurrence && !date) {
+    const date = recurrence || validity === "permanent" ? "" : normalizeDateValue(item?.date);
+    if (!recurrence && validity !== "permanent" && !date) {
       return null;
     }
     const startPeriod = item?.startPeriod ? clampInteger(item.startPeriod, 1, COURSE_PERIODS.length, 1) : periodForStart(start);
@@ -3511,7 +3553,8 @@ function normalizeScheduleItems(items) {
     const weekParity = ["odd", "even"].includes(item.weekParity) ? item.weekParity : "all";
     return {
       id: String(item.id || crypto.randomUUID()),
-      type: item.type === "course" ? "course" : "todo",
+      type,
+      validity,
       recurrence,
       weekday,
       weekStart,
@@ -3523,8 +3566,10 @@ function normalizeScheduleItems(items) {
       start,
       end: normalizeTimeValue(item.end),
       title: title.slice(0, 120),
+      subtitle: title.slice(0, 120),
       location: String(item.location || "").trim().slice(0, 120),
-      note: String(item.note || "").trim().slice(0, 200),
+      note: String(item.details || item.note || "").trim().slice(0, 500),
+      details: String(item.details || item.note || "").trim().slice(0, 500),
       done: Boolean(item.done),
       source: String(item.source || "manual").slice(0, 40),
       colorKey: String(item.colorKey || colorKeyForCourse(title)).slice(0, 24),
@@ -3535,10 +3580,10 @@ function normalizeScheduleItems(items) {
 
 function sortScheduleItems(items) {
   return [...items].sort((a, b) => {
-    const left = a.recurrence === "weekly"
+    const left = a.validity === "permanent" ? "0-permanent" : a.recurrence === "weekly"
       ? `W${a.weekday}-${a.startPeriod}-${a.start}`
       : `${a.date}T${a.start}`;
-    const right = b.recurrence === "weekly"
+    const right = b.validity === "permanent" ? "0-permanent" : b.recurrence === "weekly"
       ? `W${b.weekday}-${b.startPeriod}-${b.start}`
       : `${b.date}T${b.start}`;
     return left.localeCompare(right) || a.title.localeCompare(b.title);
@@ -3576,6 +3621,9 @@ function scheduleKey(item) {
 }
 
 function itemDateTime(item) {
+  if (item?.validity === "permanent") {
+    return null;
+  }
   if (!item?.date || !item?.start) {
     return null;
   }
@@ -3604,6 +3652,9 @@ function isScheduleItemNow(item, now = new Date()) {
 }
 
 function scheduleMetaLine(item, now = new Date()) {
+  if (item.validity === "permanent") {
+    return compactParts(["永久有效", item.details || item.note]).join(" · ");
+  }
   const start = itemDateTime(item);
   if (!start) {
     return timeRangeLabel(item);
@@ -3620,20 +3671,23 @@ function scheduleMetaLine(item, now = new Date()) {
 }
 
 function schedulePromptLine(item, today) {
-  const kind = item.type === "course" ? "课程" : "待办";
+  const kind = item.type === "course" ? "课程" : item.validity === "permanent" ? "永久待办" : "待办";
   const status = item.done ? "已完成" : isScheduleItemNow(item) ? "正在进行" : "未完成";
   return compactParts([
     `[${kind}]`,
-    item.date === today ? "今天" : item.date,
-    timeRangeLabel(item),
-    item.title,
+    item.validity === "permanent" ? "持续有效，直到完成或删除" : item.date === today ? "今天" : item.date,
+    item.validity === "permanent" ? "" : timeRangeLabel(item),
+    item.subtitle || item.title,
     item.location ? `地点：${item.location}` : "",
-    item.note,
+    item.details || item.note,
     status
   ]).join(" ");
 }
 
 function timeRangeLabel(item) {
+  if (item.validity === "permanent") {
+    return "永久";
+  }
   return item.end ? `${item.start}-${item.end}` : item.start;
 }
 
@@ -4782,7 +4836,12 @@ async function refreshHealthSnapshot({ silent = true } = {}) {
       state.healthSnapshot = snapshot;
       platform.storage.setJson(storageKeys.healthSnapshot, snapshot);
       if (!silent) {
-        setSailPanelStatus("身体数据已经同步。");
+        setSailPanelStatus(snapshot.wearableSync?.requested
+          ? "已向 Gadgetbridge 请求手环同步；正在读取 Health Connect 的最新精确记录。"
+          : "身体数据已经同步。");
+        if (snapshot.wearableSync?.requested) {
+          setTimeout(() => refreshHealthSnapshot({ silent: true }), 8000);
+        }
       }
     }
     renderHealthSnapshot();
@@ -4797,6 +4856,13 @@ async function refreshHealthSnapshot({ silent = true } = {}) {
   } finally {
     state.healthLoading = false;
     renderHealthSnapshot();
+    if (!state.deviceContextLoading
+      && state.deviceLocationPermission === "granted"
+      && state.deviceUsageAccess === "granted") {
+      setSailPanelStatus(state.healthSnapshot?.wearableSync?.requested
+        ? "已请求手环同步；当前显示 Health Connect 中最新可用的记录。"
+        : "今天的数据已经刷新。");
+    }
   }
 }
 
@@ -4833,7 +4899,7 @@ function renderHealthSnapshot() {
   if (state.healthLoading) {
     els.healthStatus.textContent = "正在同步…";
   } else if (hasData) {
-    els.healthStatus.textContent = healthUpdatedLabel(snapshot?.capturedAt);
+    els.healthStatus.textContent = healthUpdatedLabel(snapshot?.latestDataAt || snapshot?.capturedAt);
   } else if (!platform.health?.isSupported() || state.healthPermission === "unsupported") {
     els.healthStatus.textContent = "仅 Android 可读取";
   } else if (state.healthPermission !== "granted") {
@@ -4893,7 +4959,7 @@ function openSailView() {
   setActiveTab("sail");
   Promise.all([
     refreshDeviceContextSnapshot({ silent: true }),
-    refreshHealthSnapshot({ silent: true })
+    refreshHealthSnapshot({ silent: false })
   ]).catch(() => {});
 }
 

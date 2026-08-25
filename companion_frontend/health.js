@@ -23,12 +23,14 @@ export function normalizeHealthSnapshot(value) {
       || isoTimestamp(rawHeartRate.lastUpdatedAt)
       || latestPoint?.at
       || "",
+    wearableSync: normalizeWearableSync(value.wearableSync),
     continuous: {
       heartRate: {
         available: Boolean(rawHeartRate.available || series.length),
         unit: "bpm",
         windowHours: positiveNumber(rawHeartRate.windowHours) || 24,
         latestValue: healthNumber(rawHeartRate.latestValue) ?? latestPoint?.value ?? null,
+        measurementType: cleanText(rawHeartRate.measurementType, 48) || "latest_sample",
         averageValue: healthNumber(rawHeartRate.averageValue),
         minValue: healthNumber(rawHeartRate.minValue),
         maxValue: healthNumber(rawHeartRate.maxValue),
@@ -43,6 +45,9 @@ export function normalizeHealthSnapshot(value) {
         value: healthNumber(rawSteps.value),
         unit: "steps",
         windowHours: positiveNumber(rawSteps.windowHours) || 24,
+        windowType: cleanText(rawSteps.windowType, 48) || "rolling_window",
+        startAt: isoTimestamp(rawSteps.startAt) || "",
+        endAt: isoTimestamp(rawSteps.endAt) || "",
         lastUpdatedAt: isoTimestamp(rawSteps.lastUpdatedAt) || ""
       },
       sleep: {
@@ -53,6 +58,8 @@ export function normalizeHealthSnapshot(value) {
         startAt: isoTimestamp(rawSleep.startAt) || "",
         endAt: isoTimestamp(rawSleep.endAt) || "",
         lastUpdatedAt: isoTimestamp(rawSleep.lastUpdatedAt) || isoTimestamp(rawSleep.endAt) || "",
+        durationBasis: cleanText(rawSleep.durationBasis, 64),
+        sessionDurationMinutes: healthNumber(rawSleep.sessionDurationMinutes),
         stages: normalizeSleepStages(rawSleep.stages)
       }
     }
@@ -91,15 +98,13 @@ export function buildHealthMessageContext(snapshot) {
   };
 
   if (hasHeartRate) {
+    const measuredAt = heartRate.lastUpdatedAt;
     context.continuous.heartRate = compactObject({
       latestValue: heartRate.latestValue,
-      averageValue: heartRate.averageValue,
-      minValue: heartRate.minValue,
-      maxValue: heartRate.maxValue,
-      sampleCount: heartRate.sampleCount,
+      readingKind: "latest_exact_sample",
       unit: "bpm",
-      windowHours: heartRate.windowHours,
-      lastUpdatedAt: heartRate.lastUpdatedAt,
+      measuredAt,
+      dataAgeMinutes: measuredAt ? ageMinutes(measuredAt) : null,
       trend: heartRateTrend(heartRate.series)
     });
   }
@@ -107,7 +112,9 @@ export function buildHealthMessageContext(snapshot) {
     context.discrete.steps = compactObject({
       value: Math.max(0, Math.round(steps.value)),
       unit: "steps",
-      windowHours: steps.windowHours,
+      period: steps.windowType === "local_calendar_day" ? "today_local_time" : steps.windowType,
+      startAt: steps.startAt,
+      endAt: steps.endAt,
       lastUpdatedAt: steps.lastUpdatedAt
     });
   }
@@ -118,6 +125,7 @@ export function buildHealthMessageContext(snapshot) {
       windowHours: sleep.windowHours,
       startAt: sleep.startAt,
       endAt: sleep.endAt,
+      durationBasis: sleep.durationBasis,
       stages: sleep.stages
     });
   }
@@ -186,6 +194,18 @@ function normalizeSleepStages(value) {
     }
   }
   return result;
+}
+
+function normalizeWearableSync(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  return compactObject({
+    available: Boolean(value.available),
+    requested: Boolean(value.requested),
+    packageName: cleanText(value.packageName, 120),
+    note: cleanText(value.note, 180)
+  });
 }
 
 function heartRateTrend(series) {

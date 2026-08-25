@@ -41,21 +41,6 @@ def absence_pressure(hours_since_message: Any, expected_gap_hours: Any) -> float
     return clamp(1.0 - math.exp(-((hours / tau) ** 1.4)), 0.0, 1.0)
 
 
-def circadian_fatigue(local_time: datetime) -> float:
-    hour = local_time.hour + local_time.minute / 60.0
-    if 1 <= hour < 3:
-        return 55.0
-    if 3 <= hour < 6:
-        return 75.0
-    if 6 <= hour < 9:
-        return 40.0
-    if 9 <= hour < 18:
-        return 15.0
-    if 18 <= hour < 23:
-        return 20.0
-    return 35.0
-
-
 def is_quiet_hours(local_time: datetime) -> bool:
     hour = local_time.hour + local_time.minute / 60.0
     return QUIET_HOURS_START <= hour < QUIET_HOURS_END
@@ -76,7 +61,6 @@ def advance_emotions(
     values = normalize_channels(channels)
     totals = {key: 0.0 for key in ABSENCE_RATES}
     if end <= start:
-        values["fatigue"] = circadian_fatigue(localize(end))
         return values, totals
 
     busy = clamp(busy_factor, 0.0, 1.0)
@@ -87,12 +71,9 @@ def advance_emotions(
         elapsed = (step_end - cursor).total_seconds() / 60.0
         for definition in CHANNELS:
             key = definition["key"]
-            if key == "fatigue":
-                continue
             effective_elapsed = elapsed * (1.3 if abs(values[key] - float(definition["baseline"])) > 40 else 1.0)
             values[key] = clamp(decay(values[key], definition["baseline"], definition["halfLife"], effective_elapsed))
 
-        values["fatigue"] = circadian_fatigue(localize(step_end))
         if last_user_message_at is not None:
             hours = max(0.0, (step_end - last_user_message_at).total_seconds() / 3600.0)
             pressure = absence_pressure(hours, expected_gap_hours)

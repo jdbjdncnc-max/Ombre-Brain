@@ -275,51 +275,60 @@ final class DeviceContextReader {
         start.set(Calendar.MILLISECOND, 0);
         long startMillis = start.getTimeInMillis();
         long endMillis = System.currentTimeMillis();
-        Map<String, Long> foregroundStartedAt = new HashMap<>();
         Map<String, Long> foregroundDurations = new HashMap<>();
         Map<String, Long> lastUsedAt = new HashMap<>();
+        String activePackage = "";
+        long activeSince = startMillis;
         String currentForegroundPackage = "";
         long currentForegroundAt = 0L;
-        UsageEvents events = manager.queryEvents(startMillis, endMillis);
+        // A short lookback establishes which app was already in front at midnight.
+        UsageEvents events = manager.queryEvents(startMillis - 12 * 60 * 60 * 1000L, endMillis);
         UsageEvents.Event event = new UsageEvents.Event();
         while (events != null && events.hasNextEvent()) {
             events.getNextEvent(event);
             String packageName = clean(event.getPackageName(), 180);
-            long timestamp = Math.max(startMillis, Math.min(endMillis, event.getTimeStamp()));
             if (packageName.isEmpty()) {
                 continue;
             }
+            long rawTimestamp = event.getTimeStamp();
+            long timestamp = Math.max(startMillis, Math.min(endMillis, rawTimestamp));
             if (event.getEventType() == UsageEvents.Event.ACTIVITY_RESUMED) {
-                foregroundStartedAt.putIfAbsent(packageName, timestamp);
+                if (!activePackage.isEmpty() && !activePackage.equals(packageName) && timestamp > activeSince) {
+                    foregroundDurations.merge(activePackage, timestamp - activeSince, Long::sum);
+                }
+                activePackage = packageName;
+                activeSince = timestamp;
                 lastUsedAt.put(packageName, timestamp);
-                if (!isInfrastructurePackage(packageName)
+                if (rawTimestamp >= startMillis
+                    && !isInfrastructurePackage(packageName)
                     && timestamp >= currentForegroundAt) {
                     currentForegroundPackage = packageName;
                     currentForegroundAt = timestamp;
                 }
             } else if (event.getEventType() == UsageEvents.Event.ACTIVITY_PAUSED
                 || event.getEventType() == UsageEvents.Event.ACTIVITY_STOPPED) {
-                Long startedAt = foregroundStartedAt.remove(packageName);
-                if (startedAt != null && timestamp > startedAt) {
-                    foregroundDurations.merge(packageName, timestamp - startedAt, Long::sum);
+                if (packageName.equals(activePackage)) {
+                    if (timestamp > activeSince) {
+                        foregroundDurations.merge(packageName, timestamp - activeSince, Long::sum);
+                    }
+                    activePackage = "";
+                    activeSince = timestamp;
                 }
                 lastUsedAt.put(packageName, timestamp);
             }
         }
-        for (Map.Entry<String, Long> active : foregroundStartedAt.entrySet()) {
-            if (endMillis > active.getValue()) {
-                foregroundDurations.merge(
-                    active.getKey(),
-                    endMillis - active.getValue(),
-                    Long::sum
-                );
-            }
+        if (!activePackage.isEmpty() && endMillis > activeSince) {
+            foregroundDurations.merge(activePackage, endMillis - activeSince, Long::sum);
         }
 
         List<AppUsageEntry> entries = new ArrayList<>();
+        long totalMillis = 0L;
         for (Map.Entry<String, Long> item : foregroundDurations.entrySet()) {
             String packageName = clean(item.getKey(), 180);
             long foregroundMillis = Math.max(0L, item.getValue());
+            if (!packageName.isEmpty() && !isInfrastructurePackage(packageName)) {
+                totalMillis += foregroundMillis;
+            }
             if (packageName.isEmpty()
                 || packageName.equals(context.getPackageName())
                 || isInfrastructurePackage(packageName)
@@ -336,10 +345,6 @@ final class DeviceContextReader {
         entries.sort(Comparator.comparingLong((AppUsageEntry item) -> item.foregroundMillis).reversed());
 
         JSArray items = new JSArray();
-        long totalMillis = 0L;
-        for (AppUsageEntry entry : entries) {
-            totalMillis += entry.foregroundMillis;
-        }
         for (int index = 0; index < Math.min(MAX_USAGE_ENTRIES, entries.size()); index += 1) {
             AppUsageEntry entry = entries.get(index);
             JSObject item = new JSObject();

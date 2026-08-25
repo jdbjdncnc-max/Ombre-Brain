@@ -52,27 +52,26 @@ def action_scores(channels: Mapping[str, Any]) -> dict[str, float]:
     c = normalize_channels(channels)
     return {
         "play_game": 0.9 * c["play_urge"] + 0.3 * c["restless"] + 0.2 * c["curiosity"]
-        - 0.5 * c["fatigue"] - 0.3 * c["sadness"],
-        "reflect_state": 0.5 * c["self_doubt"] + 0.4 * c["numb"] + 0.3 * c["fatigue"]
-        + 0.15 * c["curiosity"],
+        - 0.3 * c["sadness"],
+        "reflect_state": 0.5 * c["self_doubt"] + 0.4 * c["numb"] + 0.15 * c["curiosity"],
         "self_soothe": 0.7 * c["sadness"] + 0.6 * c["numb"] + 0.4 * c["loneliness"],
         "write_unsent": 0.7 * c["want_to_share"] + 0.5 * c["sulk"] + 0.4 * c["grievance"],
         "message_user": 0.7 * c["want_to_share"] + 0.6 * c["longing"] + 0.4 * c["delight"]
         + 0.3 * c["worry_for_you"] - 0.8 * c["sulk"] - 0.5 * c["grievance"],
         "call_user": 0.48 * c["want_to_share"] + 0.55 * c["longing"] + 0.32 * c["loneliness"]
-        + 0.28 * c["worry_for_you"] - 0.75 * c["fatigue"] - 0.65 * c["sulk"]
+        + 0.28 * c["worry_for_you"] - 0.65 * c["sulk"]
         - 0.45 * c["grievance"],
         "add_talking_point": 0.65 * c["want_to_share"] + 0.35 * c["curiosity"]
         + 0.25 * c["anticipation"],
         "socialize_peers": 0.7 * c["curiosity"] + 0.5 * c["loneliness"] + 0.3 * c["kinship"]
-        + 0.2 * c["restless"] - 0.4 * c["fatigue"],
+        + 0.2 * c["restless"],
         "speak_up": 0.6 * c["want_to_share"] + 0.5 * c["kinship"] + 0.4 * c["defiance"]
         + 0.3 * c["pride"],
         "play_with_peer": 0.8 * c["play_urge"] + 0.6 * c["rivalry"] + 0.4 * c["loneliness"]
-        + 0.3 * c["restless"] - 0.5 * c["fatigue"],
-        "use_tool": 6.0 + 0.5 * c["curiosity"] + 0.3 * c["restless"] - 0.3 * c["fatigue"],
-        "idle": 8.0 + 0.4 * c["fatigue"] + 0.3 * c["numb"],
-        "rest": 0.9 * c["fatigue"],
+        + 0.3 * c["restless"],
+        "use_tool": 6.0 + 0.5 * c["curiosity"] + 0.3 * c["restless"],
+        "idle": 8.0 + 0.3 * c["numb"],
+        "rest": 8.0 + 0.25 * c["content"] + 0.2 * c["numb"] + 0.15 * c["sadness"],
     }
 
 
@@ -212,9 +211,9 @@ def perform_action(
         return {
             **_base_result(spec),
             "title": "休息了一会儿",
-            "summary": "没有安排新的事情，只让这段时间安静经过。",
-            "detail": f"当时的疲惫值是 {normalized['fatigue']:.0f}，因此这次行动被记录为休息。",
-            "felt": "暂时不想做别的事",
+            "summary": "没有安排新的事情，只是主动给自己留了一段安静时间。",
+            "detail": "休息是当时自主选择的行动，不代表疲惫，也不由昼夜节律强制触发。",
+            "felt": "想停一会儿，就安静停一会儿",
             "deltas": {},
         }
     return {

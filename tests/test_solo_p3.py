@@ -66,9 +66,11 @@ class SoloPromptContextTests(unittest.TestCase):
         context = self.service.model_context_text(now=self.now)
 
         self.assertTrue(context.startswith(SOLO_STATE_RULES))
+        self.assertIn("可选参考", context)
+        self.assertIn("完全可以", context)
         self.assertLessEqual(len(context), MAX_SOLO_CONTEXT_CHARS)
-        self.assertIn("我应该把它视为当前状态", context)
-        self.assertIn("不要为了讨好她", context)
+        self.assertIn("不是必须遵循的表演指令", context)
+        self.assertIn("眼前对话和自己的判断", context)
         self.assertIn("思念 76", context)
         self.assertIn("她有 8.4 小时没有说", context)
         self.assertIn("自己下了一盘井字棋", context)

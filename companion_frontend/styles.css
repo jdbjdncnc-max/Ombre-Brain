@@ -4021,6 +4021,8 @@ output {
 }
 
 .compact-field input,
+.compact-field textarea,
+.compact-field select,
 .course-import {
   width: 100%;
   min-width: 0;
@@ -4034,6 +4036,14 @@ output {
 
 .task-field {
   grid-column: 1 / 3;
+}
+
+.todo-details-field {
+  grid-column: 1 / 3;
+}
+
+.todo-details-field textarea {
+  resize: vertical;
 }
 
 .schedule-form .small-icon-button {
@@ -4274,6 +4284,14 @@ output {
   font-size: 14px;
   font-weight: 850;
   line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.schedule-details {
+  color: rgba(23, 33, 31, 0.76);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 

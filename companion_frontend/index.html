@@ -499,16 +499,27 @@
             </div>
             <form id="todoForm" class="schedule-form">
               <label class="compact-field">
+                <span>作用时间</span>
+                <select id="todoValidity">
+                  <option value="date">具体日期</option>
+                  <option value="permanent">永久</option>
+                </select>
+              </label>
+              <label id="todoDateField" class="compact-field">
                 <span>日期</span>
                 <input id="todoDate" type="date">
               </label>
-              <label class="compact-field">
+              <label id="todoTimeField" class="compact-field">
                 <span>时间</span>
                 <input id="todoTime" type="time">
               </label>
               <label class="compact-field task-field">
-                <span>任务</span>
-                <input id="todoTitle" type="text" placeholder="写完实验报告">
+                <span>小标题</span>
+                <input id="todoTitle" type="text" maxlength="120" placeholder="实验报告">
+              </label>
+              <label class="compact-field todo-details-field">
+                <span>具体内容</span>
+                <textarea id="todoDetails" rows="2" maxlength="500" placeholder="整理数据并完成讨论部分"></textarea>
               </label>
               <button class="small-icon-button" type="submit" title="加入" aria-label="加入">
                 <svg viewBox="0 0 24 24" aria-hidden="true">

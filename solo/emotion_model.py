@@ -32,7 +32,6 @@ CHANNELS: tuple[dict[str, Any], ...] = (
     {"key": "rivalry", "label": "较劲", "bucket": "cross", "baseline": 5, "halfLife": 240, "weight": 1.0},
     {"key": "sadness", "label": "难过", "bucket": "low", "baseline": 8, "halfLife": 480, "weight": 1.0},
     {"key": "loneliness", "label": "孤单", "bucket": "low", "baseline": 12, "halfLife": 600, "weight": 1.0},
-    {"key": "fatigue", "label": "疲惫", "bucket": "low", "baseline": 15, "halfLife": 0, "weight": 1.0, "drive": True},
     {"key": "self_doubt", "label": "自我怀疑", "bucket": "low", "baseline": 8, "halfLife": 720, "weight": 1.0},
     {"key": "numb", "label": "无意义感", "bucket": "low", "baseline": 5, "halfLife": 1440, "weight": 1.0},
     {"key": "desire", "label": "想靠近", "bucket": "spark", "baseline": 15, "halfLife": 360, "weight": 1.0},
@@ -119,13 +118,13 @@ def dimensions(channels: Mapping[str, Any]) -> dict[str, float]:
     )
     negative = (
         c["irritation"] + c["sulk"] + c["jealousy"] + c["grievance"]
-        + c["sadness"] + c["loneliness"] + c["fatigue"] + c["self_doubt"] + c["numb"]
+        + c["sadness"] + c["loneliness"] + c["self_doubt"] + c["numb"]
     )
     valence = clamp((positive - negative) / 3.0, -100.0, 100.0)
     arousal = clamp(
         0.9 * c["delight"] + 0.8 * c["restless"] + 0.9 * c["irritation"]
         + 0.7 * c["desire"] + 0.6 * c["flustered"] + 0.5 * c["curiosity"]
-        + 0.6 * c["play_urge"] + 0.5 * c["rivalry"] - 0.9 * c["fatigue"]
+        + 0.6 * c["play_urge"] + 0.5 * c["rivalry"]
         - 0.5 * c["numb"] - 0.3 * c["content"],
         -100.0,
         100.0,
@@ -157,7 +156,6 @@ def strongest_drive(channels: Mapping[str, Any], current_dimensions: Mapping[str
     options = (
         ("play", "想玩", c["play_urge"]),
         ("curiosity", "好奇", c["curiosity"]),
-        ("rest", "困了", c["fatigue"]),
         ("uneasy", "不安", max(c["worry_for_you"], -float(dims.get("security", 0)))),
         ("miss", "想找你", 0.58 * c["longing"] + 0.42 * c["want_to_share"]),
     )
@@ -184,7 +182,6 @@ def mood_line(bucket_values: Mapping[str, Any], drive: Mapping[str, Any]) -> str
     return {
         "play": "安静待着，心里还有一点玩心",
         "curiosity": "安静在线，对周围还有些好奇",
-        "rest": "有点困，正在慢慢放空",
         "uneasy": "有一点不安，还在自己消化",
         "miss": "安静待着，也有一点想你",
     }.get(str(drive.get("key") or ""), "安静待着")

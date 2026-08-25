@@ -4,8 +4,10 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from solo.actions import ACTION_SPECS, action_scores
 from solo.dynamics import absence_pressure, advance_emotions, apply_user_return, decay
 from solo.emotion_model import (
+    CHANNELS,
     aggregate_bucket,
     apply_delta,
     default_channels,
@@ -15,6 +17,16 @@ from solo.service import SoloService
 
 
 class EmotionModelTests(unittest.TestCase):
+    def test_fatigue_channel_and_circadian_value_are_removed(self):
+        channels = default_channels()
+        self.assertNotIn("fatigue", channels)
+        self.assertNotIn("疲惫", [item["label"] for item in CHANNELS])
+
+    def test_rest_remains_an_independent_action_without_fatigue(self):
+        channels = default_channels()
+        self.assertIn("rest", ACTION_SPECS)
+        self.assertGreater(action_scores(channels)["rest"], 0)
+
     def test_decay_reaches_midpoint_after_one_half_life(self):
         self.assertAlmostEqual(decay(90, 10, 60, 60), 50)
         self.assertEqual(decay(90, 10, 60, 0), 90)

@@ -14,7 +14,7 @@ from solo.service import SoloService
 class SoloActionTests(unittest.TestCase):
     def test_sulk_and_grievance_make_unsent_writing_more_likely_than_idle(self):
         channels = default_channels()
-        channels.update({"want_to_share": 90, "sulk": 85, "grievance": 90, "fatigue": 10, "numb": 5})
+        channels.update({"want_to_share": 90, "sulk": 85, "grievance": 90, "numb": 5})
 
         scores = action_scores(channels)
 

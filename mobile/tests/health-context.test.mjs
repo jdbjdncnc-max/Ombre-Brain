@@ -39,6 +39,9 @@ const snapshot = {
       value: 5432,
       unit: "steps",
       windowHours: 24,
+      windowType: "local_calendar_day",
+      startAt: "2026-08-07T16:00:00Z",
+      endAt: "2026-08-08T02:00:00Z",
       lastUpdatedAt: "2026-08-08T01:45:00Z"
     },
     sleep: {
@@ -63,13 +66,18 @@ test("normalizes health data and builds a local sparkline", () => {
   assert.equal(formatHealthDurationHours(435), "7.3");
 });
 
-test("message context keeps summaries but excludes the raw curve", () => {
+test("message context prioritizes exact latest readings and excludes the raw curve", () => {
   const context = buildHealthMessageContext(snapshot);
 
   assert.equal(context.continuous.heartRate.latestValue, 78);
-  assert.equal(context.continuous.heartRate.windowHours, 24);
+  assert.equal(context.continuous.heartRate.readingKind, "latest_exact_sample");
+  assert.equal(context.continuous.heartRate.measuredAt, "2026-08-08T01:58:00.000Z");
+  assert.equal("averageValue" in context.continuous.heartRate, false);
+  assert.equal("minValue" in context.continuous.heartRate, false);
+  assert.equal("maxValue" in context.continuous.heartRate, false);
   assert.equal(context.continuous.heartRate.trend.direction, "rising");
   assert.equal(context.discrete.steps.value, 5432);
+  assert.equal(context.discrete.steps.period, "today_local_time");
   assert.equal(context.discrete.sleep.value, 435);
   assert.equal("series" in context.continuous.heartRate, false);
 });

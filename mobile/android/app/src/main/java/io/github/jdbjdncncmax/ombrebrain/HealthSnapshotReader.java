@@ -19,6 +19,8 @@ import com.getcapacitor.JSObject;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -28,7 +30,6 @@ import java.util.concurrent.CompletableFuture;
 
 final class HealthSnapshotReader {
     private static final int HEART_RATE_WINDOW_HOURS = 24;
-    private static final int STEPS_WINDOW_HOURS = 24;
     private static final int SLEEP_WINDOW_HOURS = 48;
     private static final int MAX_SERIES_POINTS = 180;
 
@@ -58,17 +59,21 @@ final class HealthSnapshotReader {
         }
 
         Instant now = Instant.now();
+        Instant stepDayStart = ZonedDateTime.now(ZoneId.systemDefault())
+            .toLocalDate()
+            .atStartOfDay(ZoneId.systemDefault())
+            .toInstant();
         CompletableFuture<Long> stepTotal = aggregateSteps(
             context,
             manager,
-            now.minus(Duration.ofHours(STEPS_WINDOW_HOURS)),
+            stepDayStart,
             now
         );
         CompletableFuture<List<StepsRecord>> stepRecords = readRecords(
             context,
             manager,
             StepsRecord.class,
-            now.minus(Duration.ofHours(STEPS_WINDOW_HOURS)),
+            stepDayStart,
             now
         );
         CompletableFuture<List<HeartRateRecord>> heartRecords = readRecords(
@@ -95,6 +100,7 @@ final class HealthSnapshotReader {
                 try {
                     callback.onSuccess(buildSnapshot(
                         now,
+                        stepDayStart,
                         stepTotal.join(),
                         stepRecords.join(),
                         heartRecords.join(),
@@ -151,7 +157,7 @@ final class HealthSnapshotReader {
             .setTimeRangeFilter(
                 new TimeInstantRangeFilter.Builder().setStartTime(start).setEndTime(end).build()
             )
-            .setAscending(true)
+            .setAscending(false)
             .setPageSize(1000)
             .build();
         manager.readRecords(
@@ -175,13 +181,14 @@ final class HealthSnapshotReader {
     @SuppressWarnings("NewApi")
     private static JSObject buildSnapshot(
         Instant capturedAt,
+        Instant stepDayStart,
         long steps,
         List<StepsRecord> stepRecords,
         List<HeartRateRecord> heartRecords,
         List<SleepSessionRecord> sleepRecords
     ) {
         JSObject heartRate = buildHeartRate(heartRecords);
-        JSObject stepCount = buildSteps(steps, stepRecords);
+        JSObject stepCount = buildSteps(steps, stepRecords, stepDayStart, capturedAt);
         JSObject sleep = buildSleep(sleepRecords);
 
         Instant latestDataAt = newest(
@@ -244,6 +251,7 @@ final class HealthSnapshotReader {
         }
         HeartRatePoint latest = samples.get(samples.size() - 1);
         result.put("latestValue", latest.value);
+        result.put("measurementType", "latest_exact_sample");
         result.put("averageValue", Math.round((double) sum / samples.size()));
         result.put("minValue", min);
         result.put("maxValue", max);
@@ -260,7 +268,12 @@ final class HealthSnapshotReader {
     }
 
     @SuppressWarnings("NewApi")
-    private static JSObject buildSteps(long total, List<StepsRecord> records) {
+    private static JSObject buildSteps(
+        long total,
+        List<StepsRecord> records,
+        Instant dayStart,
+        Instant capturedAt
+    ) {
         Instant lastUpdatedAt = null;
         for (StepsRecord record : records) {
             lastUpdatedAt = newest(lastUpdatedAt, record.getEndTime());
@@ -269,7 +282,10 @@ final class HealthSnapshotReader {
         result.put("available", !records.isEmpty() || total > 0);
         result.put("value", Math.max(0L, total));
         result.put("unit", "steps");
-        result.put("windowHours", STEPS_WINDOW_HOURS);
+        result.put("windowHours", Math.max(0.0, Duration.between(dayStart, capturedAt).toMinutes() / 60.0));
+        result.put("windowType", "local_calendar_day");
+        result.put("startAt", dayStart.toString());
+        result.put("endAt", capturedAt.toString());
         if (lastUpdatedAt != null) {
             result.put("lastUpdatedAt", lastUpdatedAt.toString());
         }
@@ -295,6 +311,7 @@ final class HealthSnapshotReader {
             Duration.between(latest.getStartTime(), latest.getEndTime()).toMinutes()
         );
         result.put("value", durationMinutes);
+        result.put("sessionDurationMinutes", durationMinutes);
         result.put("startAt", latest.getStartTime().toString());
         result.put("endAt", latest.getEndTime().toString());
         result.put("lastUpdatedAt", latest.getEndTime().toString());
@@ -311,6 +328,16 @@ final class HealthSnapshotReader {
         JSObject stages = new JSObject();
         for (Map.Entry<String, Long> entry : stageMinutes.entrySet()) {
             stages.put(entry.getKey(), entry.getValue());
+        }
+        long sleepingMinutes = stageMinutes.getOrDefault("light", 0L)
+            + stageMinutes.getOrDefault("deep", 0L)
+            + stageMinutes.getOrDefault("rem", 0L)
+            + stageMinutes.getOrDefault("sleeping", 0L);
+        if (sleepingMinutes > 0L) {
+            result.put("value", Math.min(durationMinutes, sleepingMinutes));
+            result.put("durationBasis", "sleep_stages_excluding_awake");
+        } else {
+            result.put("durationBasis", "session_duration");
         }
         result.put("stages", stages);
         return result;

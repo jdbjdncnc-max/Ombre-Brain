@@ -261,10 +261,12 @@ public class CompanionNativePlugin extends Plugin {
             call.resolve(healthStatusResult());
             return;
         }
+        JSObject wearableSync = GadgetbridgeSyncRequester.request(getContext());
         HealthSnapshotReader.read(getContext(), new HealthSnapshotReader.Callback() {
             @Override
             public void onSuccess(JSObject snapshot) {
                 snapshot.put("permission", "granted");
+                snapshot.put("wearableSync", wearableSync);
                 call.resolve(snapshot);
             }
 
