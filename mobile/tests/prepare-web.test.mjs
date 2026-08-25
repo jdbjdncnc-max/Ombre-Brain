@@ -53,6 +53,7 @@ test("prepared frontend contains the web app and platform adapters", async () =>
   assert.doesNotMatch(app, /\[Ombre 消息信息\]/);
   assert.match(styles, /--water-glass-surface/);
   assert.match(styles, /\.bottom-tabs\s*\{[\s\S]*?width:\s*100%/);
+  assert.match(app, /textarea\.style\.height = "42px"/);
   assert.match(styles, /\.message\.user \.message-content\s*\{[\s\S]*?-webkit-backdrop-filter/);
   assert.equal((await stat(path.join(outputDir, "app.js"))).isFile(), true);
   assert.equal((await stat(path.join(outputDir, "solo.js"))).isFile(), true);

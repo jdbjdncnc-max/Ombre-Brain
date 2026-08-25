@@ -211,7 +211,7 @@ public class ProactiveNotificationWorker extends Worker {
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT);
         if (notificationGranted(context)) {
             NotificationManagerCompat.from(context).notify(id, 0, builder.build());

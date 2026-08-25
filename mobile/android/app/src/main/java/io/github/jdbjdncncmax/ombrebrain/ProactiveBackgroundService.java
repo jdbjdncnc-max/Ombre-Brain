@@ -11,6 +11,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.PowerManager;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
@@ -31,9 +32,11 @@ public class ProactiveBackgroundService extends Service {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean polling = new AtomicBoolean(false);
+    private PowerManager.WakeLock wakeLock;
     private final Runnable poll = new Runnable() {
         @Override
         public void run() {
+            keepCpuAwake();
             if (polling.compareAndSet(false, true)) {
                 executor.execute(() -> {
                     try {
@@ -62,6 +65,14 @@ public class ProactiveBackgroundService extends Service {
     public void onCreate() {
         super.onCreate();
         createChannel();
+        PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
+        if (powerManager != null) {
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                getPackageName() + ":proactive-background"
+            );
+            wakeLock.setReferenceCounted(false);
+        }
     }
 
     @Override
@@ -81,6 +92,7 @@ public class ProactiveBackgroundService extends Service {
             startForeground(NOTIFICATION_ID, buildNotification());
         }
         handler.removeCallbacks(poll);
+        keepCpuAwake();
         handler.post(poll);
         return START_STICKY;
     }
@@ -89,6 +101,9 @@ public class ProactiveBackgroundService extends Service {
     public void onDestroy() {
         handler.removeCallbacksAndMessages(null);
         executor.shutdownNow();
+        if (wakeLock != null && wakeLock.isHeld()) {
+            wakeLock.release();
+        }
         super.onDestroy();
     }
 
@@ -96,6 +111,13 @@ public class ProactiveBackgroundService extends Service {
     @Override
     public IBinder onBind(Intent intent) {
         return null;
+    }
+
+    private void keepCpuAwake() {
+        if (wakeLock == null || wakeLock.isHeld()) return;
+        try {
+            wakeLock.acquire(POLL_INTERVAL_MS * 3);
+        } catch (RuntimeException ignored) {}
     }
 
     private android.app.Notification buildNotification() {

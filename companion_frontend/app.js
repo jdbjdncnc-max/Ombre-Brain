@@ -110,6 +110,7 @@ const defaultSettings = {
   assistantAvatar: "",
   model: "zeta-gateway",
   temperature: 0.7,
+  proactivePrompt: "现在有什么想说的吗？",
   summaryModel: "",
   summaryInterval: 16,
   summaryPrompt: DEFAULT_SUMMARY_PROMPT,
@@ -385,6 +386,8 @@ const els = {
   emotionPromptStatus: document.querySelector("#emotionPromptStatus"),
   emotionPromptFile: document.querySelector("#emotionPromptFile"),
   chooseEmotionPromptButton: document.querySelector("#chooseEmotionPromptButton"),
+  proactivePrompt: document.querySelector("#proactivePrompt"),
+  proactivePromptStatus: document.querySelector("#proactivePromptStatus"),
   backgroundUrl: document.querySelector("#backgroundUrl"),
   chooseBackgroundButton: document.querySelector("#chooseBackgroundButton"),
   resetBackgroundButton: document.querySelector("#resetBackgroundButton"),
@@ -457,6 +460,7 @@ const callController = createCallController({
 
 const systemPromptReady = loadSystemPrompt();
 const emotionPromptReady = loadEmotionPrompt();
+const proactivePromptReady = loadProactivePrompt();
 
 bindEvents();
 hydrateSettingsForm();
@@ -506,7 +510,7 @@ function bindEvents() {
     state.composerDrafts[state.composerMode] = els.messageInput.value;
     state.composerError = "";
     autosizeTextarea(els.messageInput);
-    renderComposerState();
+    updateComposerInputState();
   });
 
   els.messageInput.addEventListener("keydown", (event) => {
@@ -678,6 +682,7 @@ function bindEvents() {
     applySettings();
     refreshHealth();
     loadSystemPrompt();
+    void saveProactivePrompt();
     state.loadedMemoryPanels.clear();
     loadSchedule().catch(() => {
       setScheduleSyncStatus("本地日程", "offline");
@@ -759,6 +764,7 @@ function bindEvents() {
     els.summaryInterval,
     els.summaryPrompt,
     els.reasoningPresentationPrompt,
+    els.proactivePrompt,
     els.assistantMessageFontSize,
     els.userMessageFontSize,
     els.backgroundUrl,
@@ -1184,6 +1190,13 @@ function renderComposerState() {
   }
   els.composerAttachmentTray.hidden = !els.composerAttachmentTray.childElementCount;
 
+  updateComposerInputState();
+}
+
+function updateComposerInputState() {
+  const body = String(state.composerDrafts.body || "");
+  const thinking = String(state.composerDrafts.thinking || "").trim();
+  const images = normalizeUserImages(state.pendingImages);
   const thinkingNeedsBody = Boolean(thinking && !body.trim());
   const hasSendableContent = Boolean(body.trim() || images.length);
   els.sendButton.hidden = state.composerMode === "thinking";
@@ -2320,6 +2333,44 @@ async function loadActiveMemoryPanel() {
     } else {
       renderProfileError(error);
     }
+  }
+}
+
+async function loadProactivePrompt() {
+  try {
+    const status = await gatewayFetch("/api/proactive-prompt");
+    state.settings.proactivePrompt = normalizeProactivePrompt(status.prompt);
+    els.proactivePrompt.value = state.settings.proactivePrompt;
+    els.proactivePromptStatus.textContent = status.configured ? "网关已保存" : "正在使用默认提示词";
+    els.proactivePromptStatus.classList.remove("error");
+    saveSettings();
+    return status;
+  } catch (error) {
+    els.proactivePromptStatus.textContent = `读取失败：${error instanceof Error ? error.message : String(error)}`;
+    els.proactivePromptStatus.classList.add("error");
+    return null;
+  }
+}
+
+async function saveProactivePrompt() {
+  const prompt = normalizeProactivePrompt(els.proactivePrompt.value);
+  els.proactivePrompt.value = prompt;
+  state.settings.proactivePrompt = prompt;
+  els.proactivePromptStatus.textContent = "保存中…";
+  els.proactivePromptStatus.classList.remove("error");
+  try {
+    const status = await gatewayFetch("/api/proactive-prompt", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt })
+    });
+    state.settings.proactivePrompt = normalizeProactivePrompt(status.prompt);
+    els.proactivePrompt.value = state.settings.proactivePrompt;
+    saveSettings();
+    els.proactivePromptStatus.textContent = "网关已保存 · 下次主动消息生效";
+  } catch (error) {
+    els.proactivePromptStatus.textContent = `保存失败：${error instanceof Error ? error.message : String(error)}`;
+    els.proactivePromptStatus.classList.add("error");
   }
 }
 
@@ -5446,6 +5497,7 @@ function hydrateSettingsForm() {
   els.modelName.value = state.settings.model;
   els.temperature.value = state.settings.temperature;
   els.temperatureValue.value = Number(state.settings.temperature).toFixed(1);
+  els.proactivePrompt.value = state.settings.proactivePrompt;
   els.summaryModel.value = state.settings.summaryModel;
   els.summaryInterval.value = state.settings.summaryInterval;
   els.summaryPrompt.value = state.settings.summaryPrompt;
@@ -5479,6 +5531,7 @@ function readSettingsForm() {
     assistantAvatar: state.settings.assistantAvatar || "",
     model: els.modelName.value.trim() || defaultSettings.model,
     temperature: Number(els.temperature.value),
+    proactivePrompt: normalizeProactivePrompt(els.proactivePrompt.value),
     ...(state.settings.systemPromptMarkdown
       ? {
           systemPromptMarkdown: state.settings.systemPromptMarkdown,
@@ -5547,13 +5600,18 @@ function normalizeSettings(value) {
     assistantMessageFontSize: normalizeMessageFontSize(settings.assistantMessageFontSize),
     userMessageFontSize: normalizeMessageFontSize(settings.userMessageFontSize),
     reasoningPresentationPrompt: String(settings.reasoningPresentationPrompt || "").trim()
-      || defaultSettings.reasoningPresentationPrompt
+      || defaultSettings.reasoningPresentationPrompt,
+    proactivePrompt: normalizeProactivePrompt(settings.proactivePrompt)
   };
 }
 
 function normalizeMessageFontSize(value) {
   const size = Number(value);
   return Number.isFinite(size) ? Math.min(24, Math.max(12, Math.round(size))) : 16;
+}
+
+function normalizeProactivePrompt(value) {
+  return String(value || "").trim().slice(0, 500) || defaultSettings.proactivePrompt;
 }
 
 function normalizeSummaryPrompt(value) {
@@ -5759,9 +5817,25 @@ function setBusy(value) {
   renderComposerState();
 }
 
+let textareaAutosizeFrame = 0;
+
 function autosizeTextarea(textarea) {
-  textarea.style.height = "auto";
-  textarea.style.height = `${Math.min(textarea.scrollHeight, 140)}px`;
+  if (textareaAutosizeFrame) {
+    cancelAnimationFrame(textareaAutosizeFrame);
+  }
+  if (!textarea.value) {
+    textarea.style.height = "42px";
+    textarea.style.overflowY = "hidden";
+    textareaAutosizeFrame = 0;
+    return;
+  }
+  textareaAutosizeFrame = requestAnimationFrame(() => {
+    textareaAutosizeFrame = 0;
+    textarea.style.height = "0px";
+    const height = Math.min(Math.max(42, textarea.scrollHeight), 140);
+    textarea.style.height = `${height}px`;
+    textarea.style.overflowY = height >= 140 ? "auto" : "hidden";
+  });
 }
 
 async function saveMessages() {

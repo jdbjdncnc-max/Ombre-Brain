@@ -63,6 +63,9 @@ test("Android uses a native background worker for proactive notifications", asyn
   assert.match(backgroundService, /POLL_INTERVAL_MS = 60_000L/);
   assert.match(backgroundService, /ProactiveNotificationWorker\.runOnce/);
   assert.match(backgroundService, /START_STICKY/);
+  assert.match(backgroundService, /PowerManager\.PARTIAL_WAKE_LOCK/);
+  assert.match(backgroundService, /wakeLock\.acquire\(POLL_INTERVAL_MS \* 3\)/);
+  assert.match(worker, /VISIBILITY_PUBLIC/);
   assert.match(bootReceiver, /ACTION_BOOT_COMPLETED/);
   assert.match(bootReceiver, /ACTION_MY_PACKAGE_REPLACED/);
   assert.match(bootReceiver, /ProactiveBackgroundService\.start/);

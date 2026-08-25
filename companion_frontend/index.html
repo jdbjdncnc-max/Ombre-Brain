@@ -6,7 +6,7 @@
   <title>Entangle</title>
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
     <link rel="stylesheet" href="styles.css?v=20260823.2">
-    <link rel="stylesheet" href="claude-theme.css?v=20260824.1">
+    <link rel="stylesheet" href="claude-theme.css?v=20260825.1">
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -46,28 +46,6 @@
                     <path d="M12 5v14M5 12h14"/>
                   </svg>
                 </button>
-                <div id="composerMenu" class="composer-menu" hidden>
-                  <button type="button" data-composer-action="photo">
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M4 6h16v12H4z"/>
-                      <path d="m7 15 3-3 2 2 3-4 2 5M8 9h.01"/>
-                    </svg>
-                    <span>发送照片</span>
-                  </button>
-                  <button type="button" data-composer-mode="body">
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M5 5h14v14H5zM8 9h8M8 13h8M8 17h5"/>
-                    </svg>
-                    <span>输入正文</span>
-                  </button>
-                  <button type="button" data-composer-mode="thinking">
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M9 18h6M10 21h4"/>
-                      <path d="M8.1 14.8A6 6 0 1 1 15.9 14.8C14.7 15.6 14 16.5 14 18h-4c0-1.5-.7-2.4-1.9-3.2z"/>
-                    </svg>
-                    <span>输入人类思考链</span>
-                  </button>
-                </div>
               </div>
               <textarea id="messageInput" rows="1" placeholder="说点什么" autocomplete="off"></textarea>
               <button id="sendButton" class="send-button" type="submit" title="发送" aria-label="发送">
@@ -77,6 +55,28 @@
               </button>
               <input id="chatImageFile" type="file" accept="image/png,image/jpeg,image/webp,image/avif,image/gif" multiple hidden>
             </form>
+            <div id="composerMenu" class="composer-menu" hidden>
+              <button type="button" data-composer-action="photo">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 6h16v12H4z"/>
+                  <path d="m7 15 3-3 2 2 3-4 2 5M8 9h.01"/>
+                </svg>
+                <span>发送照片</span>
+              </button>
+              <button type="button" data-composer-mode="body">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 5h14v14H5zM8 9h8M8 13h8M8 17h5"/>
+                </svg>
+                <span>输入正文</span>
+              </button>
+              <button type="button" data-composer-mode="thinking">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M9 18h6M10 21h4"/>
+                  <path d="M8.1 14.8A6 6 0 1 1 15.9 14.8C14.7 15.6 14 16.5 14 18h-4c0-1.5-.7-2.4-1.9-3.2z"/>
+                </svg>
+                <span>输入人类思考链</span>
+              </button>
+            </div>
           </div>
         </section>
 
@@ -730,6 +730,13 @@
               <small>只供独立情绪评估调用使用，不会替换聊天模型的系统提示词，也不会加入 MCP 工具。</small>
             </div>
 
+            <label class="field">
+              <span>主动消息提示词</span>
+              <textarea id="proactivePrompt" rows="3" maxlength="500" spellcheck="true" placeholder="现在有什么想说的吗？"></textarea>
+              <small>独处系统决定联系你时，会把这句话作为本轮对话模型的最后一条输入。修改后保存到网关，锁屏时也会沿用。</small>
+              <output id="proactivePromptStatus" class="inline-status" aria-live="polite"></output>
+            </label>
+
             <section class="field summary-settings" aria-labelledby="summarySettingsTitle">
               <div class="summary-settings-heading">
                 <div>
@@ -977,7 +984,7 @@
   <script src="vendor/dompurify/purify.min.js"></script>
   <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/katex/auto-render.min.js"></script>
-    <script src="app.js?v=20260824.2" type="module"></script>
-    <script src="assets/claude-ui/claude-ui.js?v=20260824.2" defer></script>
+    <script src="app.js?v=20260825.1" type="module"></script>
+    <script src="assets/claude-ui/claude-ui.js?v=20260825.1" defer></script>
 </body>
 </html>

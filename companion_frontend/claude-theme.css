@@ -345,6 +345,9 @@ body::after {
 
 .composer textarea {
   font-size: 16px;
+  height: 42px;
+  min-height: 42px;
+  overflow-y: hidden;
 }
 
 .send-button {
@@ -358,11 +361,14 @@ body::after {
 }
 
 .composer-menu {
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 60;
   border-radius: 20px;
-  background-color: rgba(255, 255, 255, 0.4);
+  background: #f4f9f7;
   box-shadow: var(--ct-lift-lg), var(--ct-inner);
-  -webkit-backdrop-filter: blur(14px) saturate(180%);
-  backdrop-filter: blur(14px) saturate(180%);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .composer-menu button {

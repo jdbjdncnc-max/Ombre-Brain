@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 from starlette.requests import Request
 
+from gateway_system_prompt import GatewaySystemPromptStore
 from solo.actions import ACTION_SPECS, action_scores
 from solo.proactive import parse_proactive_response
 from solo.service import SoloService
@@ -71,6 +72,41 @@ class ProactivePromptTests(unittest.TestCase):
 
         self.assertGreater(eager["message_user"], eager["idle"])
         self.assertLess(upset["message_user"], eager["message_user"])
+
+
+class ProactivePromptSettingsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prompt_endpoint_persists_custom_text_and_returns_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            gateway = object.__new__(ZetaOpenAIGateway)
+            gateway.gateway_token = "secret"
+            gateway.proactive_prompt_store = GatewaySystemPromptStore(directory, stem="proactive_prompt")
+
+            initial = await gateway.proactive_prompt(_request("GET", "/api/proactive-prompt"))
+            saved = await gateway.proactive_prompt(_request(
+                "PUT",
+                "/api/proactive-prompt",
+                payload={"prompt": "看到我现在的状态后，你想说什么？"},
+            ))
+
+            self.assertEqual(json.loads(initial.body)["prompt"], "现在有什么想说的吗？")
+            self.assertFalse(json.loads(initial.body)["configured"])
+            self.assertEqual(json.loads(saved.body)["prompt"], "看到我现在的状态后，你想说什么？")
+            self.assertTrue(json.loads(saved.body)["configured"])
+            self.assertEqual(gateway._read_proactive_prompt(), "看到我现在的状态后，你想说什么？")
+
+    async def test_prompt_endpoint_rejects_empty_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            gateway = object.__new__(ZetaOpenAIGateway)
+            gateway.gateway_token = "secret"
+            gateway.proactive_prompt_store = GatewaySystemPromptStore(directory, stem="proactive_prompt")
+
+            response = await gateway.proactive_prompt(_request(
+                "PUT",
+                "/api/proactive-prompt",
+                payload={"prompt": "   "},
+            ))
+
+            self.assertEqual(response.status_code, 400)
 
 
 class ProactiveServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -281,6 +317,7 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         gateway.semantic_limit = 1
         gateway.solo = SimpleNamespace(timezone_name="Asia/Taipei")
         gateway._read_system_prompt = lambda: "MAIN PROMPT"
+        gateway._read_proactive_prompt = lambda: "看到现在的情况，你想说什么？"
         gateway._load_proactive_conversation_context = lambda: {
             "session_id": "phone-session",
             "temperature": 0.7,
@@ -345,13 +382,13 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["messages"][2]["ombre_context_kind"], "conversation_summary")
         self.assertEqual(payload["messages"][3]["content"], "我有点担心明天的考试")
         self.assertEqual(payload["messages"][4]["content"], "先陪你把最担心的部分理清。")
-        self.assertEqual(payload["messages"][5]["content"], "现在有什么想说的吗？")
+        self.assertEqual(payload["messages"][5]["content"], "看到现在的情况，你想说什么？")
         self.assertEqual(payload["temperature"], 0.7)
         self.assertNotIn("max_tokens", payload)
         gateway.memory_gateway.recall.assert_awaited_once()
         gateway._save_turn.assert_awaited_once()
         saved_context = gateway._remember_proactive_conversation_context.call_args.kwargs
-        self.assertEqual(saved_context["messages"][-2]["content"], "现在有什么想说的吗？")
+        self.assertEqual(saved_context["messages"][-2]["content"], "看到现在的情况，你想说什么？")
         self.assertEqual(saved_context["messages"][-1]["content"], "先别一个人吓自己。\n\n要不要把最担心的题型发给我？")
 
     def test_proactive_message_text_preserves_paragraph_breaks(self):

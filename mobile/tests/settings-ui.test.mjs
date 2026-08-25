@@ -20,7 +20,11 @@ test("settings categories include calls, both prompts, and message font controls
   assert.match(theme, /\.message\.user \.message-content\s*\{[\s\S]*?--user-message-font-size/);
   assert.match(grouping, /"#incomingCallSettingsTitle"/);
   assert.match(grouping, /"#systemPromptFileName"/);
+  assert.match(html, /id="proactivePrompt"[^>]+maxlength="500"/);
+  assert.match(app, /\/api\/proactive-prompt/);
+  assert.match(grouping, /"#proactivePrompt"/);
   assert.match(grouping, /"#emotionPromptFileName"/);
   assert.match(grouping, /"#assistantMessageFontSize"/);
   assert.match(grouping, /"#userMessageFontSize"/);
+  assert.match(theme, /\.composer-menu\s*\{[\s\S]*?background:\s*#f4f9f7/);
 });

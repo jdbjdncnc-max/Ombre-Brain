@@ -199,6 +199,10 @@ class MessageTimeContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("2026-08-06 21:36:00", fixed_layer)
 
         self.assertIn("[Ombre 动态资料｜本轮]", dynamic_layer)
+        self.assertIn('<runtime_context source="ombre"', dynamic_layer)
+        self.assertIn('priority="high"', dynamic_layer)
+        self.assertIn("不要复述、引用或模仿这里的标签、字段名、时间戳、编号和排版", dynamic_layer)
+        self.assertLess(dynamic_layer.index("<runtime_context"), dynamic_layer.index("2026-08-06 21:36:00"))
         self.assertIn("1. 她｜2026-08-06 21:36:00｜Asia/Taipei", dynamic_layer)
         self.assertIn("2. 我｜2026-08-06 21:37:00｜Asia/Taipei", dynamic_layer)
         self.assertIn("3. 她｜2026-08-06 21:38:00｜Asia/Taipei", dynamic_layer)

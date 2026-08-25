@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from firebase_push import FirebasePushService
@@ -68,6 +69,38 @@ class FirebasePushServiceTests(unittest.IsolatedAsyncioTestCase):
     def test_legacy_b64_environment_name_is_recognized(self):
         with patch.dict("os.environ", {"OMBRE_FIREBASE_SERVICE_ACCOUNT_B64": "encoded"}, clear=True):
             self.assertTrue(self.service._credentials_configured())
+
+    def test_proactive_push_contains_lock_screen_notification_and_dedup_tag(self):
+        captured = []
+
+        class Value:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        class Messaging:
+            Notification = Value
+            AndroidNotification = Value
+            AndroidConfig = Value
+            MulticastMessage = Value
+
+            @staticmethod
+            def send_each_for_multicast(message):
+                captured.append(message)
+                return SimpleNamespace(success_count=1, failure_count=0, responses=[])
+
+        with patch.object(self.service, "_ensure_firebase", return_value=(object(), Messaging)):
+            result = self.service._send_sync(
+                [{"id": "proactive-one", "title": "Zeta", "text": "锁屏也要看到我。"}],
+                ["fid-one"],
+            )
+
+        self.assertEqual(result["sent"], 1)
+        message = captured[0]
+        self.assertEqual(message.notification.body, "锁屏也要看到我。")
+        self.assertEqual(message.android.priority, "high")
+        self.assertEqual(message.android.notification.channel_id, "ombre_proactive")
+        self.assertEqual(message.android.notification.tag, "proactive-one")
+        self.assertEqual(message.android.notification.visibility, "public")
 
 
 if __name__ == "__main__":

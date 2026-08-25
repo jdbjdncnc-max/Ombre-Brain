@@ -110,7 +110,19 @@ class FirebasePushService:
             message = messaging.MulticastMessage(
                 tokens=fids,
                 data=data,
-                android=messaging.AndroidConfig(priority="high", ttl=timedelta(days=1)),
+                notification=messaging.Notification(
+                    title=data["title"],
+                    body=data["text"],
+                ),
+                android=messaging.AndroidConfig(
+                    priority="high",
+                    ttl=timedelta(days=1),
+                    notification=messaging.AndroidNotification(
+                        channel_id="ombre_proactive",
+                        tag=data["id"],
+                        visibility="public",
+                    ),
+                ),
             )
             response = messaging.send_each_for_multicast(message)
             sent += int(response.success_count)

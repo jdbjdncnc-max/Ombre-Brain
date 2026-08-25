@@ -29,7 +29,6 @@
 
   function keyboardStateWatch() {
     var root = document.documentElement;
-    var baseHeight = window.innerHeight;
     var lastOpen = false;
     var raf = 0;
 
@@ -39,7 +38,16 @@
 
     function apply() {
       raf = 0;
-      var open = isComposerFocused() && baseHeight - window.innerHeight > 120;
+      /* Android WebView may keep window.innerHeight unchanged in resize="native".
+         A focused composer on a coarse-pointer device means the keyboard owns the
+         physical bottom; hide the nav so it stays behind the keyboard instead of
+         being re-laid out above it. */
+      var viewport = window.visualViewport;
+      var viewportGap = viewport
+        ? Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)
+        : 0;
+      var touchLayout = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+      var open = isComposerFocused() && (touchLayout || viewportGap > 120);
       if (open === lastOpen) return;
       lastOpen = open;
       root.classList.toggle("ct-keyboard-open", open);
@@ -51,10 +59,11 @@
     }
 
     window.addEventListener("resize", schedule, { passive: true });
-    window.addEventListener("orientationchange", function () {
-      baseHeight = window.innerHeight;
-      schedule();
-    }, { passive: true });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", schedule, { passive: true });
+      window.visualViewport.addEventListener("scroll", schedule, { passive: true });
+    }
+    window.addEventListener("orientationchange", schedule, { passive: true });
     document.addEventListener("focusin", schedule, true);
     document.addEventListener("focusout", schedule, true);
   }
@@ -207,6 +216,7 @@
         "#temperature",
         "#systemPromptFileName",
         "#emotionPromptFileName",
+        "#proactivePrompt",
         "#summaryModel",
         "#reasoningPresentationPrompt"
       ]
