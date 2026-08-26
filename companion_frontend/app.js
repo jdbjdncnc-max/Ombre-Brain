@@ -2410,6 +2410,7 @@ function renderMemoryList() {
   for (const item of visibleItems) {
     const card = document.createElement("article");
     card.className = "memory-item";
+    card.dataset.created = item.created || "";
 
     const title = document.createElement("div");
     title.className = "item-title";
@@ -2422,6 +2423,7 @@ function renderMemoryList() {
     const meta = document.createElement("div");
     meta.className = "item-meta";
     meta.textContent = compactParts([
+      formatDate(item.created),
       item.type,
       arrayLabel(item.domain),
       arrayLabel(item.tags),

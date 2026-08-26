@@ -1,0 +1,481 @@
+/* 记忆 / 日程视觉覆盖层：只覆盖现有选择器，不拥有数据或网络请求。 */
+:root {
+  --em-plate: rgba(255, 255, 255, 0.1);
+  --em-card: rgba(255, 255, 255, 0.16);
+  --em-solid: #f4f9f7;
+  --em-tint: color-mix(in srgb, var(--accent) 12%, transparent);
+  --em-tint-2: color-mix(in srgb, var(--accent) 22%, transparent);
+  --em-ink: rgba(17, 28, 27, 0.9);
+  --em-ink-2: rgba(23, 33, 31, 0.62);
+  --em-ink-3: rgba(23, 33, 31, 0.42);
+  --em-rail: rgba(23, 33, 31, 0.16);
+  --em-r-chip: 999px;
+  --em-r-item: 15px;
+  --em-r-box: 22px;
+  --em-row: 46px;
+  --em-period-col: 38px;
+}
+
+#memoryView .memory-search,
+#scheduleView .schedule-dashboard,
+#scheduleView .week-grid,
+#scheduleView .schedule-item,
+#memoryView .memory-item {
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  background-color: var(--em-card);
+  background-image: none;
+  box-shadow: 0 8px 22px rgba(20, 42, 48, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.54);
+  -webkit-backdrop-filter: blur(7px) saturate(180%);
+  backdrop-filter: blur(7px) saturate(180%);
+}
+
+#memoryView .memory-item,
+#scheduleView .schedule-item {
+  border-radius: var(--em-r-item);
+}
+
+#memoryView .item-title,
+#memoryView .item-meta,
+#memoryView .item-body,
+#scheduleView .schedule-title,
+#scheduleView .schedule-details,
+#scheduleView .item-meta,
+#scheduleView .compact-field span,
+#scheduleView .week-day,
+#scheduleView .period-label span,
+#scheduleView .week-course strong,
+#scheduleView .week-course span,
+#scheduleView .schedule-time {
+  font-weight: 400;
+}
+
+/* ---------- 记忆：创建时间线 ---------- */
+#memoryView .memory-search {
+  min-height: 38px;
+  padding: 4px 8px;
+  border-radius: var(--em-r-chip);
+}
+
+#memoryView .memory-search input {
+  min-height: 30px;
+  font-size: 13px;
+}
+
+.em-memory-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 1px 1px 3px;
+  scrollbar-width: none;
+}
+
+.em-memory-toolbar::-webkit-scrollbar {
+  display: none;
+}
+
+.em-month-chip,
+.em-order-chip,
+.em-today-mark {
+  flex: 0 0 auto;
+  border: 1px solid rgba(255, 255, 255, 0.68);
+  border-radius: var(--em-r-chip);
+  color: var(--em-ink-2);
+  background: var(--em-plate);
+  font: 400 11px/1 var(--ct-mono, ui-monospace, monospace);
+  letter-spacing: 0.03em;
+}
+
+.em-month-chip,
+.em-order-chip {
+  min-height: 28px;
+  padding: 0 10px;
+}
+
+.em-month-chip:active,
+.em-order-chip:active {
+  background: var(--em-tint-2);
+}
+
+.em-order-chip {
+  position: sticky;
+  right: 0;
+  margin-left: auto;
+  color: var(--em-ink);
+  background: var(--em-solid);
+  box-shadow: -8px 0 12px var(--em-solid);
+}
+
+.em-memory-timeline {
+  display: grid;
+  gap: 12px;
+}
+
+.em-memory-group {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  padding-left: 23px;
+}
+
+.em-memory-group::before {
+  content: "";
+  position: absolute;
+  top: 34px;
+  bottom: -13px;
+  left: 7px;
+  width: 1px;
+  background: var(--em-rail);
+}
+
+.em-memory-group:last-of-type::before {
+  bottom: 10px;
+}
+
+.em-memory-day {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 4px 0;
+  color: var(--em-ink-2);
+  background: linear-gradient(90deg, rgba(242, 250, 247, 0.92), rgba(242, 250, 247, 0.62), transparent);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+.em-memory-day::before {
+  content: "";
+  position: absolute;
+  left: -19px;
+  top: 12px;
+  width: 11px;
+  height: 11px;
+  border: 3px solid rgba(242, 250, 247, 0.96);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 70%, white);
+  box-sizing: border-box;
+}
+
+.em-memory-date {
+  color: var(--em-ink);
+  font: 400 13px/1 var(--ct-mono, ui-monospace, monospace);
+}
+
+.em-memory-weekday,
+.em-memory-count {
+  font-size: 11px;
+}
+
+.em-memory-count {
+  margin-left: auto;
+  padding-right: 4px;
+  color: var(--em-ink-3);
+}
+
+.em-today-mark {
+  padding: 4px 7px;
+  color: color-mix(in srgb, var(--accent) 74%, var(--em-ink));
+  background: var(--em-tint);
+}
+
+#memoryView .memory-item {
+  position: relative;
+  display: grid;
+  gap: 6px;
+  min-height: 0;
+  padding: 11px 13px 12px;
+}
+
+#memoryView .memory-item .item-title {
+  padding-right: 58px;
+  color: var(--em-ink);
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+#memoryView .memory-item .item-body {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--em-ink-2);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+#memoryView .memory-item .item-meta {
+  order: -1;
+  min-height: 15px;
+  padding-right: 56px;
+  color: var(--em-ink-3);
+  font: 400 11px/1.35 var(--ct-mono, ui-monospace, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#memoryView .memory-item .text-button {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  color: transparent;
+  background: transparent;
+  font-size: 0;
+}
+
+#memoryView .memory-item:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 58%, white);
+  box-shadow: 0 0 0 3px var(--em-tint), 0 8px 22px rgba(20, 42, 48, 0.12);
+}
+
+#memoryView .empty-state,
+#memoryView .empty-inline {
+  padding: 24px 16px;
+  border: 1px dashed rgba(23, 33, 31, 0.28);
+  border-radius: var(--em-r-item);
+  color: var(--em-ink-2);
+  background: var(--em-plate);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* ---------- 日程：信息优先，设置后置 ---------- */
+#scheduleView .schedule-dashboard {
+  margin-bottom: 10px;
+  padding: 14px;
+  border-radius: var(--em-r-box);
+}
+
+#scheduleView .schedule-next > span,
+#scheduleView .schedule-next small,
+#scheduleView .schedule-status {
+  color: var(--em-ink-2);
+  font-weight: 400;
+}
+
+#scheduleView .schedule-next strong {
+  color: var(--em-ink);
+  font-size: 19px;
+  font-weight: 400;
+}
+
+#scheduleView .schedule-section {
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+#scheduleView .section-title-row > strong {
+  color: var(--em-ink-2);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+}
+
+.em-todo-toggle,
+.em-course-toggle {
+  min-height: 38px;
+  padding: 0 13px;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: var(--em-r-chip);
+  color: var(--em-ink);
+  background: var(--em-card);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.48);
+  font: 400 13px/1 var(--ct-font, "Songti SC", SimSun, serif);
+}
+
+.em-todo-toggle {
+  width: 100%;
+  text-align: left;
+}
+
+.em-course-toggle {
+  margin-left: auto;
+  padding: 0 10px;
+  color: var(--em-ink-2);
+  font-size: 11px;
+}
+
+#scheduleView .schedule-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  border-radius: var(--em-r-item);
+  background: var(--em-plate);
+}
+
+#scheduleView .schedule-form[hidden],
+#scheduleView .em-course-settings[hidden] {
+  display: none;
+}
+
+#scheduleView .schedule-form .compact-field:first-child {
+  grid-column: 1 / -1;
+}
+
+#scheduleView .schedule-form .task-field,
+#scheduleView .schedule-form .todo-details-field {
+  grid-column: 1 / -1;
+}
+
+#scheduleView .compact-field span {
+  color: var(--em-ink-2);
+  font-size: 11px;
+}
+
+#scheduleView .compact-field input,
+#scheduleView .compact-field select,
+#scheduleView .compact-field textarea,
+#scheduleView .course-import {
+  border-color: rgba(255, 255, 255, 0.76);
+  border-radius: 12px;
+  background-color: rgba(255, 255, 255, 0.48);
+  color: var(--em-ink);
+  font-weight: 400;
+}
+
+#scheduleView .em-course-settings {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  border-radius: var(--em-r-item);
+  background: var(--em-plate);
+}
+
+#scheduleView .week-section {
+  padding-top: 6px;
+}
+
+#scheduleView .week-grid {
+  --period-count: 12;
+  grid-template-columns: var(--em-period-col) repeat(7, minmax(0, 1fr));
+  grid-template-rows: 38px repeat(var(--period-count), var(--em-row));
+  border-radius: var(--em-r-box);
+}
+
+#scheduleView .week-corner,
+#scheduleView .week-day,
+#scheduleView .period-label,
+#scheduleView .period-cell {
+  font-weight: 400;
+}
+
+#scheduleView .period-label {
+  padding: 2px 1px;
+}
+
+#scheduleView .period-label strong {
+  font: 400 14px/1 var(--ct-mono, ui-monospace, monospace);
+}
+
+#scheduleView .period-label span {
+  display: none;
+}
+
+#scheduleView .week-course {
+  margin: 2px;
+  padding: 6px 5px;
+  border: 1px solid color-mix(in srgb, var(--course-bg) 36%, white);
+  border-radius: 10px;
+  color: var(--em-ink);
+  background: color-mix(in srgb, var(--course-bg) 14%, rgba(255, 255, 255, 0.8));
+  box-shadow: none;
+}
+
+#scheduleView .week-course.is-now {
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, white);
+  outline-offset: -1px;
+}
+
+#scheduleView .week-course strong,
+#scheduleView .week-course span {
+  color: inherit;
+  font-weight: 400;
+  text-shadow: none;
+}
+
+#scheduleView .week-course strong {
+  -webkit-line-clamp: 3;
+}
+
+#scheduleView .week-course span {
+  -webkit-line-clamp: 2;
+  opacity: 0.7;
+}
+
+#scheduleView .timeline-section {
+  padding-top: 8px;
+}
+
+#scheduleView .schedule-item {
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 10px;
+  padding: 11px 12px;
+}
+
+#scheduleView .schedule-item.is-now {
+  border-color: color-mix(in srgb, var(--accent) 64%, white);
+  background-color: var(--em-tint);
+}
+
+#scheduleView .schedule-time {
+  color: var(--em-ink-2);
+  font-family: var(--ct-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+
+#scheduleView .schedule-kind {
+  color: color-mix(in srgb, var(--accent) 72%, var(--em-ink));
+  background: var(--em-tint);
+  font: 400 10px/1.2 var(--ct-font, "Songti SC", SimSun, serif);
+}
+
+#scheduleView .schedule-title {
+  color: var(--em-ink);
+  font-size: 15px;
+}
+
+#scheduleView .schedule-details,
+#scheduleView .schedule-main .item-meta {
+  color: var(--em-ink-2);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+@media (max-width: 560px) {
+  #scheduleView .schedule-dashboard {
+    grid-template-columns: 1fr auto;
+  }
+
+  #scheduleView .schedule-status {
+    justify-self: end;
+    font-size: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .em-memory-day,
+  #memoryView .memory-item,
+  #scheduleView .schedule-item {
+    scroll-behavior: auto;
+  }
+}
