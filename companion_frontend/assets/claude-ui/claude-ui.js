@@ -239,7 +239,7 @@
       id: "data",
       title: "数据与备份",
       hint: "导入导出聊天记录、清空对话",
-      picks: ["#importChatMode", "#saveSettingsButton", "#exportChatStatus", "#importChatStatus"]
+      picks: ["#messageHeatmapTitle", "#importChatMode", "#saveSettingsButton", "#exportChatStatus", "#importChatStatus"]
     }
   ];
 

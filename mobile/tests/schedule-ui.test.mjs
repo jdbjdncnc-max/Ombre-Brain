@@ -17,4 +17,5 @@ test("todos support permanent validity, subtitles, and detailed content", async 
   assert.match(app, /validity === "permanent"/);
   assert.match(app, /持续有效，直到完成或删除/);
   assert.match(app, /details:\s*String\(item\.details \|\| item\.note/);
+  assert.doesNotMatch(app, /captureTodoFromMessage|extractTodoFromMessage|已从对话加入/);
 });

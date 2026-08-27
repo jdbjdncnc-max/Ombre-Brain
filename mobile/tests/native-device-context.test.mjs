@@ -31,6 +31,10 @@ test("Android reads sensor location and today's UsageStats without IP geolocatio
   assert.match(reader, /MAX_USAGE_ENTRIES = 3/);
   assert.match(reader, /current_foreground_app/);
   assert.match(reader, /currentScreenApp/);
+  assert.match(reader, /com\.android\.chrome/);
+  assert.match(reader, /ATTENTION_SESSION_THRESHOLD_MS = 30 \* 60 \* 1000L/);
+  assert.match(reader, /ATTENTION_ROLLING_THRESHOLD_MS = 60 \* 60 \* 1000L/);
+  assert.match(reader, /attention_/);
   assert.match(reader, /packageinstaller/);
   assert.match(reader, /securitycenter/);
   assert.doesNotMatch(reader, /https?:\/\//);
@@ -40,4 +44,11 @@ test("Android reads sensor location and today's UsageStats without IP geolocatio
   assert.match(manifest, /android\.permission\.PACKAGE_USAGE_STATS/);
   assert.doesNotMatch(manifest, /ACCESS_BACKGROUND_LOCATION/);
   assert.match(frontend, /device \? \{ device \}/);
+});
+
+test("Android submits each attention threshold to the dialogue wake endpoint once", async () => {
+  const worker = await readFile(path.join(javaRoot, "ProactiveNotificationWorker.java"), "utf8");
+  assert.match(worker, /\/api\/solo\/attention-event/);
+  assert.match(worker, /KEY_ATTENTION_SUBMITTED/);
+  assert.match(worker, /attention\.optBoolean\("shouldNotify"\)/);
 });

@@ -1,5 +1,6 @@
 import { platform } from "./platform.js";
 import { createChatHistoryStore } from "./chat_storage.js?v=20260822.1";
+import { createMessageActivityStore } from "./message_activity.js?v=20260827.1";
 import { createCallController } from "./call.js?v=20260810.1";
 import { createSoloPanel } from "./solo.js?v=20260823.1";
 import { formatTokenUsage, normalizeTokenUsage } from "./openai_stream.js?v=20260810.1";
@@ -207,6 +208,7 @@ const state = {
   chatStorageError: "",
   chatStorageInfo: null,
   chatStorageMigrated: Boolean(chatHistoryLoad.migrated),
+  messageActivity: { durable: false, days: {}, total: 0 },
   mcpLoaded: false,
   mcpServers: [],
   sessionId: platform.storage.getString(storageKeys.sessionId) || crypto.randomUUID(),
@@ -229,6 +231,9 @@ const els = {
   memoryView: document.querySelector("#memoryView"),
   scheduleView: document.querySelector("#scheduleView"),
   settingsView: document.querySelector("#settingsView"),
+  messageHeatmap: document.querySelector("#messageHeatmap"),
+  messageHeatmapSummary: document.querySelector("#messageHeatmapSummary"),
+  messageHeatmapDetail: document.querySelector("#messageHeatmapDetail"),
   messageList: document.querySelector("#messageList"),
   chatLocatorButton: document.querySelector("#chatLocatorButton"),
   chatLocatorDot: document.querySelector("#chatLocatorDot"),
@@ -471,6 +476,8 @@ hydrateSettingsForm();
 saveSettings();
 applySettings({ refreshMessages: false });
 renderMessages();
+const messageActivityStore = await createMessageActivityStore();
+await refreshMessageActivity();
 if (hasUnfinishedStoredReply) {
   saveMessages();
 }
@@ -890,9 +897,6 @@ async function sendMessage() {
   }
   if (replacedExistingHistory) {
     cancelMessageEdit({ clearInput: false });
-  }
-  if (text) {
-    captureTodoFromMessage(text);
   }
   if (replacedExistingHistory) {
     renderMessages(false);
@@ -3012,73 +3016,6 @@ function setScheduleSyncStatus(text, tone = "") {
   els.scheduleSyncStatus.textContent = text;
   els.scheduleSyncStatus.classList.toggle("online", tone === "online");
   els.scheduleSyncStatus.classList.toggle("offline", tone === "offline");
-}
-
-function captureTodoFromMessage(text) {
-  const todo = extractTodoFromMessage(text);
-  if (!todo) {
-    return;
-  }
-  const result = addScheduleItems([todo]);
-  if (result.added) {
-    els.todoCaptureStatus.textContent = "已从对话加入";
-    clearInlineStatusLater(els.todoCaptureStatus);
-  }
-}
-
-function extractTodoFromMessage(text) {
-  const source = String(text || "").trim();
-  if (!/(今天|今日|明天|后天|\d{4}[/-]\d{1,2}[/-]\d{1,2})/.test(source)) {
-    return null;
-  }
-  if (!/(待办|任务|完成|做完|写完|提交|复习|整理|背|看|读|练|要|需要|得)/.test(source)) {
-    return null;
-  }
-
-  const timeMatch = source.match(/(?:^|[^\d])(\d{1,2})(?:[:：](\d{2})|点半|点)(?:\s*(?:前|之前|左右|以后|后))?/);
-  if (!timeMatch) {
-    return null;
-  }
-
-  const date = dateFromText(source) || todayDateKey();
-  const hour = Number(timeMatch[1]);
-  const minute = timeMatch[0].includes("点半") ? 30 : Number(timeMatch[2] || 0);
-  const start = normalizeTimeParts(hour, minute);
-  if (!start) {
-    return null;
-  }
-
-  const timeEnd = timeMatch.index + timeMatch[0].length;
-  let title = source.slice(timeEnd)
-    .replace(/^[\s，,。.!！；;：:]*(前|之前|左右|以后|后)?/, "")
-    .replace(/^(要|需要|得|把|去)?\s*(完成|做完|写完|提交|复习|背完|背|看完|看|读完|读|整理|练习|做)?/, "")
-    .replace(/[。.!！]+$/, "")
-    .trim();
-  if (title.length < 2) {
-    title = source.slice(0, timeMatch.index)
-      .replace(/(今天|今日|明天|后天|要|需要|得|在|之前|前|待办|任务)/g, "")
-      .trim();
-  }
-  if (title.length < 2 || title.length > 80) {
-    return null;
-  }
-
-  return {
-    id: crypto.randomUUID(),
-    type: "todo",
-    validity: "date",
-    date,
-    start,
-    end: "",
-    title,
-    subtitle: title,
-    location: "",
-    note: "来自对话",
-    details: "来自对话",
-    done: false,
-    source: "chat",
-    createdAt: new Date().toISOString()
-  };
 }
 
 function buildScheduleInjection() {
@@ -5909,6 +5846,7 @@ function autosizeTextarea(textarea) {
 async function saveMessages() {
   try {
     await chatHistoryStore.save(state.messages);
+    await refreshMessageActivity();
     state.chatStorageError = "";
     void refreshChatStorageStatus();
     return true;
@@ -5919,6 +5857,89 @@ async function saveMessages() {
     console.error("Unable to persist chat history", error);
     return false;
   }
+}
+
+async function refreshMessageActivity() {
+  if (!els.messageHeatmap) return;
+  try {
+    await messageActivityStore.record(state.messages);
+    state.messageActivity = await messageActivityStore.summary();
+  } catch (error) {
+    state.messageActivity = { durable: false, days: {}, total: 0, error };
+  }
+  renderMessageHeatmap();
+}
+
+function renderMessageHeatmap() {
+  if (!els.messageHeatmap) return;
+  els.messageHeatmap.replaceChildren();
+  const activity = state.messageActivity || {};
+  const days = activity.days && typeof activity.days === "object" ? activity.days : {};
+  if (!activity.durable) {
+    els.messageHeatmapSummary.textContent = "统计数据库不可用";
+    els.messageHeatmapDetail.textContent = "聊天记录仍会正常保存，但暂时无法保留历史热力图。";
+  } else {
+    els.messageHeatmapSummary.textContent = `近一年 · ${messageActivityYearTotal(days)} 条`;
+  }
+
+  const today = startOfDay(new Date());
+  const firstDay = addDays(today, -364);
+  const leading = (firstDay.getDay() + 6) % 7;
+  for (let index = 0; index < leading; index += 1) {
+    const spacer = document.createElement("span");
+    spacer.className = "message-heatmap-spacer";
+    els.messageHeatmap.append(spacer);
+  }
+
+  const counts = [];
+  for (let offset = 0; offset < 365; offset += 1) {
+    counts.push(Number(days[dateKey(addDays(firstDay, offset))]?.total || 0));
+  }
+  const levels = messageActivityThresholds(counts);
+  for (let offset = 0; offset < 365; offset += 1) {
+    const date = dateKey(addDays(firstDay, offset));
+    const item = days[date] || { user: 0, assistant: 0, total: 0 };
+    const cell = document.createElement("button");
+    cell.type = "button";
+    cell.className = "message-heatmap-cell";
+    cell.dataset.level = String(messageActivityLevel(item.total, levels));
+    cell.setAttribute("role", "gridcell");
+    const label = `${formatScheduleDate(date)}：我 ${item.user || 0} 条，${state.settings.assistantName} ${item.assistant || 0} 条，共 ${item.total || 0} 条`;
+    cell.title = label;
+    cell.setAttribute("aria-label", label);
+    cell.addEventListener("click", () => {
+      els.messageHeatmapDetail.textContent = label;
+    });
+    els.messageHeatmap.append(cell);
+  }
+  requestAnimationFrame(() => {
+    const scroll = els.messageHeatmap.closest(".message-heatmap-scroll");
+    if (scroll) scroll.scrollLeft = scroll.scrollWidth;
+  });
+}
+
+function messageActivityYearTotal(days) {
+  const cutoff = dateKey(addDays(startOfDay(new Date()), -364));
+  return Object.entries(days).reduce((sum, [date, item]) => (
+    date >= cutoff ? sum + Number(item?.total || 0) : sum
+  ), 0);
+}
+
+function messageActivityThresholds(counts) {
+  const positive = counts.filter((value) => value > 0).sort((a, b) => a - b);
+  if (!positive.length) return [1, 2, 3, 4];
+  return [0.25, 0.5, 0.75, 1].map((ratio) => (
+    positive[Math.min(positive.length - 1, Math.floor((positive.length - 1) * ratio))]
+  ));
+}
+
+function messageActivityLevel(count, thresholds) {
+  const value = Number(count || 0);
+  if (value <= 0) return 0;
+  if (value <= thresholds[0]) return 1;
+  if (value <= thresholds[1]) return 2;
+  if (value <= thresholds[2]) return 3;
+  return 4;
 }
 
 function chatLocatorPageButton(delta, label) {

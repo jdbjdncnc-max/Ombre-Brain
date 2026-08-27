@@ -1095,7 +1095,17 @@ class ZetaOpenAIGateway:
                 "content": schedule_context,
             })
         source_messages.extend(conversation_messages)
-        proactive_prompt = self._read_proactive_prompt()
+        attention = (
+            context.get("activity", {}).get("attention")
+            if isinstance(context.get("activity"), dict)
+            and isinstance(context.get("activity", {}).get("attention"), dict)
+            else {}
+        )
+        proactive_prompt = (
+            self._attention_dialogue_prompt(attention)
+            if attention
+            else self._read_proactive_prompt()
+        )
         source_messages.append({
             "role": "user",
             "content": proactive_prompt,
@@ -1163,6 +1173,8 @@ class ZetaOpenAIGateway:
         usage = deepcopy(raw_usage) if isinstance(raw_usage, dict) else None
         visible_text, _ = self._extract_zeta_memory_request(assistant_text)
         visible_text = visible_text.strip()[:1200]
+        if attention and visible_text.upper() in {"[[SILENT]]", "<SILENT>", "SILENT"}:
+            return {"called": True, "messages": [], **({"usage": usage} if usage else {})}
         if not visible_text:
             logger.warning("Proactive message provider returned no usable messages")
             return {"called": True, "messages": []}
@@ -1185,6 +1197,38 @@ class ZetaOpenAIGateway:
             "messages": [visible_text],
             **({"usage": usage} if usage else {}),
         }
+
+    def _attention_dialogue_prompt(self, attention: dict[str, Any]) -> str:
+        apps = attention.get("apps") if isinstance(attention.get("apps"), list) else []
+        app_parts = []
+        for item in apps[:8]:
+            if not isinstance(item, dict):
+                continue
+            name = self._device_text(item.get("appName") or item.get("packageName"), 80)
+            minutes = int(self._health_number(item.get("minutes"), 0, 1440) or 0)
+            if name and minutes:
+                app_parts.append(f"{name} {minutes} 分钟")
+        level = str(attention.get("thresholdLevel") or "")
+        session_minutes = int(self._health_number(attention.get("sessionMinutes"), 0, 1440) or 0)
+        rolling_minutes = int(self._health_number(attention.get("rollingMinutes"), 0, 1440) or 0)
+        current_app = self._device_text(
+            attention.get("currentApp") or attention.get("currentPackage"),
+            80,
+        )
+        facts = [
+            f"当前娱乐应用：{current_app}" if current_app else "",
+            f"本次连续娱乐使用约 {session_minutes} 分钟" if session_minutes else "",
+            f"最近 90 分钟累计约 {rolling_minutes} 分钟" if rolling_minutes else "",
+            "应用分布：" + "、".join(app_parts) if app_parts else "",
+            f"观察节点：{level}" if level else "",
+        ]
+        return (
+            "下面是手机系统刚刚观察到的注意力使用情况，不是她发送的消息，也不是要求你必须提醒她。\n"
+            + "\n".join(item for item in facts if item)
+            + "\n\n请结合你们最近的真实对话、现在的时间、日程和你自己的判断，决定此刻是否真的想主动对她说话。"
+            + "不要机械报时，不要默认责备她，也不要假装知道她在应用里看的具体内容。"
+            + "如果你想说，就直接写一条会进入你们对话窗口的自然消息；如果不想打扰，只输出 [[SILENT]]。"
+        )
 
     async def _select_solo_mcp_call(self, context: dict[str, Any]) -> dict[str, Any]:
         main_prompt = self._read_system_prompt()
@@ -3489,6 +3533,45 @@ Zeta hidden memory protocol:
             }
         return snapshot if "location" in snapshot or "appUsage" in snapshot else {}
 
+    def _sanitize_attention_event(self, value: dict[str, Any]) -> dict[str, Any]:
+        event_id = re.sub(r"[^A-Za-z0-9._:-]+", "", str(value.get("id") or ""))[:100]
+        if not event_id:
+            return {}
+        apps: list[dict[str, Any]] = []
+        raw_apps = value.get("apps") if isinstance(value.get("apps"), list) else []
+        for raw in raw_apps[:8]:
+            if not isinstance(raw, dict):
+                continue
+            name = self._device_text(raw.get("appName"), 80)
+            package_name = re.sub(
+                r"[^A-Za-z0-9._-]+", "", str(raw.get("packageName") or "")
+            )[:180]
+            minutes = self._health_number(raw.get("minutes"), 0, 1440)
+            if minutes is None or not (name or package_name):
+                continue
+            apps.append({
+                "appName": name or package_name,
+                "packageName": package_name,
+                "minutes": int(round(minutes)),
+            })
+        return {
+            "id": event_id,
+            "capturedAt": self._health_timestamp(value.get("capturedAt")),
+            "timezone": normalize_timezone_name(value.get("timezone"), self.solo.timezone_name),
+            "sessionId": re.sub(r"[^A-Za-z0-9._:-]+", "", str(value.get("sessionId") or ""))[:128],
+            "thresholdLevel": re.sub(
+                r"[^A-Za-z0-9._:-]+", "", str(value.get("thresholdLevel") or "")
+            )[:40],
+            "sessionStartedAt": self._health_timestamp(value.get("sessionStartedAt")),
+            "sessionMinutes": int(round(self._health_number(value.get("sessionMinutes"), 0, 1440) or 0)),
+            "rollingMinutes": int(round(self._health_number(value.get("rollingMinutes"), 0, 1440) or 0)),
+            "currentApp": self._device_text(value.get("currentApp"), 80),
+            "currentPackage": re.sub(
+                r"[^A-Za-z0-9._-]+", "", str(value.get("currentPackage") or "")
+            )[:180],
+            "apps": apps,
+        }
+
     def _format_device_context(self, device: dict[str, Any]) -> str:
         if not device:
             return ""
@@ -3790,6 +3873,28 @@ Zeta hidden memory protocol:
             return JSONResponse({"ok": False, "error": "No usable device context"}, status_code=400)
         await self.solo.note_device_context(snapshot)
         return JSONResponse({"ok": True})
+
+    async def solo_attention_event(self, request: Request) -> JSONResponse:
+        auth = self._authorize(request)
+        if auth is not None:
+            return auth
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False, "error": "Request body must be valid JSON"}, status_code=400)
+        event = self._sanitize_attention_event(body if isinstance(body, dict) else {})
+        if not event:
+            return JSONResponse({"ok": False, "error": "No usable attention event"}, status_code=400)
+        accepted = await self.solo.accept_attention_event(event)
+        if accepted.get("accepted"):
+            async def runner() -> None:
+                try:
+                    await self.solo.process_attention_event(event)
+                except Exception as exc:
+                    logger.warning("Attention dialogue decision failed | id=%s error=%s", event["id"], exc)
+            asyncio.create_task(runner())
+        status_code = 200 if accepted.get("ok") else 409
+        return JSONResponse(accepted, status_code=status_code)
 
     async def solo_outbox_ack(self, request: Request) -> JSONResponse:
         auth = self._authorize(request)
@@ -4726,6 +4831,15 @@ async def solo_device_context_route(request: Request) -> Response:
     return await gateway.solo_device_context(request)
 
 
+async def solo_attention_event_route(request: Request) -> Response:
+    if gateway is None:
+        return JSONResponse(
+            {"error": {"message": f"Gateway startup failed: {startup_error}", "type": "server_error"}},
+            status_code=503,
+        )
+    return await gateway.solo_attention_event(request)
+
+
 async def solo_outbox_ack_route(request: Request) -> Response:
     if gateway is None:
         return JSONResponse(
@@ -4877,6 +4991,7 @@ routes = [
     Route("/api/solo/outbox", solo_outbox_route, methods=["GET"]),
     Route("/api/solo/messages", solo_messages_route, methods=["GET"]),
     Route("/api/solo/device-context", solo_device_context_route, methods=["POST"]),
+    Route("/api/solo/attention-event", solo_attention_event_route, methods=["POST"]),
     Route("/api/solo/outbox/ack", solo_outbox_ack_route, methods=["POST"]),
     Route("/api/solo/wake", solo_wake_route, methods=["POST"]),
     Route("/api/solo/mcp/servers", solo_mcp_servers_route, methods=["GET", "POST"]),

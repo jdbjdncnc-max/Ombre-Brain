@@ -49,6 +49,7 @@ public class ProactiveNotificationWorker extends Worker {
     public static final long PERIODIC_MINUTES = 15L;
 
     private static final String KEY_DELIVERED = "delivered_ids";
+    private static final String KEY_ATTENTION_SUBMITTED = "attention_submitted_ids";
     private static final String PERIODIC_WORK_NAME = "ombre-proactive-notifications";
     private static final String IMMEDIATE_WORK_NAME = "ombre-proactive-notifications-now";
     private static final String CHANNEL_ID = "ombre_proactive_messages";
@@ -258,7 +259,47 @@ public class ProactiveNotificationWorker extends Worker {
         try {
             JSONObject snapshot = new JSONObject(DeviceContextReader.readUsageSnapshot(context).toString());
             GatewayHttp.post(baseUrl + "/api/solo/device-context", token, snapshot);
+            submitAttentionEvent(context, baseUrl, token, snapshot);
         } catch (Exception ignored) {}
+    }
+
+    private static void submitAttentionEvent(
+        Context context,
+        String baseUrl,
+        String token,
+        JSONObject snapshot
+    ) throws Exception {
+        JSONObject usage = snapshot.optJSONObject("appUsage");
+        JSONObject attention = usage == null ? null : usage.optJSONObject("attention");
+        if (attention == null || !attention.optBoolean("shouldNotify")) {
+            return;
+        }
+        String eventId = clean(attention.optString("eventId"));
+        if (eventId.isEmpty()) {
+            return;
+        }
+        SharedPreferences preferences = context.getSharedPreferences(PREFS_NAME, 0);
+        Set<String> submitted = new HashSet<>(preferences.getStringSet(
+            KEY_ATTENTION_SUBMITTED,
+            new HashSet<>()
+        ));
+        if (submitted.contains(eventId)) {
+            return;
+        }
+
+        JSONObject body = new JSONObject(attention.toString());
+        body.put("id", eventId);
+        body.put("capturedAt", snapshot.optString("capturedAt"));
+        body.put("timezone", clean(preferences.getString(KEY_TIMEZONE, "Asia/Taipei")));
+        body.put("sessionId", clean(preferences.getString(KEY_SESSION_ID, "zeta-main")));
+        GatewayHttp.post(baseUrl + "/api/solo/attention-event", token, body);
+
+        submitted.add(eventId);
+        List<String> retained = new ArrayList<>(submitted);
+        if (retained.size() > 120) {
+            retained = retained.subList(retained.size() - 120, retained.size());
+        }
+        preferences.edit().putStringSet(KEY_ATTENTION_SUBMITTED, new HashSet<>(retained)).apply();
     }
 
     private static void createNotificationChannel(Context context) {

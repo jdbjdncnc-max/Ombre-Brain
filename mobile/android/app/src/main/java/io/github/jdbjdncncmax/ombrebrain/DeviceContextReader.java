@@ -22,19 +22,47 @@ import com.getcapacitor.JSObject;
 import java.text.SimpleDateFormat;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 final class DeviceContextReader {
     private static final int MAX_USAGE_ENTRIES = 3;
+    private static final int MAX_ATTENTION_ENTRIES = 8;
+    private static final long ATTENTION_SESSION_BREAK_MS = 10 * 60 * 1000L;
+    private static final long ATTENTION_ROLLING_WINDOW_MS = 90 * 60 * 1000L;
+    private static final long ATTENTION_SESSION_THRESHOLD_MS = 30 * 60 * 1000L;
+    private static final long ATTENTION_ROLLING_THRESHOLD_MS = 60 * 60 * 1000L;
+    private static final Set<String> ENTERTAINMENT_PACKAGES = new HashSet<>(Arrays.asList(
+        "com.twitter.android",
+        "com.zhihu.android",
+        "com.xingin.xhs",
+        "tv.danmaku.bili",
+        "com.bilibili.app.in",
+        "com.android.chrome",
+        "com.google.android.youtube",
+        "com.ss.android.ugc.aweme",
+        "com.zhiliaoapp.musically",
+        "com.ss.android.ugc.trill",
+        "com.smile.gifmaker",
+        "com.instagram.android",
+        "com.facebook.katana",
+        "com.reddit.frontpage",
+        "com.netflix.mediaclient",
+        "com.tencent.qqlive",
+        "com.youku.phone",
+        "com.qiyi.video"
+    ));
     private static final long LOCATION_FRESH_MS = 30 * 1000L;
     private static final long LOCATION_TIMEOUT_MS = 12 * 1000L;
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor();
@@ -277,6 +305,7 @@ final class DeviceContextReader {
         long endMillis = System.currentTimeMillis();
         Map<String, Long> foregroundDurations = new HashMap<>();
         Map<String, Long> lastUsedAt = new HashMap<>();
+        List<UsageInterval> usageIntervals = new ArrayList<>();
         String activePackage = "";
         long activeSince = startMillis;
         String currentForegroundPackage = "";
@@ -295,6 +324,7 @@ final class DeviceContextReader {
             if (event.getEventType() == UsageEvents.Event.ACTIVITY_RESUMED) {
                 if (!activePackage.isEmpty() && !activePackage.equals(packageName) && timestamp > activeSince) {
                     foregroundDurations.merge(activePackage, timestamp - activeSince, Long::sum);
+                    addUsageInterval(usageIntervals, activePackage, activeSince, timestamp);
                 }
                 activePackage = packageName;
                 activeSince = timestamp;
@@ -310,6 +340,7 @@ final class DeviceContextReader {
                 if (packageName.equals(activePackage)) {
                     if (timestamp > activeSince) {
                         foregroundDurations.merge(packageName, timestamp - activeSince, Long::sum);
+                        addUsageInterval(usageIntervals, packageName, activeSince, timestamp);
                     }
                     activePackage = "";
                     activeSince = timestamp;
@@ -319,6 +350,7 @@ final class DeviceContextReader {
         }
         if (!activePackage.isEmpty() && endMillis > activeSince) {
             foregroundDurations.merge(activePackage, endMillis - activeSince, Long::sum);
+            addUsageInterval(usageIntervals, activePackage, activeSince, endMillis);
         }
 
         List<AppUsageEntry> entries = new ArrayList<>();
@@ -375,7 +407,127 @@ final class DeviceContextReader {
             result.put("currentScreenApp", currentScreenApp);
         }
         result.put("entries", items);
+        result.put("attention", buildAttentionSnapshot(
+            context,
+            usageIntervals,
+            activePackage,
+            endMillis
+        ));
         return result;
+    }
+
+    private static void addUsageInterval(
+        List<UsageInterval> intervals,
+        String packageName,
+        long startMillis,
+        long endMillis
+    ) {
+        if (!isEntertainmentPackage(packageName) || endMillis <= startMillis) {
+            return;
+        }
+        intervals.add(new UsageInterval(packageName, startMillis, endMillis));
+    }
+
+    private static JSObject buildAttentionSnapshot(
+        Context context,
+        List<UsageInterval> intervals,
+        String activePackage,
+        long nowMillis
+    ) {
+        JSObject result = new JSObject();
+        result.put("status", "ready");
+        result.put("source", "android_usage_events");
+        result.put("sessionBreakMinutes", ATTENTION_SESSION_BREAK_MS / 60_000L);
+        result.put("sessionThresholdMinutes", ATTENTION_SESSION_THRESHOLD_MS / 60_000L);
+        result.put("rollingWindowMinutes", ATTENTION_ROLLING_WINDOW_MS / 60_000L);
+        result.put("rollingThresholdMinutes", ATTENTION_ROLLING_THRESHOLD_MS / 60_000L);
+
+        intervals.sort(Comparator.comparingLong(item -> item.startMillis));
+        long rollingStart = nowMillis - ATTENTION_ROLLING_WINDOW_MS;
+        long rollingMillis = 0L;
+        for (UsageInterval interval : intervals) {
+            rollingMillis += overlapMillis(interval, rollingStart, nowMillis);
+        }
+
+        int sessionStartIndex = intervals.size();
+        if (!intervals.isEmpty()) {
+            sessionStartIndex = intervals.size() - 1;
+            while (sessionStartIndex > 0) {
+                UsageInterval current = intervals.get(sessionStartIndex);
+                UsageInterval previous = intervals.get(sessionStartIndex - 1);
+                if (current.startMillis - previous.endMillis > ATTENTION_SESSION_BREAK_MS) {
+                    break;
+                }
+                sessionStartIndex -= 1;
+            }
+        }
+
+        long sessionMillis = 0L;
+        long sessionStartAt = 0L;
+        Map<String, Long> sessionByPackage = new HashMap<>();
+        for (int index = sessionStartIndex; index < intervals.size(); index += 1) {
+            UsageInterval interval = intervals.get(index);
+            if (sessionStartAt == 0L) sessionStartAt = interval.startMillis;
+            long duration = Math.max(0L, interval.endMillis - interval.startMillis);
+            sessionMillis += duration;
+            sessionByPackage.merge(interval.packageName, duration, Long::sum);
+        }
+
+        boolean activeEntertainment = isEntertainmentPackage(activePackage);
+        String thresholdLevel = "";
+        if (activeEntertainment && rollingMillis >= ATTENTION_ROLLING_THRESHOLD_MS) {
+            thresholdLevel = "rolling_60";
+        } else if (activeEntertainment && sessionMillis >= ATTENTION_SESSION_THRESHOLD_MS) {
+            thresholdLevel = "session_30";
+        }
+
+        result.put("active", activeEntertainment);
+        result.put("sessionMinutes", Math.max(0L, Math.round(sessionMillis / 60_000.0)));
+        result.put("rollingMinutes", Math.max(0L, Math.round(rollingMillis / 60_000.0)));
+        if (sessionStartAt > 0L) {
+            result.put("sessionStartedAt", Instant.ofEpochMilli(sessionStartAt).toString());
+        }
+        if (activeEntertainment) {
+            result.put("currentApp", appLabel(context, activePackage));
+            result.put("currentPackage", activePackage);
+        }
+        if (!thresholdLevel.isEmpty() && sessionStartAt > 0L) {
+            result.put("thresholdLevel", thresholdLevel);
+            result.put("shouldNotify", true);
+            result.put("eventId", "attention_" + sessionStartAt + "_" + thresholdLevel);
+        } else {
+            result.put("shouldNotify", false);
+        }
+
+        List<AppUsageEntry> entries = new ArrayList<>();
+        for (Map.Entry<String, Long> item : sessionByPackage.entrySet()) {
+            entries.add(new AppUsageEntry(
+                appLabel(context, item.getKey()),
+                item.getKey(),
+                item.getValue(),
+                0L
+            ));
+        }
+        entries.sort(Comparator.comparingLong((AppUsageEntry item) -> item.foregroundMillis).reversed());
+        JSArray apps = new JSArray();
+        for (int index = 0; index < Math.min(MAX_ATTENTION_ENTRIES, entries.size()); index += 1) {
+            AppUsageEntry entry = entries.get(index);
+            JSObject item = new JSObject();
+            item.put("appName", entry.appName);
+            item.put("packageName", entry.packageName);
+            item.put("minutes", Math.max(1L, Math.round(entry.foregroundMillis / 60_000.0)));
+            apps.put(item);
+        }
+        result.put("apps", apps);
+        return result;
+    }
+
+    private static long overlapMillis(UsageInterval interval, long startMillis, long endMillis) {
+        return Math.max(0L, Math.min(interval.endMillis, endMillis) - Math.max(interval.startMillis, startMillis));
+    }
+
+    private static boolean isEntertainmentPackage(String packageName) {
+        return ENTERTAINMENT_PACKAGES.contains(clean(packageName, 180));
     }
 
     private static Location bestLastKnown(LocationManager manager) {
@@ -486,6 +638,18 @@ final class DeviceContextReader {
             this.packageName = packageName;
             this.foregroundMillis = foregroundMillis;
             this.lastUsedAt = lastUsedAt;
+        }
+    }
+
+    private static final class UsageInterval {
+        final String packageName;
+        final long startMillis;
+        final long endMillis;
+
+        UsageInterval(String packageName, long startMillis, long endMillis) {
+            this.packageName = packageName;
+            this.startMillis = startMillis;
+            this.endMillis = endMillis;
         }
     }
 }

@@ -139,6 +139,7 @@ class SoloService:
         self.proactive_acks_path = self.solo_dir / "proactive_acks.json"
         self.talking_points_path = self.solo_dir / "talking_points.json"
         self.device_context_path = self.solo_dir / "device_context.json"
+        self.attention_events_path = self.solo_dir / "attention_events.json"
         self.lease_path = self.solo_dir / "heartbeat.lock"
         self.enabled = _truthy(os.environ.get("OMBRE_SOLO_ENABLED", "0")) if enabled is None else bool(enabled)
         self.pulse_seconds = pulse_seconds if pulse_seconds is not None else _bounded_int(
@@ -792,6 +793,57 @@ class SoloService:
         value["storedAt"] = _iso(datetime.now(timezone.utc))
         async with self._state_lock:
             self._write_json(self.device_context_path, value)
+
+    async def accept_attention_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        """Register one phone attention threshold exactly once before model work starts."""
+
+        if not self.enabled:
+            return {"ok": False, "accepted": False, "reason": "solitude_disabled"}
+        event_id = self._context_text(event.get("id"), 100)
+        if not event_id:
+            return {"ok": False, "accepted": False, "reason": "missing_id"}
+        async with self._state_lock:
+            state = self._read_json(self.attention_events_path)
+            ids = [str(value) for value in state.get("ids", []) if str(value).strip()]
+            if event_id in ids:
+                return {"ok": True, "accepted": False, "duplicate": True}
+            ids.append(event_id)
+            self._write_json(self.attention_events_path, {
+                "ids": ids[-500:],
+                "lastEvent": deepcopy(event),
+                "updatedAt": _iso(datetime.now(timezone.utc)),
+            })
+        return {"ok": True, "accepted": True, "duplicate": False}
+
+    async def process_attention_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        """Let the normal dialogue generator decide whether an attention event deserves a message."""
+
+        if not self.enabled:
+            return {"ok": False, "queued": 0, "reason": "solitude_disabled"}
+        now = datetime.now(timezone.utc)
+        async with self._state_lock:
+            runtime = self._read_json(self.state_path) or self._new_state(now)
+            emotion = self._read_json(self.emotion_path)
+            if not isinstance(emotion, dict) or not emotion:
+                emotion = self._new_emotion_state(now, now)
+            if not self._proactive_message_allowed(runtime, emotion, now):
+                return {"ok": True, "queued": 0, "reason": "proactive_cooldown"}
+
+        activity = {
+            "id": self._context_text(event.get("id"), 100),
+            "ts": self._context_text(event.get("capturedAt"), 80) or _iso(now),
+            "type": "message_user",
+            "kind": "attention",
+            "title": "注意力使用达到观察节点",
+            "source": "android_usage_events",
+            "attention": deepcopy(event),
+        }
+        generated = await self._generate_proactive_outbox(
+            activity,
+            wake_id=activity["id"],
+            now=now,
+        )
+        return {"ok": True, **generated}
 
     async def wake(self, reason: str = "manual") -> dict[str, Any]:
         if not self.enabled:
@@ -1646,7 +1698,7 @@ class SoloService:
                     "title": title,
                     "text": message,
                     "activityId": str(activity.get("id") or "")[:80],
-                    "source": "solitude_model",
+                    "source": "attention_model" if activity.get("kind") == "attention" else "solitude_model",
                     "timezone": self.timezone_name,
                     **({"usage": deepcopy(usage)} if usage else {}),
                 }
@@ -1656,11 +1708,23 @@ class SoloService:
 
             runtime = self._read_json(self.state_path)
             if isinstance(runtime, dict):
+                runtime_changed = False
+                if queued:
+                    last_actions = (
+                        runtime.get("lastActionAt")
+                        if isinstance(runtime.get("lastActionAt"), dict)
+                        else {}
+                    )
+                    last_actions["message_user"] = _iso(now)
+                    runtime["lastActionAt"] = last_actions
+                    runtime_changed = True
                 decision = runtime.get("lastDecision")
                 if isinstance(decision, dict) and str(decision.get("id") or "") == wake_id:
                     decision["modelCalled"] = called
                     decision["proactiveQueued"] = queued
                     runtime["lastDecision"] = decision
+                    runtime_changed = True
+                if runtime_changed:
                     runtime["updatedAt"] = _iso(now)
                     self._write_json(self.state_path, runtime)
         push_result: dict[str, Any] = {}

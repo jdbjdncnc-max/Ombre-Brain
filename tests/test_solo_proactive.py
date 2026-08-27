@@ -1,3 +1,4 @@
+import asyncio
 import json
 import tempfile
 import unittest
@@ -173,6 +174,36 @@ class ProactiveServiceTests(unittest.IsolatedAsyncioTestCase):
         emotion = self.service._read_json(self.service.emotion_path)
         self.assertEqual(emotion["budget"]["llmCalls"], 1)
         self.assertEqual(emotion["budget"]["proactive"], 2)
+
+    async def test_attention_event_is_deduplicated_and_enters_proactive_chat(self):
+        contexts = []
+
+        async def generate(context):
+            contexts.append(context)
+            return {"called": True, "title": "Zeta", "messages": ["先从屏幕里抬一下头？"]}
+
+        self.service.set_proactive_generator(generate)
+        event = {
+            "id": "attention_123_session_30",
+            "capturedAt": "2026-08-08T04:00:00Z",
+            "thresholdLevel": "session_30",
+            "sessionMinutes": 31,
+            "rollingMinutes": 31,
+            "currentApp": "Chrome",
+            "apps": [{"appName": "Chrome", "minutes": 31}],
+        }
+
+        accepted = await self.service.accept_attention_event(event)
+        duplicate = await self.service.accept_attention_event(event)
+        generated = await self.service.process_attention_event(event)
+
+        self.assertTrue(accepted["accepted"])
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(generated["queued"], 1)
+        self.assertEqual(contexts[0]["activity"]["kind"], "attention")
+        items = await self.service.get_proactive_messages(limit=10)
+        self.assertEqual(items[0]["text"], "先从屏幕里抬一下头？")
+        self.assertEqual(items[0]["source"], "attention_model")
 
     async def test_ack_retention_follows_recent_message_order(self):
         self.service.solo_dir.mkdir(parents=True, exist_ok=True)
@@ -391,6 +422,35 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved_context["messages"][-2]["content"], "看到现在的情况，你想说什么？")
         self.assertEqual(saved_context["messages"][-1]["content"], "先别一个人吓自己。\n\n要不要把最担心的题型发给我？")
 
+        gateway.http.post = AsyncMock(return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "[[SILENT]]"}}]},
+            request=httpx.Request("POST", "https://dialogue.example/v1/chat/completions"),
+        ))
+        gateway._save_turn.reset_mock()
+        attention_result = await gateway._generate_proactive_messages({
+            "timezone": "Asia/Taipei",
+            "triggered_at": "2026-08-08T04:30:00Z",
+            "state": "当前状态",
+            "activity": {
+                "kind": "attention",
+                "attention": {
+                    "thresholdLevel": "session_30",
+                    "sessionMinutes": 31,
+                    "rollingMinutes": 31,
+                    "currentApp": "Chrome",
+                    "apps": [{"appName": "Chrome", "minutes": 31}],
+                },
+            },
+        })
+
+        self.assertEqual(attention_result["messages"], [])
+        attention_payload = gateway.http.post.await_args.kwargs["json"]
+        self.assertEqual(attention_payload["model"], "dialogue-model")
+        self.assertIn("手机系统刚刚观察到", attention_payload["messages"][-1]["content"])
+        self.assertIn("[[SILENT]]", attention_payload["messages"][-1]["content"])
+        gateway._save_turn.assert_not_awaited()
+
     def test_proactive_message_text_preserves_paragraph_breaks(self):
         self.assertEqual(
             SoloService._message_text("第一段。\r\n\r\n第二段。", 1200),
@@ -465,6 +525,44 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         gateway.solo.get_proactive_messages.assert_awaited_once_with(limit=9, after="p-old")
         self.assertEqual(json.loads(ack.body)["acked"], ["p1"])
         gateway.solo.ack_proactive_outbox.assert_awaited_once_with(["p1"])
+
+    async def test_attention_endpoint_accepts_quickly_and_schedules_dialogue_decision(self):
+        gateway = object.__new__(ZetaOpenAIGateway)
+        gateway.gateway_token = "secret"
+        gateway.solo = SimpleNamespace(
+            timezone_name="Asia/Taipei",
+            accept_attention_event=AsyncMock(return_value={
+                "ok": True,
+                "accepted": True,
+                "duplicate": False,
+            }),
+            process_attention_event=AsyncMock(return_value={"ok": True, "queued": 1}),
+        )
+        response = await gateway.solo_attention_event(_request(
+            "POST",
+            "/api/solo/attention-event",
+            payload={
+                "id": "attention_123_session_30",
+                "capturedAt": "2026-08-27T12:00:00Z",
+                "timezone": "Asia/Taipei",
+                "thresholdLevel": "session_30",
+                "sessionMinutes": 31,
+                "rollingMinutes": 31,
+                "currentApp": "Chrome",
+                "currentPackage": "com.android.chrome",
+                "apps": [{
+                    "appName": "Chrome",
+                    "packageName": "com.android.chrome",
+                    "minutes": 31,
+                }],
+            },
+        ))
+        await asyncio.sleep(0)
+
+        self.assertEqual(response.status_code, 200)
+        accepted_event = gateway.solo.accept_attention_event.await_args.args[0]
+        self.assertEqual(accepted_event["currentPackage"], "com.android.chrome")
+        gateway.solo.process_attention_event.assert_awaited_once_with(accepted_event)
 
 
 if __name__ == "__main__":

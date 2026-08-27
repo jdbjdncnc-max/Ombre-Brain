@@ -26,5 +26,9 @@ test("settings categories include calls, both prompts, and message font controls
   assert.match(grouping, /"#emotionPromptFileName"/);
   assert.match(grouping, /"#assistantMessageFontSize"/);
   assert.match(grouping, /"#userMessageFontSize"/);
+  assert.match(html, /id="messageHeatmapTitle"/);
+  assert.match(html, /id="messageHeatmap"/);
+  assert.match(app, /createMessageActivityStore/);
+  assert.match(grouping, /"#messageHeatmapTitle"[\s\S]*?"#importChatMode"/);
   assert.match(theme, /\.composer-menu\s*\{[\s\S]*?background:\s*#f4f9f7/);
 });
