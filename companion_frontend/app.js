@@ -136,7 +136,8 @@ const storageKeys = {
   scheduleSettings: "companion.scheduleSettings.v1",
   scheduleNudges: "companion.scheduleNudges.v1",
   healthSnapshot: "companion.healthSnapshot.v1",
-  deviceContextSnapshot: "companion.deviceContextSnapshot.v1"
+  deviceContextSnapshot: "companion.deviceContextSnapshot.v1",
+  lastPresentedSummaryId: "companion.lastPresentedSummaryId.v1"
 };
 
 const defaultBackend = platform.getDefaultApiBaseUrl();
@@ -529,6 +530,7 @@ if (hasUnfinishedStoredReply) {
 renderComposerState();
 void refreshChatStorageStatus();
 restoreNavigationState();
+setTimeout(presentLatestUnseenSummary, 450);
 callController.restore().catch(() => {});
 initSchedule();
 renderSchedule();
@@ -2247,6 +2249,7 @@ async function createSummaryMarker({
       ? `已整理 ${conversationDay} 的经历`
       : `已整理一段经历 · 保留约 ${formatCompactTokens(estimatedKeptTokens)} 原文`);
     renderMessages(false);
+    requestAnimationFrame(() => presentSummaryMarker(summaryMarker.id));
     return true;
   } catch (error) {
     state.messages = state.messages.filter((message) => message.id !== summaryMarker.id);
@@ -2310,6 +2313,8 @@ async function maybeCreateDailyMemory(prompt) {
     source.consolidatedInto = marker.id;
     clearPromptCacheAfter(insertIndex);
     await saveMessages();
+    renderMessages(false);
+    requestAnimationFrame(() => presentSummaryMarker(marker.id));
     return true;
   }
   return createSummaryMarker({
@@ -4470,6 +4475,39 @@ function renderMessages(shouldScroll = true) {
   updateChatLocatorRail();
 }
 
+function presentLatestUnseenSummary() {
+  if (state.activeTab !== "chat") return false;
+  let index = -1;
+  for (let cursor = state.messages.length - 1; cursor >= 0; cursor -= 1) {
+    const message = state.messages[cursor];
+    if (message?.role === "summary" && !message.pending && message.content && !message.consolidatedInto) {
+      index = cursor;
+      break;
+    }
+  }
+  if (index < 0) return false;
+  const message = state.messages[index];
+  if (!message?.id || platform.storage.getString(storageKeys.lastPresentedSummaryId) === message.id) {
+    return false;
+  }
+  return presentSummaryMarker(message.id);
+}
+
+function presentSummaryMarker(messageId) {
+  if (state.activeTab !== "chat" || !messageId) return false;
+  const target = [...els.messageList.querySelectorAll(".conversation-summary")]
+    .find((item) => item.dataset.messageId === String(messageId));
+  if (!target) return false;
+  const details = target.querySelector("details");
+  if (details) details.open = true;
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+  target.classList.remove("summary-presented");
+  requestAnimationFrame(() => target.classList.add("summary-presented"));
+  setTimeout(() => target.classList.remove("summary-presented"), 1800);
+  platform.storage.setString(storageKeys.lastPresentedSummaryId, String(messageId));
+  return true;
+}
+
 function createMessageNode(message, messageIndex, locatorNumber, { streaming = false } = {}) {
   if (message.role === "summary") {
     const summary = createConversationSummary(message);
@@ -5753,6 +5791,9 @@ function setActiveTab(tab) {
   }
   if (tab === "tools") {
     loadMcpServers();
+  }
+  if (tab === "chat") {
+    requestAnimationFrame(presentLatestUnseenSummary);
   }
 }
 

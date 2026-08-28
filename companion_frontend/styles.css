@@ -2602,6 +2602,22 @@ svg {
   opacity: 0.76;
 }
 
+.conversation-summary.summary-presented summary span {
+  animation: summary-presented-pulse 1.5s ease-out;
+}
+
+@keyframes summary-presented-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 42%, transparent);
+  }
+  55% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+  100% {
+    box-shadow: none;
+  }
+}
+
 .conversation-summary-content {
   max-height: 320px;
   overflow: auto;

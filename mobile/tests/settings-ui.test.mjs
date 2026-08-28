@@ -30,6 +30,8 @@ test("settings categories include calls, both prompts, and message font controls
   assert.match(html, /id="messageHeatmap"/);
   assert.match(app, /createMessageActivityStore/);
   assert.match(app, /prompt:\s*resolvedPrompt/);
+  assert.match(app, /presentLatestUnseenSummary/);
+  assert.match(app, /lastPresentedSummaryId/);
   const summaryRequestFunction = app
     .split("async function createSummaryMarker", 2)[1]
     .split("async function maybeCreateDailyMemory", 1)[0];
