@@ -29,6 +29,11 @@ test("settings categories include calls, both prompts, and message font controls
   assert.match(html, /id="messageHeatmapTitle"/);
   assert.match(html, /id="messageHeatmap"/);
   assert.match(app, /createMessageActivityStore/);
+  assert.match(app, /prompt:\s*resolvedPrompt/);
+  const summaryRequestFunction = app
+    .split("async function createSummaryMarker", 2)[1]
+    .split("async function maybeCreateDailyMemory", 1)[0];
+  assert.doesNotMatch(summaryRequestFunction, /prompt:\s*summaryPrompt/);
   assert.match(grouping, /"#messageHeatmapTitle"[\s\S]*?"#importChatMode"/);
   assert.match(theme, /\.composer-menu\s*\{[\s\S]*?background:\s*#f4f9f7/);
 });

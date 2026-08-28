@@ -2172,6 +2172,13 @@ async function createSummaryMarker({
   estimatedCompressedTokens = 0,
   estimatedKeptTokens = 0
 }) {
+  const resolvedPrompt = String(
+    prompt || state.settings.summaryPrompt || DEFAULT_SUMMARY_PROMPT
+  ).trim();
+  if (!resolvedPrompt) {
+    setSummaryStatus("总结提示词为空，已保留完整消息", true);
+    return false;
+  }
   if ((!messages?.length && !sourceEpisodes.length) || !insertAfter) return false;
   const insertIndex = state.messages.findIndex((message) => message.id === insertAfter.id) + 1;
   if (insertIndex <= 0) return false;
@@ -2207,7 +2214,7 @@ async function createSummaryMarker({
       body: JSON.stringify({
         mode,
         model: String(state.settings.summaryModel || "").trim(),
-        prompt: summaryPrompt,
+        prompt: resolvedPrompt,
         user_reference: summaryUserReference(),
         skip_emotion_appraisal: true,
         messages: messages.map(messageForGateway),
