@@ -110,14 +110,44 @@ class ConversationSummaryGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             summary_input,
             {
+                "mode": "episode",
                 "user_reference": "她",
                 "previous_summary": "旧摘要",
+                "source_episodes": [],
                 "new_messages": [
                     {"role": "user", "content": "新问题"},
                     {"role": "assistant", "content": "新回答"},
                 ],
             },
         )
+
+    async def test_splits_episode_memory_and_handoff_and_returns_usage(self):
+        gateway = _gateway({
+            "model": "summary-provider-model",
+            "usage": {"prompt_tokens": 120, "completion_tokens": 40, "total_tokens": 160},
+            "choices": [{"message": {"content": (
+                "<<<OMBRE_EPISODE_MEMORY>>>\n【这段经历】\n一起聊完了。\n"
+                "<<<OMBRE_HANDOFF>>>\n我可以从她最后的问题接下去。\n"
+                "<<<END_OMBRE_EPISODE_MEMORY>>>"
+            )}}],
+        })
+
+        response = await gateway.conversation_summary(_request({
+            "mode": "daily",
+            "prompt": "整理经历",
+            "messages": [],
+            "source_episodes": [{
+                "memory": "早上的经历",
+                "handoff": "停在早餐",
+                "conversation_day": "2026-08-28",
+            }],
+        }))
+
+        body = json.loads(response.body)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(body["summary"], "【这段经历】\n一起聊完了。")
+        self.assertEqual(body["handoff"], "我可以从她最后的问题接下去。")
+        self.assertEqual(body["usage"]["total_tokens"], 160)
 
     async def test_returns_model_summary_without_appending_current_transcript(self):
         gateway = _gateway({

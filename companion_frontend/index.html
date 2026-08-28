@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Entangle</title>
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
-    <link rel="stylesheet" href="styles.css?v=20260827.1">
+    <link rel="stylesheet" href="styles.css?v=20260829.1">
     <link rel="stylesheet" href="claude-theme.css?v=20260825.1">
     <link rel="stylesheet" href="entangle-memory-schedule.css?v=20260826.1">
 </head>
@@ -753,7 +753,7 @@
               <div class="summary-settings-heading">
                 <div>
                   <strong id="summarySettingsTitle">对话总结</strong>
-                  <small>独立模型会生成带明确标识的累计摘要，保留当前话题、未完话题、历程概要与本轮原文。</small>
+                  <small>独立模型会把自然章节整理成“经历记忆”和“接话便签”，最近原文仍会保留。</small>
                 </div>
                 <output id="summaryStatus" aria-live="polite"></output>
               </div>
@@ -763,11 +763,17 @@
                 <input id="summaryModel" type="text" spellcheck="false" placeholder="留空使用 OMBRE_SUMMARY_MODEL">
               </label>
 
-              <label>
-                <span>每多少次你的发言总结</span>
-                <input id="summaryInterval" type="number" min="1" max="200" step="1" inputmode="numeric">
-                <small>在回复结束后检查；默认 16 次，和 Operit 一样按你的发言次数计算。</small>
-              </label>
+              <div class="summary-token-settings">
+                <label>
+                  <span>开始整理（输入 token）</span>
+                  <input id="summarySoftTokens" type="number" min="16000" max="80000" step="1000" inputmode="numeric">
+                </label>
+                <label>
+                  <span>保留最近原文（约 token）</span>
+                  <input id="summaryKeepTokens" type="number" min="4000" max="100000" step="1000" inputmode="numeric">
+                </label>
+              </div>
+              <small>默认在 64K 开始整理，80K 为成本保护线；每天凌晨 4 点按自然章节归档。</small>
 
               <label>
                 <span>总结提示词</span>
@@ -865,7 +871,13 @@
                 </div>
                 <small id="messageHeatmapSummary">正在整理历史消息…</small>
               </div>
-              <div class="message-heatmap-scroll" aria-label="近一年消息热力图">
+              <div class="message-heatmap-period" aria-label="切换热力图年月">
+                <button id="messageHeatmapPrevious" class="small-icon-button" type="button" aria-label="上个月">‹</button>
+                <select id="messageHeatmapYear" aria-label="年份"></select>
+                <select id="messageHeatmapMonth" aria-label="月份"></select>
+                <button id="messageHeatmapNext" class="small-icon-button" type="button" aria-label="下个月">›</button>
+              </div>
+              <div class="message-heatmap-scroll" aria-label="所选月份消息热力图">
                 <div id="messageHeatmap" class="message-heatmap" role="grid"></div>
               </div>
               <div class="message-heatmap-footer">
@@ -1015,7 +1027,7 @@
   <script src="vendor/dompurify/purify.min.js"></script>
   <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/katex/auto-render.min.js"></script>
-    <script src="app.js?v=20260827.1" type="module"></script>
+    <script src="app.js?v=20260829.1" type="module"></script>
     <script src="assets/claude-ui/claude-ui.js?v=20260827.1" defer></script>
     <script src="assets/entangle-ui/entangle-ui.js?v=20260826.1" defer></script>
 </body>

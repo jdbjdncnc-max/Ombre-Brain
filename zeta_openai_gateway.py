@@ -142,6 +142,19 @@ def _preview_text(text: str, limit: int = 800) -> str:
     return cleaned[:limit]
 
 
+def parse_conversation_memory(text: str) -> tuple[str, str]:
+    raw = str(text or "").strip()
+    start = "<<<OMBRE_EPISODE_MEMORY>>>"
+    handoff_marker = "<<<OMBRE_HANDOFF>>>"
+    end = "<<<END_OMBRE_EPISODE_MEMORY>>>"
+    if start not in raw or handoff_marker not in raw:
+        return raw, ""
+    memory_part, handoff_part = raw.split(handoff_marker, 1)
+    memory = memory_part.split(start, 1)[1].strip()
+    handoff = handoff_part.split(end, 1)[0].strip()
+    return memory, handoff
+
+
 class _HiddenMemoryStreamFilter:
     def __init__(self, parse_entries, enabled: bool):
         self.parse_entries = parse_entries
@@ -1369,15 +1382,27 @@ class ZetaOpenAIGateway:
                 status_code=400,
             )
 
+        mode = str(payload.get("mode") or "episode").strip().lower()
+        if mode not in {"episode", "daily"}:
+            return JSONResponse(
+                {"error": {"message": "mode must be episode or daily", "type": "invalid_request_error"}},
+                status_code=400,
+            )
         raw_messages = payload.get("messages")
-        if not isinstance(raw_messages, list) or not raw_messages or len(raw_messages) > 200:
+        raw_episodes = payload.get("source_episodes") or []
+        if not isinstance(raw_messages, list) or len(raw_messages) > 200:
             return JSONResponse(
                 {
                     "error": {
-                        "message": "messages must be a non-empty array with at most 200 items",
+                        "message": "messages must be an array with at most 200 items",
                         "type": "invalid_request_error",
                     }
                 },
+                status_code=400,
+            )
+        if not isinstance(raw_episodes, list) or len(raw_episodes) > 24:
+            return JSONResponse(
+                {"error": {"message": "source_episodes must contain at most 24 items", "type": "invalid_request_error"}},
                 status_code=400,
             )
         messages: list[dict[str, str]] = []
@@ -1402,9 +1427,20 @@ class ZetaOpenAIGateway:
                 normalized_message["sent_at"] = context["sentAt"]
                 normalized_message["timezone"] = context["timezone"]
             messages.append(normalized_message)
-        if not messages:
+        episodes: list[dict[str, str]] = []
+        for item in raw_episodes:
+            if not isinstance(item, dict):
+                continue
+            memory = str(item.get("memory") or "").strip()
+            if not memory:
+                continue
+            handoff = str(item.get("handoff") or "").strip()
+            day = str(item.get("conversation_day") or "").strip()
+            total_characters += len(memory) + len(handoff) + len(day)
+            episodes.append({"memory": memory, "handoff": handoff, "conversation_day": day})
+        if not messages and not episodes:
             return JSONResponse(
-                {"error": {"message": "No user or assistant messages to summarize", "type": "invalid_request_error"}},
+                {"error": {"message": "No conversation material to summarize", "type": "invalid_request_error"}},
                 status_code=400,
             )
 
@@ -1422,8 +1458,10 @@ class ZetaOpenAIGateway:
             )
 
         summary_input = {
+            "mode": mode,
             "user_reference": user_reference,
             "previous_summary": previous_summary or None,
+            "source_episodes": episodes,
             "new_messages": messages,
         }
         upstream_payload = {
@@ -1476,8 +1514,8 @@ class ZetaOpenAIGateway:
                 status_code=response.status_code,
             )
 
-        summary = self._assistant_text_from_response(response)
-        if not summary:
+        raw_summary = self._assistant_text_from_response(response)
+        if not raw_summary:
             return JSONResponse(
                 {
                     "error": {
@@ -1491,7 +1529,9 @@ class ZetaOpenAIGateway:
             response_body = response.json()
         except ValueError:
             response_body = {}
+        summary, handoff = parse_conversation_memory(raw_summary)
         response_model = str(response_body.get("model") or model).strip() if isinstance(response_body, dict) else model
+        usage = response_body.get("usage") if isinstance(response_body, dict) else None
         appraisal_scheduled = False
         if not _truthy(str(payload.get("skip_emotion_appraisal") or "")):
             appraisal_scheduled = self._schedule_emotion_appraisal(
@@ -1502,7 +1542,9 @@ class ZetaOpenAIGateway:
             )
         return JSONResponse({
             "summary": summary,
+            "handoff": handoff,
             "model": response_model,
+            "usage": usage if isinstance(usage, dict) else None,
             "emotion_appraisal_scheduled": appraisal_scheduled,
         })
 
@@ -2646,6 +2688,17 @@ class ZetaOpenAIGateway:
         fixed_gateway_text, dynamic_system_text = self._split_ombre_system_layer(
             combined_system_text
         )
+        previous_dynamic_text = next((
+            str(message.get("content") or "")
+            for message in reversed(source_messages)
+            if isinstance(message, dict)
+            and message.get("role") == "system"
+            and str(message.get("content") or "").startswith(OMBRE_DYNAMIC_LAYER_OPEN)
+        ), "")
+        dynamic_system_text = self._compact_unchanged_dynamic_sections(
+            dynamic_system_text,
+            previous_dynamic_text,
+        )
         forward["messages"] = inject_gateway_messages(
             contextual_messages,
             dynamic_system_text,
@@ -2656,6 +2709,41 @@ class ZetaOpenAIGateway:
         self._remove_visible_private_diary_tools(forward)
         self._canonicalize_prompt_tools(forward)
         return forward
+
+    @staticmethod
+    def _compact_unchanged_dynamic_sections(current: str, previous: str) -> str:
+        if not current or not previous:
+            return current
+        result = current
+        titles = (
+            "累计对话摘要",
+            "相关记忆",
+            "当前日程",
+            "随本轮消息附加的健康数据",
+            "随本轮消息附加的设备环境",
+            "当前独处状态",
+        )
+        for title in titles:
+            pattern = re.compile(
+                rf"(〈{re.escape(title)}〉\n)(.*?)(?=\n\n〈|\n\n{re.escape(OMBRE_DYNAMIC_LAYER_CLOSE)}|$)",
+                flags=re.DOTALL,
+            )
+            current_match = pattern.search(result)
+            previous_match = pattern.search(previous)
+            if (
+                current_match
+                and previous_match
+                and (
+                    current_match.group(2).strip() == previous_match.group(2).strip()
+                    or (
+                        title == "累计对话摘要"
+                        and previous_match.group(2).strip() == "（与前文相同，本轮不重复）"
+                    )
+                )
+                and current_match.group(2).strip() != "（与前文相同，本轮不重复）"
+            ):
+                result = result[:current_match.start(2)] + "（与前文相同，本轮不重复）" + result[current_match.end(2):]
+        return result
 
     def _remember_proactive_conversation_context(
         self,
@@ -3178,7 +3266,11 @@ class ZetaOpenAIGateway:
             speaker = "她" if role == "user" else "我"
             time_text = local_time or "时间未提供"
             entries.append(f"{len(entries) + 1}. {speaker}｜{time_text}｜{context['timezone']}")
-        return "\n".join(entries)
+        recent = entries[-12:]
+        return "\n".join(
+            f"{index}." + entry.split(".", 1)[1]
+            for index, entry in enumerate(recent, start=1)
+        )
 
     def _solo_system_context(self) -> str:
         solo = getattr(self, "solo", None)

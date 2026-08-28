@@ -439,6 +439,30 @@ class MessageTimeContextTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.gateway._latest_health_context_text(messages), "")
 
+    def test_unchanged_long_summary_is_not_repeated_in_dynamic_tail(self):
+        previous = (
+            "[Ombre 动态资料｜本轮]\n\n〈累计对话摘要〉\n很长的同一份摘要\n\n"
+            "〈当前日程〉\n今天没有安排\n\n[Ombre 动态资料结束]"
+        )
+        current = previous.replace("今天没有安排", "今天下午有实验")
+
+        compacted = self.gateway._compact_unchanged_dynamic_sections(current, previous)
+
+        self.assertIn("〈累计对话摘要〉\n（与前文相同，本轮不重复）", compacted)
+        self.assertIn("〈当前日程〉\n今天下午有实验", compacted)
+
+    def test_message_timeline_keeps_only_twelve_recent_entries(self):
+        messages = [
+            {"role": "user", "content": str(index), "context": {"sentAt": f"2026-08-28T{index:02d}:00:00Z"}}
+            for index in range(14)
+        ]
+
+        timeline = self.gateway._build_message_timeline(messages, "UTC")
+
+        self.assertEqual(len(timeline.splitlines()), 12)
+        self.assertNotIn("2026-08-28 00:00:00", timeline)
+        self.assertIn("2026-08-28 13:00:00", timeline)
+
     async def test_raw_turn_keeps_sent_and_received_metadata(self):
         self.gateway.memory_gateway = SimpleNamespace(
             save_raw=AsyncMock(return_value={"raw_refs": ["convo://main/turn_1"]})
