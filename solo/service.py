@@ -1667,6 +1667,11 @@ class SoloService:
         called = bool(result.get("called", True))
         title = self._context_text(result.get("title"), 60)
         usage = deepcopy(result.get("usage")) if isinstance(result.get("usage"), dict) else None
+        prompt_cache_context = (
+            deepcopy(result.get("prompt_cache_context"))
+            if isinstance(result.get("prompt_cache_context"), dict)
+            else None
+        )
         messages = [
             self._message_text(value, 1200)
             for value in (result.get("messages") if isinstance(result.get("messages"), list) else [])[:3]
@@ -1701,6 +1706,7 @@ class SoloService:
                     "source": "attention_model" if activity.get("kind") == "attention" else "solitude_model",
                     "timezone": self.timezone_name,
                     **({"usage": deepcopy(usage)} if usage else {}),
+                    **({"promptCacheContext": deepcopy(prompt_cache_context)} if prompt_cache_context else {}),
                 }
                 self._append_jsonl(self.proactive_path, queued_item)
                 queued_items.append(queued_item)

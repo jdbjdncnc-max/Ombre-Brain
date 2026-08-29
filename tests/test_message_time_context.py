@@ -1,5 +1,7 @@
+import tempfile
 import unittest
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -355,6 +357,101 @@ class MessageTimeContextTests(unittest.IsolatedAsyncioTestCase):
             {"role": "assistant", "content": "第一轮回答"},
         )
         self.assertNotIn("promptCache", str(second["messages"]))
+
+    def test_proactive_turn_and_first_user_reply_keep_the_previous_cached_prefix(self):
+        self.gateway.upstream_chat_url = "https://openrouter.ai/api/v1/chat/completions"
+        session_id = "proactive-cache-session"
+        first_user = {
+            "role": "user",
+            "content": "第一轮",
+            "context": {"sentAt": "2026-08-29T01:00:00Z", "timezone": "Asia/Taipei"},
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            self.gateway.proactive_conversation_context_path = Path(directory) / "proactive-context.json"
+            self.gateway._remember_recall_debug(
+                session_id=session_id,
+                user_text="第一轮",
+                recalled={"memories": [], "injection_text": "第一轮召回"},
+            )
+            first = self.gateway._prepare_forward_payload(
+                {"messages": [first_user], "temperature": 0.7},
+                self.gateway._compose_ombre_system_layer(memory_context="第一轮召回"),
+                "稳定主 Prompt",
+                "Asia/Taipei",
+                session_id=session_id,
+            )
+            self.gateway._append_proactive_context_assistant(session_id, "第一轮回答")
+            ordinary_snapshot = self.gateway._load_proactive_conversation_context()
+            first_cache = ordinary_snapshot["messages"][-1]["context"]["promptCache"]
+
+            proactive_user = {
+                "role": "user",
+                "content": "现在有什么想说的吗？",
+                "context": {"sentAt": "2026-08-29T02:00:00Z", "timezone": "Asia/Taipei"},
+            }
+            proactive_source = [*ordinary_snapshot["messages"], proactive_user]
+            self.gateway._remember_recall_debug(
+                session_id=session_id,
+                user_text=proactive_user["content"],
+                recalled={"memories": [], "injection_text": "主动消息召回"},
+            )
+            proactive = self.gateway._prepare_forward_payload(
+                {"messages": proactive_source, "temperature": 0.7},
+                self.gateway._compose_ombre_system_layer(
+                    memory_context="主动消息召回",
+                    solo_context="此刻想找她",
+                ),
+                "稳定主 Prompt",
+                "Asia/Taipei",
+                session_id=session_id,
+                remember_proactive_context=False,
+            )
+            proactive_cache = self.gateway._prompt_cache_context_for_session(session_id)
+
+            self.assertTrue(first_cache)
+            self.assertEqual(proactive["messages"][:len(first["messages"])], first["messages"])
+            self.assertEqual(
+                proactive["messages"][len(first["messages"])],
+                {"role": "assistant", "content": "第一轮回答"},
+            )
+
+            proactive_assistant = {
+                "role": "assistant",
+                "content": "突然有点想你。",
+                "context": {"promptCache": proactive_cache},
+            }
+            self.gateway._remember_proactive_conversation_context(
+                session_id=session_id,
+                messages=[*proactive_source, proactive_assistant],
+                summary_context="",
+                schedule_context="",
+                temperature=0.7,
+            )
+            after_proactive = self.gateway._load_proactive_conversation_context()
+            reply_user = {
+                "role": "user",
+                "content": "我也想你。",
+                "context": {"sentAt": "2026-08-29T02:01:00Z", "timezone": "Asia/Taipei"},
+            }
+            self.gateway._remember_recall_debug(
+                session_id=session_id,
+                user_text=reply_user["content"],
+                recalled={"memories": [], "injection_text": "回复召回"},
+            )
+            reply = self.gateway._prepare_forward_payload(
+                {"messages": [*after_proactive["messages"], reply_user], "temperature": 0.7},
+                self.gateway._compose_ombre_system_layer(memory_context="回复召回"),
+                "稳定主 Prompt",
+                "Asia/Taipei",
+                session_id=session_id,
+            )
+
+            self.assertEqual(reply["messages"][:len(proactive["messages"])], proactive["messages"])
+            self.assertEqual(
+                reply["messages"][len(proactive["messages"])],
+                {"role": "assistant", "content": "突然有点想你。"},
+            )
 
     def test_changed_summary_stays_in_the_new_dynamic_tail(self):
         self.gateway.upstream_chat_url = "https://openrouter.ai/api/v1/chat/completions"

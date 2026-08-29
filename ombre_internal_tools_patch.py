@@ -1660,6 +1660,9 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
 
                 try:
                     assistant_raw_refs = await self._save_turn(session_id, "zeta", visible_text)
+                    append_proactive_context = getattr(self, "_append_proactive_context_assistant", None)
+                    if callable(append_proactive_context):
+                        append_proactive_context(session_id, visible_text)
                     written = await self._write_zeta_memory_requests(
                         session_id=session_id,
                         entries=entries,
@@ -1755,6 +1758,9 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
         assistant_text = self._assistant_text_from_response(upstream_response)
         visible_text, entries = self._extract_zeta_memory_request(assistant_text)
         assistant_raw_refs = await self._save_turn(session_id, "zeta", visible_text)
+        append_proactive_context = getattr(self, "_append_proactive_context_assistant", None)
+        if callable(append_proactive_context):
+            append_proactive_context(session_id, visible_text)
         written = await self._write_zeta_memory_requests(
             session_id=session_id,
             entries=entries,
@@ -1950,6 +1956,9 @@ def apply_ombre_internal_tools_patch(zeta_openai_gateway_module) -> None:
             session_id=session_id,
         )
         self._ombre_add_native_mcp_tools(forward_payload)
+        canonicalize_prompt_tools = getattr(self, "_canonicalize_prompt_tools", None)
+        if callable(canonicalize_prompt_tools):
+            canonicalize_prompt_tools(forward_payload)
         memory_headers.update(self._system_prompt_debug_headers(forward_payload, system_prompt))
         wants_stream = forward_payload.get("stream") is True
         if wants_stream:

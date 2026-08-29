@@ -141,6 +141,11 @@ class ProactiveServiceTests(unittest.IsolatedAsyncioTestCase):
                     "prompt_tokens_details": {"cached_tokens": 80},
                     "cost": 0.0012,
                 },
+                "prompt_cache_context": {
+                    "version": 1,
+                    "payload": "cached-tail",
+                    "signature": "a" * 64,
+                },
             }
 
         self.service.set_proactive_generator(generate)
@@ -157,6 +162,7 @@ class ProactiveServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(item["timezone"] == "Asia/Taipei" for item in items))
         self.assertTrue(all(item["usage"]["prompt_tokens"] == 120 for item in items))
         self.assertTrue(all(item["usage"]["prompt_tokens_details"]["cached_tokens"] == 80 for item in items))
+        self.assertTrue(all(item["promptCacheContext"]["payload"] == "cached-tail" for item in items))
         dispatcher.assert_awaited_once()
         self.assertEqual(
             [item["id"] for item in dispatcher.await_args.args[0]],
@@ -369,14 +375,30 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         gateway._compose_ombre_system_layer = lambda **kwargs: (
             f"OMBRE STATE\n{kwargs['solo_context']}\n{kwargs['memory_context']}"
         )
-        gateway._prepare_forward_payload = lambda payload, injected, system, _timezone, **_kwargs: {
-            **payload,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "system", "content": injected},
-                *payload["messages"],
-            ],
+        cache_context = {
+            "version": 1,
+            "payload": "proactive-tail",
+            "signature": "b" * 64,
         }
+
+        def prepare(payload, injected, system, _timezone, **kwargs):
+            gateway.recall_debug_by_session[kwargs["session_id"]]["prompt_cache_context"] = cache_context
+            return {
+                **payload,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "system", "content": injected},
+                    *payload["messages"],
+                ],
+            }
+
+        gateway._prepare_forward_payload = prepare
+        gateway._ombre_add_native_mcp_tools = lambda payload: payload.update({
+            "tools": [
+                {"type": "function", "function": {"name": "z_tool", "parameters": {"type": "object"}}},
+                {"type": "function", "function": {"name": "a_tool", "parameters": {"type": "object"}}},
+            ]
+        })
         gateway._payload_for_upstream = lambda payload: {**payload, "model": gateway.upstream_model}
         gateway._extract_zeta_memory_request = lambda text: (text, [])
         gateway._save_turn = AsyncMock(return_value=[])
@@ -406,6 +428,7 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["usage"]["prompt_tokens"], 321)
         self.assertEqual(result["usage"]["prompt_tokens_details"]["cached_tokens"], 256)
         self.assertEqual(result["usage"]["cost"], 0.0042)
+        self.assertEqual(result["prompt_cache_context"], cache_context)
         payload = gateway.http.post.await_args.kwargs["json"]
         self.assertEqual(payload["model"], "dialogue-model")
         self.assertEqual(payload["messages"][0]["content"], "MAIN PROMPT")
@@ -415,12 +438,15 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["messages"][4]["content"], "先陪你把最担心的部分理清。")
         self.assertEqual(payload["messages"][5]["content"], "看到现在的情况，你想说什么？")
         self.assertEqual(payload["temperature"], 0.7)
+        self.assertEqual([item["function"]["name"] for item in payload["tools"]], ["a_tool", "z_tool"])
+        self.assertEqual(payload["tool_choice"], "none")
         self.assertNotIn("max_tokens", payload)
         gateway.memory_gateway.recall.assert_awaited_once()
         gateway._save_turn.assert_awaited_once()
         saved_context = gateway._remember_proactive_conversation_context.call_args.kwargs
         self.assertEqual(saved_context["messages"][-2]["content"], "看到现在的情况，你想说什么？")
         self.assertEqual(saved_context["messages"][-1]["content"], "先别一个人吓自己。\n\n要不要把最担心的题型发给我？")
+        self.assertEqual(saved_context["messages"][-1]["context"]["promptCache"], cache_context)
 
         gateway.http.post = AsyncMock(return_value=httpx.Response(
             200,
@@ -465,7 +491,17 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
                 session_id="phone-session",
                 messages=[
                     {"role": "user", "content": "我明天考试", "context": {"sentAt": "2026-08-22T12:00:00Z"}},
-                    {"role": "assistant", "content": "我记得。"},
+                    {
+                        "role": "assistant",
+                        "content": "我记得。",
+                        "context": {
+                            "promptCache": {
+                                "version": 1,
+                                "payload": "signed-tail",
+                                "signature": "c" * 64,
+                            }
+                        },
+                    },
                 ],
                 summary_context="正在聊明天的考试",
                 schedule_context="明天 09:00 考试",
@@ -478,6 +514,7 @@ class ProactiveGatewayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(snapshot["summary_context"], "正在聊明天的考试")
             self.assertEqual(snapshot["schedule_context"], "明天 09:00 考试")
             self.assertEqual(snapshot["temperature"], 0.6)
+            self.assertEqual(snapshot["messages"][-2]["context"]["promptCache"]["payload"], "signed-tail")
             self.assertEqual(snapshot["messages"][-1], {"role": "assistant", "content": "先早点休息。"})
 
     async def test_generation_stops_when_main_prompt_is_missing(self):

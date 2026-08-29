@@ -6465,6 +6465,7 @@ async function syncProactiveMessages({ silent = false } = {}) {
         if (!proactiveId || !content || existing.has(proactiveId)) {
           continue;
         }
+        const promptCacheContext = normalizePromptCacheContext(item?.promptCacheContext);
         state.messages.push({
           id: `proactive:${proactiveId}`,
           proactiveId,
@@ -6472,6 +6473,9 @@ async function syncProactiveMessages({ silent = false } = {}) {
           content,
           model: String(item.model || state.settings.model || "zeta-gateway"),
           usage: normalizeTokenUsage(item.usage),
+          ...(promptCacheContext
+            ? { recall: { available: true, promptCacheContext } }
+            : {}),
           proactive: true,
           createdAt: String(item.ts || new Date().toISOString()),
           timezone: String(item.timezone || currentTimeZone())

@@ -93,6 +93,8 @@ test("Android uses a native background worker for proactive notifications", asyn
   assert.match(frontend, /\/api\/solo\/messages/);
   assert.match(frontend, /proactiveId/);
   assert.match(frontend, /usage: normalizeTokenUsage\(item\.usage\)/);
+  assert.match(frontend, /normalizePromptCacheContext\(item\?\.promptCacheContext\)/);
+  assert.match(frontend, /recall: \{ available: true, promptCacheContext \}/);
   assert.match(frontend, /if \(!await saveMessages\(\)\)/);
   assert.ok(
     frontend.indexOf("if (!await saveMessages())") < frontend.indexOf("state.proactiveMessageCursor = latestId"),

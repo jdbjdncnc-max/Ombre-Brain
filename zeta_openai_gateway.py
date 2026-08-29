@@ -1137,6 +1137,11 @@ class ZetaOpenAIGateway:
             "semantic_limit": self.semantic_limit,
             "track_usage": True,
         })
+        self._remember_recall_debug(
+            session_id=session_id,
+            user_text=proactive_prompt,
+            recalled=recalled,
+        )
         ombre_layer = self._compose_ombre_system_layer(
             hidden_instruction=self._hidden_memory_instruction(),
             memory_context=self._build_injection_text(recalled),
@@ -1160,6 +1165,16 @@ class ZetaOpenAIGateway:
             session_id=session_id,
             remember_proactive_context=False,
         )
+        attach_native_tools = getattr(self, "_ombre_add_native_mcp_tools", None)
+        if callable(attach_native_tools):
+            attach_native_tools(forward_payload)
+            self._canonicalize_prompt_tools(forward_payload)
+            if forward_payload.get("tools"):
+                # Keep the same tool-definition prefix as ordinary chat while
+                # preventing a background message from starting an unattended
+                # tool call that this non-streaming path cannot complete.
+                forward_payload["tool_choice"] = "none"
+        proactive_cache_context = self._prompt_cache_context_for_session(session_id)
         try:
             response = await self.http.post(
                 self.upstream_chat_url,
@@ -1197,9 +1212,15 @@ class ZetaOpenAIGateway:
             visible_text,
             metadata={"timezone": timezone_name, "channel": "proactive"},
         )
+        assistant_message: dict[str, Any] = {
+            "role": "assistant",
+            "content": visible_text,
+        }
+        if proactive_cache_context:
+            assistant_message["context"] = {"promptCache": proactive_cache_context}
         self._remember_proactive_conversation_context(
             session_id=session_id,
-            messages=[*source_messages, {"role": "assistant", "content": visible_text}],
+            messages=[*source_messages, assistant_message],
             summary_context=summary_context,
             schedule_context=schedule_context,
             temperature=proactive_temperature,
@@ -1209,6 +1230,7 @@ class ZetaOpenAIGateway:
             "title": "Zeta",
             "messages": [visible_text],
             **({"usage": usage} if usage else {}),
+            **({"prompt_cache_context": proactive_cache_context} if proactive_cache_context else {}),
         }
 
     def _attention_dialogue_prompt(self, attention: dict[str, Any]) -> str:
@@ -2579,6 +2601,16 @@ class ZetaOpenAIGateway:
             if getattr(self, "last_recall_debug", None) is snapshot:
                 self.last_recall_debug = snapshot
 
+    def _prompt_cache_context_for_session(self, session_id: str) -> dict[str, Any]:
+        snapshots = getattr(self, "recall_debug_by_session", None)
+        if not isinstance(snapshots, dict):
+            return {}
+        snapshot = snapshots.get(str(session_id or "").strip())
+        if not isinstance(snapshot, dict):
+            return {}
+        context = snapshot.get("prompt_cache_context")
+        return deepcopy(context) if isinstance(context, dict) else {}
+
     def _restore_prompt_cache_turns(
         self,
         messages: list[Any],
@@ -2654,9 +2686,6 @@ class ZetaOpenAIGateway:
         source_messages, summary_context, schedule_context = self._extract_ombre_context_messages(
             source_messages
         )
-        source_messages = self._restore_prompt_cache_turns(source_messages, session_id)
-        health_context = self._latest_health_context_text(source_messages)
-        device_context = self._latest_device_context_text(source_messages)
         if remember_proactive_context:
             self._remember_proactive_conversation_context(
                 session_id=session_id,
@@ -2665,6 +2694,9 @@ class ZetaOpenAIGateway:
                 schedule_context=schedule_context,
                 temperature=forward.get("temperature"),
             )
+        source_messages = self._restore_prompt_cache_turns(source_messages, session_id)
+        health_context = self._latest_health_context_text(source_messages)
+        device_context = self._latest_device_context_text(source_messages)
         message_timeline = self._build_message_timeline(source_messages, client_timezone)
         contextual_messages = self._inject_message_time_context(
             source_messages,
@@ -2774,6 +2806,9 @@ class ZetaOpenAIGateway:
                 for key in ("sentAt", "timezone", "health", "device")
                 if key in raw_context
             }
+            prompt_cache_context = raw_context.get("promptCache")
+            if role == "assistant" and isinstance(prompt_cache_context, dict):
+                stored_context["promptCache"] = deepcopy(prompt_cache_context)
             if stored_context:
                 message["context"] = stored_context
             kept.append(message)
@@ -2815,9 +2850,16 @@ class ZetaOpenAIGateway:
         if str(snapshot.get("session_id") or "").strip() != str(session_id or "").strip():
             return
         messages = snapshot.get("messages") if isinstance(snapshot.get("messages"), list) else []
+        assistant_message: dict[str, Any] = {
+            "role": "assistant",
+            "content": str(content or ""),
+        }
+        prompt_cache_context = self._prompt_cache_context_for_session(session_id)
+        if prompt_cache_context:
+            assistant_message["context"] = {"promptCache": prompt_cache_context}
         self._remember_proactive_conversation_context(
             session_id=session_id,
-            messages=[*messages, {"role": "assistant", "content": str(content or "")}],
+            messages=[*messages, assistant_message],
             summary_context=str(snapshot.get("summary_context") or ""),
             schedule_context=str(snapshot.get("schedule_context") or ""),
             temperature=snapshot.get("temperature"),
