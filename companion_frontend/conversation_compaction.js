@@ -36,7 +36,7 @@ export function chooseEpisodeCompression(messages, {
 } = {}) {
   const source = (Array.isArray(messages) ? messages : [])
     .filter((message) => message?.role === "user" || message?.role === "assistant");
-  if (source.length < minimumMessages + 2) return null;
+  if (source.length < 2) return null;
 
   let keptTokens = 0;
   let targetIndex = source.length;
@@ -45,45 +45,80 @@ export function chooseEpisodeCompression(messages, {
     targetIndex = index;
     if (keptTokens >= keepTokens) break;
   }
-  if (targetIndex < minimumMessages) return null;
+  const boundary = nearestNaturalBoundary(source, targetIndex, Math.min(minimumMessages, source.length));
+  if (
+    !boundary
+    || (source.length < minimumMessages && boundary.kind !== "topic_closure")
+    || (targetIndex < minimumMessages && boundary.kind !== "topic_closure")
+  ) return null;
 
-  let cutoff = nearestNaturalBoundary(source, targetIndex, minimumMessages);
-  cutoff = Math.max(minimumMessages, Math.min(source.length - 2, cutoff));
+  let cutoff = boundary.kind === "topic_closure"
+    ? boundary.index
+    : Math.max(minimumMessages, Math.min(source.length, boundary.index));
+  if (boundary.kind !== "topic_closure") {
+    cutoff = Math.min(source.length - 2, cutoff);
+  }
   const compressed = source.slice(0, cutoff);
   const kept = source.slice(cutoff);
-  if (!compressed.some((message) => message.role === "user") || !kept.length) return null;
+  if (
+    !compressed.some((message) => message.role === "user")
+    || (!kept.length && boundary.kind !== "topic_closure")
+  ) return null;
   return {
     compressed,
     kept,
     cutoff,
     compressedTokens: estimateConversationTokens(compressed),
-    keptTokens: estimateConversationTokens(kept)
+    keptTokens: estimateConversationTokens(kept),
+    boundaryKind: boundary.kind,
+    boundaryReason: boundary.reason
   };
 }
 
 function nearestNaturalBoundary(messages, targetIndex, minimumMessages) {
   const candidates = [];
-  for (let index = minimumMessages; index <= messages.length - 2; index += 1) {
+  for (let index = minimumMessages; index <= messages.length; index += 1) {
     const previous = messages[index - 1];
     const next = messages[index];
     if (previous?.role !== "assistant") continue;
     const previousTime = new Date(previous.createdAt || "").getTime();
-    const nextTime = new Date(next.createdAt || "").getTime();
+    const nextTime = new Date(next?.createdAt || "").getTime();
     const gapMinutes = Number.isFinite(previousTime) && Number.isFinite(nextTime)
       ? Math.max(0, (nextTime - previousTime) / 60_000)
       : 0;
+    const closure = topicClosureReason(messages.slice(Math.max(0, index - 2), index));
     candidates.push({
       index,
       distance: Math.abs(index - targetIndex),
-      gapMinutes
+      gapMinutes,
+      kind: closure ? "topic_closure" : gapMinutes >= 30 ? "time_pause" : "assistant_turn",
+      reason: closure || (gapMinutes >= 30 ? `停顿约 ${Math.round(gapMinutes)} 分钟` : "完整回复结束")
     });
   }
-  if (!candidates.length) return targetIndex;
+  if (!candidates.length) return null;
+  const nearbyClosure = candidates
+    .filter((item) => item.kind === "topic_closure" && (item.distance <= 12 || targetIndex < minimumMessages))
+    .sort((left, right) => left.distance - right.distance || right.index - left.index)[0];
+  if (nearbyClosure) return nearbyClosure;
+  if (targetIndex < minimumMessages) return null;
   const nearbyPause = candidates
-    .filter((item) => item.gapMinutes >= 45 && item.distance <= 6)
+    .filter((item) => item.kind === "time_pause" && item.distance <= 8)
     .sort((left, right) => right.gapMinutes - left.gapMinutes || left.distance - right.distance)[0];
-  if (nearbyPause) return nearbyPause.index;
-  return candidates.sort((left, right) => left.distance - right.distance)[0].index;
+  if (nearbyPause) return nearbyPause;
+  return candidates
+    .filter((item) => item.index <= messages.length - 2)
+    .sort((left, right) => left.distance - right.distance)[0] || null;
+}
+
+function topicClosureReason(messages) {
+  const text = messages.map((message) => String(message?.content || "")).join("\n");
+  const patterns = [
+    [/晚安|好梦|睡啦|睡觉了|去睡|早点睡|休息啦|休息了/u, "晚安或休息"],
+    [/明天见|明天再聊|下次再聊|回头聊|改天聊/u, "约定之后再聊"],
+    [/先聊到这|今天先到这|就到这里|告一段落|收工|拜拜|再见/u, "明确结束当前话题"],
+    [/good\s*night|see\s+you|talk\s+later|bye(?:bye)?/iu, "明确结束当前话题"]
+  ];
+  return patterns.find(([pattern]) => pattern.test(text))?.[1] || "";
 }
 
 function estimateMessageTokens(message) {

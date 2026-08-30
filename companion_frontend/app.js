@@ -8,7 +8,7 @@ import {
   chooseEpisodeCompression,
   conversationDayKey,
   estimateConversationTokens
-} from "./conversation_compaction.js?v=20260829.1";
+} from "./conversation_compaction.js?v=20260830.1";
 import { createCallController } from "./call.js?v=20260810.1";
 import { createSoloPanel } from "./solo.js?v=20260823.1";
 import { formatTokenUsage, normalizeTokenUsage } from "./openai_stream.js?v=20260810.1";
@@ -2155,7 +2155,10 @@ async function maybeSummarizeConversation() {
     messages: selection.compressed,
     insertAfter: selection.compressed.at(-1),
     conversationDay: conversationDayKey(selection.compressed.at(-1)?.createdAt, currentTimeZone()),
-    trigger: inputTokens >= DEFAULT_SUMMARY_HARD_TOKENS ? "80K 额度保护" : `${formatCompactTokens(softTokens)} token`,
+    trigger: [
+      inputTokens >= DEFAULT_SUMMARY_HARD_TOKENS ? "80K 额度保护" : `${formatCompactTokens(softTokens)} token`,
+      selection.boundaryReason || "完整回复结束"
+    ].join(" · "),
     inputTokensBefore: inputTokens,
     estimatedCompressedTokens: selection.compressedTokens,
     estimatedKeptTokens: selection.keptTokens
@@ -4231,7 +4234,7 @@ let chatLocatorPage = 0;
 function chatLocatorEntries() {
   const entries = [];
   for (const [stateIndex, message] of state.messages.entries()) {
-    if (message.role !== "user" && message.role !== "assistant") {
+    if (!["user", "assistant", "summary"].includes(message.role) || message.pending) {
       continue;
     }
     entries.push({
@@ -4249,6 +4252,7 @@ function chatLocatorSearchText(message) {
     message.userThinking,
     message.reasoning,
     message.reasoningSource,
+    message.handoff,
     ...normalizeUserImages(message.images).map((image) => image.name),
     ...(Array.isArray(message.toolActivity)
       ? message.toolActivity.flatMap((call) => [call.server, call.tool, call.result, call.error])
@@ -4290,7 +4294,7 @@ function currentChatLocatorNumber(entries = chatLocatorEntries()) {
   const centerY = listRect.top + listRect.height / 2;
   let closestNumber = entries.at(-1).number;
   let closestDistance = Number.POSITIVE_INFINITY;
-  for (const item of els.messageList.querySelectorAll(".message[data-locator-number]")) {
+  for (const item of els.messageList.querySelectorAll("[data-locator-number]")) {
     const rect = item.getBoundingClientRect();
     const distance = Math.abs(rect.top + rect.height / 2 - centerY);
     if (distance < closestDistance) {
@@ -4320,7 +4324,7 @@ function updateChatLocatorRail() {
   const currentNumber = currentChatLocatorNumber(entries) || entries.length;
   const progress = (currentNumber - 1) / Math.max(1, entries.length - 1);
   els.chatLocatorDot.style.top = `${Math.max(0, Math.min(1, progress)) * 100}%`;
-  const label = `定位聊天记录，当前第 ${currentNumber} 条，共 ${entries.length} 条`;
+  const label = `定位聊天记录，当前第 ${currentNumber} 条，共 ${entries.length} 条记录`;
   els.chatLocatorButton.title = label;
   els.chatLocatorButton.setAttribute("aria-label", label);
 }
@@ -4381,6 +4385,15 @@ function renderChatLocatorResults() {
 
   const fragment = document.createDocumentFragment();
   for (const entry of visibleMatches) {
+    if (entry.message.role === "summary") {
+      const summary = createConversationSummary(entry.message);
+      summary.classList.add("chat-locator-summary-result");
+      summary.dataset.locatorNumber = String(entry.number);
+      summary.setAttribute("role", "listitem");
+      summary.title = "点击定位到对话中的这段经历记忆";
+      fragment.append(summary);
+      continue;
+    }
     const button = document.createElement("button");
     button.type = "button";
     button.className = `chat-locator-result${entry.number === currentNumber ? " current" : ""}`;
@@ -4462,9 +4475,7 @@ function renderMessages(shouldScroll = true) {
   const fragment = document.createDocumentFragment();
   let locatorNumber = 0;
   for (const [messageIndex, message] of state.messages.entries()) {
-    if (message.role !== "summary") {
-      locatorNumber += 1;
-    }
+    if (!message.pending && ["user", "assistant", "summary"].includes(message.role)) locatorNumber += 1;
     fragment.append(createMessageNode(message, messageIndex, locatorNumber));
   }
   els.messageList.append(fragment);
@@ -4513,6 +4524,7 @@ function createMessageNode(message, messageIndex, locatorNumber, { streaming = f
     const summary = createConversationSummary(message);
     summary.dataset.messageId = String(message.id || "");
     summary.dataset.messageIndex = String(messageIndex);
+    summary.dataset.locatorNumber = String(locatorNumber);
     return summary;
   }
 
@@ -6449,6 +6461,7 @@ async function syncProactiveMessages({ silent = false } = {}) {
   }
   proactiveSyncPromise = (async () => {
     try {
+      await syncServerDailyMemory();
       const cursor = String(state.proactiveMessageCursor || "").trim();
       const query = cursor ? `?after=${encodeURIComponent(cursor)}&limit=100` : "?limit=100";
       const data = await gatewayFetch(`/api/solo/messages${query}`);
@@ -6521,6 +6534,69 @@ async function syncProactiveMessages({ silent = false } = {}) {
     }
   })();
   return proactiveSyncPromise;
+}
+
+async function syncServerDailyMemory() {
+  const data = await gatewayFetch("/api/conversation-summary/daily-memory").catch((error) => {
+    console.warn("Unable to sync daily conversation memory", error);
+    return null;
+  });
+  const memory = data?.memory;
+  const serverDailyMemoryId = String(memory?.id || "").trim();
+  const conversationDay = String(memory?.conversationDay || "").trim();
+  const content = String(memory?.content || "").trim();
+  if (!serverDailyMemoryId || !conversationDay || !content) return false;
+  if (state.messages.some((message) => message.serverDailyMemoryId === serverDailyMemoryId)) return false;
+
+  let insertIndex = state.messages.length;
+  for (let index = 0; index < state.messages.length; index += 1) {
+    const message = state.messages[index];
+    if (!["user", "assistant"].includes(message.role)) continue;
+    const messageDay = conversationDayKey(message.createdAt, currentTimeZone());
+    if (messageDay && messageDay > conversationDay) {
+      insertIndex = index;
+      break;
+    }
+  }
+  const consolidatedEpisodes = [];
+  for (const message of state.messages) {
+    if (
+      message.role === "summary"
+      && message.summaryKind === "episode"
+      && message.conversationDay === conversationDay
+      && !message.consolidatedInto
+    ) {
+      message.consolidatedInto = serverDailyMemoryId;
+      consolidatedEpisodes.push(message);
+    }
+  }
+  const marker = {
+    id: `server:${serverDailyMemoryId}`,
+    serverDailyMemoryId,
+    role: "summary",
+    summaryKind: "daily",
+    conversationDay,
+    content,
+    handoff: String(memory.handoff || "").trim(),
+    trigger: "每日 04:00 · 服务器定时",
+    rangeStartAt: String(memory.rangeStartAt || ""),
+    rangeEndAt: String(memory.rangeEndAt || ""),
+    summarizedMessageCount: Number(memory.summarizedMessageCount || 0),
+    model: String(memory.model || ""),
+    usage: normalizeTokenUsage(memory.usage),
+    createdAt: String(memory.createdAt || new Date().toISOString()),
+    timezone: currentTimeZone()
+  };
+  state.messages.splice(insertIndex, 0, marker);
+  clearPromptCacheAfter(insertIndex);
+  if (!await saveMessages()) {
+    state.messages.splice(insertIndex, 1);
+    for (const message of consolidatedEpisodes) message.consolidatedInto = "";
+    return false;
+  }
+  renderMessages(false);
+  requestAnimationFrame(() => presentSummaryMarker(marker.id));
+  return true;
 }
 
 function loadJson(key, fallback) {

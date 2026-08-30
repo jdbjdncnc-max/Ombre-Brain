@@ -196,6 +196,7 @@ class SoloService:
         self._proactive_generator: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None
         self._call_invite_generator: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None
         self._proactive_dispatcher: Callable[[list[dict[str, Any]]], Awaitable[dict[str, Any] | None]] | None = None
+        self._daily_compactor: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None
         self._mcp_selector: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None
         self._mcp_appraiser: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None
 
@@ -250,6 +251,12 @@ class SoloService:
         dispatcher: Callable[[list[dict[str, Any]]], Awaitable[dict[str, Any] | None]] | None,
     ) -> None:
         self._proactive_dispatcher = dispatcher
+
+    def set_daily_compactor(
+        self,
+        compactor: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None,
+    ) -> None:
+        self._daily_compactor = compactor
 
     def set_mcp_handlers(
         self,
@@ -865,6 +872,7 @@ class SoloService:
             return {"ok": False, "enabled": False, "error": "Solitude service is disabled."}
 
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        daily_compaction: dict[str, Any] = {}
         proactive_activity: dict[str, Any] | None = None
         call_activity: dict[str, Any] | None = None
         mcp_activity: dict[str, Any] | None = None
@@ -879,6 +887,16 @@ class SoloService:
                     "reason": "lock_not_owned",
                     "lockOwner": lease.get("owner", "") if isinstance(lease, dict) else "",
                 }
+            if self._daily_compactor is not None:
+                try:
+                    result = await self._daily_compactor({
+                        "triggered_at": _iso(current),
+                        "timezone": self.timezone_name,
+                    })
+                    daily_compaction = result if isinstance(result, dict) else {}
+                except Exception:
+                    logger.exception("Daily conversation compaction failed")
+                    daily_compaction = {"required": True, "completed": False, "reason": "exception"}
 
             state = self._read_json(self.state_path) or self._new_state(current)
             state["pulseCount"] = int(state.get("pulseCount") or 0) + 1
@@ -929,8 +947,13 @@ class SoloService:
                 "decisionDue": decision_due,
                 "state": self._public_state(state, emotion),
             }
+            if daily_compaction:
+                response_payload["dailyCompaction"] = deepcopy(daily_compaction)
 
-        if proactive_activity is not None:
+        daily_ready = not daily_compaction.get("required") or bool(daily_compaction.get("completed"))
+        if proactive_activity is not None and not daily_ready:
+            response_payload["proactiveBlockedByDailyCompaction"] = True
+        elif proactive_activity is not None:
             generated = await self._generate_proactive_outbox(
                 proactive_activity,
                 wake_id=wake_id,

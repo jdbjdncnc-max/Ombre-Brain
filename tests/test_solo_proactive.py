@@ -181,6 +181,23 @@ class ProactiveServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(emotion["budget"]["llmCalls"], 1)
         self.assertEqual(emotion["budget"]["proactive"], 2)
 
+    async def test_failed_daily_compaction_blocks_expensive_proactive_generation(self):
+        compactor = AsyncMock(return_value={
+            "required": True,
+            "completed": False,
+            "reason": "summary_provider_unavailable",
+        })
+        generator = AsyncMock(return_value={"called": True, "messages": ["不应生成"]})
+        self.service.set_daily_compactor(compactor)
+        self.service.set_proactive_generator(generator)
+
+        with patch("solo.service.choose_action", return_value=ACTION_SPECS["message_user"]):
+            result = await self.service.pulse_once(now=self.now, force_decision=True)
+
+        self.assertTrue(result["proactiveBlockedByDailyCompaction"])
+        compactor.assert_awaited_once()
+        generator.assert_not_awaited()
+
     async def test_attention_event_is_deduplicated_and_enters_proactive_chat(self):
         contexts = []
 

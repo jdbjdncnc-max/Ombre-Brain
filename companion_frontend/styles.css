@@ -4068,6 +4068,28 @@ output {
   grid-column: 1 / 3;
 }
 
+.chat-locator-summary-result {
+  padding: 3px 2px;
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 5%, rgba(255, 255, 255, 0.66));
+  cursor: pointer;
+}
+
+.chat-locator-summary-result:hover,
+.chat-locator-summary-result:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: color-mix(in srgb, var(--accent) 9%, rgba(255, 255, 255, 0.76));
+}
+
+.chat-locator-summary-result .conversation-summary-content {
+  display: none;
+}
+
+.chat-locator-summary-result summary {
+  pointer-events: none;
+}
+
 .message-heatmap-card {
   gap: 11px;
   overflow: hidden;

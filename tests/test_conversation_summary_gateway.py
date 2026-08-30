@@ -1,5 +1,7 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -61,6 +63,46 @@ def _gateway(response_body=None, *, gateway_token=""):
 
 
 class ConversationSummaryGatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_four_am_compactor_summarizes_previous_day_and_keeps_new_day_messages(self):
+        gateway = _gateway({
+            "model": "summary-provider-model",
+            "usage": {"prompt_tokens": 120, "completion_tokens": 40},
+            "choices": [{"message": {"content": (
+                "<<<OMBRE_EPISODE_MEMORY>>>\n昨晚聊完了实验和明天的安排。\n"
+                "<<<OMBRE_HANDOFF>>>\n早上可以问她实验进展。\n"
+                "<<<END_OMBRE_EPISODE_MEMORY>>>"
+            )}}],
+        })
+        gateway.solo = SimpleNamespace(timezone_name="Asia/Taipei")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gateway.daily_conversation_memory_path = root / "daily.json"
+            gateway.proactive_conversation_context_path = root / "context.json"
+            gateway._write_proactive_conversation_context({
+                "session_id": "session-1",
+                "summary_prompt": "按一天整理经历",
+                "summary_context": "昨晚较早的一段经历",
+                "daily_dirty": True,
+                "messages": [
+                    {"role": "user", "content": "晚安", "context": {"sentAt": "2026-08-29T19:58:00Z"}},
+                    {"role": "assistant", "content": "晚安，好梦", "context": {"sentAt": "2026-08-29T19:59:00Z"}},
+                    {"role": "user", "content": "新一天醒了", "context": {"sentAt": "2026-08-29T20:01:00Z"}},
+                ],
+            })
+
+            result = await gateway._compact_daily_conversation({
+                "triggered_at": "2026-08-29T20:00:05Z",
+                "timezone": "Asia/Taipei",
+            })
+
+            self.assertTrue(result["completed"])
+            saved = gateway._read_daily_conversation_memory()
+            self.assertEqual(saved["conversationDay"], "2026-08-29")
+            self.assertEqual(saved["summarizedMessageCount"], 2)
+            context = gateway._load_proactive_conversation_context()
+            self.assertEqual([item["content"] for item in context["messages"]], ["新一天醒了"])
+            self.assertFalse(context["daily_dirty"])
+
     async def test_can_skip_old_summary_coupled_emotion_appraisal(self):
         gateway = _gateway()
         gateway._schedule_emotion_appraisal = Mock(return_value=True)
